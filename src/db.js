@@ -5,6 +5,12 @@ import bcrypt from 'bcryptjs';
 import Database from 'better-sqlite3';
 import { isoNow, todayPhoenixString } from './utils.js';
 
+export function validateRuntimeDatabaseConfig() {
+  if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL) {
+    throw new Error('Production deployment requires DATABASE_URL. Do not silently fall back to a local SQLite database in Render.');
+  }
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.resolve(__dirname, '../data');
 fs.mkdirSync(dataDir, { recursive: true });

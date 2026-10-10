@@ -13,7 +13,8 @@ import {
   getActiveStaffNames,
   getAllStaffNames,
   upsertSupplierMasterRow,
-  upsertStaffMasterRow
+  upsertStaffMasterRow,
+  validateRuntimeDatabaseConfig
 } from './db.js';
 import {
   ORDER_CATEGORIES,
@@ -55,6 +56,7 @@ function broadcastLiveEvent(type, payload = {}) {
   }
 }
 
+validateRuntimeDatabaseConfig();
 initializeDatabase();
 
 app.use(express.urlencoded({ extended: true }));

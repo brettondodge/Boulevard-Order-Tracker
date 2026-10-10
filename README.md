@@ -53,19 +53,44 @@ The app includes fictional sample orders for preview use. The sample data is cle
 
 ## Publish the app for office staff online
 
-For real office use, deploy the app to a host with persistent storage and a custom domain. A straightforward option is:
+For real office use, deploy the app to a host with persistent storage and a custom domain. The recommended production setup for this project is:
 
-- Host: Render, Railway, Fly.io, or another Node.js host
-- Database: SQLite for a small office at first, or move to PostgreSQL if you want a more production-style setup
-- Domain: use a private or internal company domain if the app is only for staff access
+- Host: Render
+- Database: Render-managed PostgreSQL, using the existing `DATABASE_URL` connection value
+- Region: Oregon (matching the paid Postgres instance already created)
+- Domain: private or internal company domain if the app is only for staff access
 - Secure session secret: set a strong value in the environment
 
-Recommended production settings:
+### Render deployment checklist
 
-- Set `SESSION_SECRET` to a real long secret.
-- Set `PREVIEW_MODE=false` when you want to stop using sample data.
-- Use a real user account system or add staff accounts to the database.
-- Back up the database file or migrate to a managed database if the app grows.
+1. Create or reuse a Render web service for the app.
+2. Connect the service to the paid Postgres database already created in Render.
+3. Set the environment variables listed below in Render.
+4. Run the Postgres schema migration before the first production start.
+5. Keep `PREVIEW_MODE=false` for a real office deployment.
+6. Verify the app logs in successfully and that the admin flow works before sharing it with staff.
+
+### Required environment variables for Render
+
+- `DATABASE_URL`: Use the Postgres connection string from Render's database page.
+- `SESSION_SECRET`: A long random secret value stored in Render's secret environment settings.
+- `ADMIN_USERNAME`: The administrator login name for the app.
+- `ADMIN_PASSWORD` or `ADMIN_PASSWORD_HASH`: Admin password seed or hash. Use a real office login credential.
+- `PREVIEW_MODE`: Set to `false` once the app is ready for live business use.
+- `PORT`: Render sets this automatically in production; keep it as a runtime environment variable.
+- `NODE_ENV`: Set to `production`.
+
+### Render commands
+
+```bash
+npm install --include=dev
+npm run migrate:postgres
+npm start
+```
+
+### Deployment safety rule
+
+The app now refuses to run in production without a `DATABASE_URL` value, so it will not silently fall back to the local SQLite database.
 
 ## Ongoing costs and requirements
 
