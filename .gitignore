@@ -1,4 +1,13 @@
 node_modules/
 .env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.bak
+*.backup
+customer-data-backups/
 data/
 .DS_Store
