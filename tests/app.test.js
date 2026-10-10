@@ -248,3 +248,89 @@ test('category and group filters work with supplier selection', async () => {
   assert.ok(groupResponse.body.orders.some((order) => order.category === 'Flat Glass'));
   assert.ok(categoryResponse.body.orders.every((order) => order.category === 'Windows'));
 });
+
+test('ordered-by multi-select filter supports any-of matching and historical names', async () => {
+  const child = startServer();
+  await delay(1500);
+
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const supplierA = `Filter Test Supplier A ${suffix}`;
+  const supplierB = `Filter Test Supplier B ${suffix}`;
+  const supplierC = `Filter Test Supplier C ${suffix}`;
+  const orderAlex = `Ordered By Alex Filter ${suffix}`;
+  const orderBeth = `Ordered By Beth Filter ${suffix}`;
+  const orderCarol = `Ordered By Carol Filter ${suffix}`;
+
+  const cookieJar = createCookieJar();
+  const login = await requestJson('http://127.0.0.1:4100/api/admin/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'admin123' }),
+    cookieJar
+  });
+
+  assert.equal(login.status, 200);
+
+  const alex = await requestJson('http://127.0.0.1:4100/api/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: orderAlex,
+      supplier: supplierA,
+      category: 'Windows',
+      date_ordered: '2026-10-13',
+      ordered_by: 'Alex Morgan'
+    }),
+    cookieJar
+  });
+
+  const beth = await requestJson('http://127.0.0.1:4100/api/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: orderBeth,
+      supplier: supplierB,
+      category: 'Flat Glass',
+      date_ordered: '2026-10-14',
+      ordered_by: 'Beth Nguyen'
+    }),
+    cookieJar
+  });
+
+  const carol = await requestJson('http://127.0.0.1:4100/api/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: orderCarol,
+      supplier: supplierC,
+      category: 'Windows',
+      date_ordered: '2026-10-15',
+      ordered_by: 'Carol Smith'
+    }),
+    cookieJar
+  });
+
+  assert.equal(alex.status, 201);
+  assert.equal(beth.status, 201);
+  assert.equal(carol.status, 201);
+
+  const filtered = await requestJson(
+    `http://127.0.0.1:4100/api/orders?supplier=${encodeURIComponent(supplierA)}&supplier=${encodeURIComponent(supplierB)}&ordered_by=${encodeURIComponent('Alex Morgan')}&ordered_by=${encodeURIComponent('Beth Nguyen')}&status=Outstanding`,
+    { cookieJar }
+  );
+
+  assert.equal(filtered.status, 200);
+  assert.ok(filtered.body.orders.some((order) => order.customer_name === orderAlex));
+  assert.ok(filtered.body.orders.some((order) => order.customer_name === orderBeth));
+  assert.ok(filtered.body.orders.every((order) => ['Alex Morgan', 'Beth Nguyen'].includes(order.ordered_by)));
+
+  const historicalLookup = await requestJson(
+    `http://127.0.0.1:4100/api/orders?ordered_by=${encodeURIComponent('Alex Morgan')}&status=Outstanding`,
+    { cookieJar }
+  );
+
+  assert.equal(historicalLookup.status, 200);
+  assert.ok(historicalLookup.body.orders.some((order) => order.customer_name === orderAlex));
+
+  child.kill('SIGTERM');
+});

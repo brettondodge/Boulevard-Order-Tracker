@@ -3,6 +3,7 @@ const state = {
   groupView: 'All Orders',
   category: '',
   supplier: [],
+  orderedBy: [],
   search: '',
   sort: 'expected_delivery_date',
   orders: [],
@@ -21,6 +22,9 @@ const elements = {
   supplierFilter: document.getElementById('supplierFilter'),
   clearSupplierButton: document.getElementById('clearSupplierButton'),
   supplierSelectionSummary: document.getElementById('supplierSelectionSummary'),
+  orderedByFilter: document.getElementById('orderedByFilter'),
+  clearOrderedByButton: document.getElementById('clearOrderedByButton'),
+  orderedBySelectionSummary: document.getElementById('orderedBySelectionSummary'),
   sortSelect: document.getElementById('sortSelect'),
   addOrderButton: document.getElementById('addOrderButton'),
   masterListsButton: document.getElementById('masterListsButton'),
@@ -108,6 +112,29 @@ function bindEvents() {
   elements.clearSupplierButton.addEventListener('click', async () => {
     state.supplier = [];
     renderSupplierSelection();
+    await loadOrders();
+  });
+
+  elements.orderedByFilter.addEventListener('click', (event) => {
+    const option = event.target.closest('option');
+    if (!option) return;
+
+    const value = option.value;
+    const nextValues = new Set(state.orderedBy);
+    if (nextValues.has(value)) {
+      nextValues.delete(value);
+    } else {
+      nextValues.add(value);
+    }
+
+    state.orderedBy = Array.from(nextValues);
+    renderOrderedBySelection();
+    loadOrders();
+  });
+
+  elements.clearOrderedByButton.addEventListener('click', async () => {
+    state.orderedBy = [];
+    renderOrderedBySelection();
     await loadOrders();
   });
 
@@ -334,10 +361,16 @@ async function loadMasterLists() {
     active: item.active !== false
   }));
 
-  state.staffNames = state.masterStaffNames.filter((item) => item.active !== false);
+  const historicalStaff = Array.isArray(data.ordered_by_options) ? data.ordered_by_options : [];
+  const uniqueStaff = [...new Set([
+    ...state.masterStaffNames.map((item) => item.name),
+    ...historicalStaff
+  ].filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+  state.staffNames = uniqueStaff;
   state.suppliers = state.masterSuppliers.filter((item) => item.active !== false).map((item) => item.name);
   renderSupplierFilterOptions();
-  renderOrderedByOptions();
+  renderOrderedByFilterOptions();
   renderMasterListsEditor();
 }
 
@@ -361,6 +394,21 @@ function renderOrderedByOptions() {
   elements.orderedBySelect.innerHTML = '<option value="">Unknown</option>' + activeNames
     .map((person) => `<option value="${escapeHtml(person.id)}">${escapeHtml(person.name)}</option>`)
     .join('');
+}
+
+function renderOrderedByFilterOptions() {
+  const selected = new Set(state.orderedBy);
+  const options = state.staffNames.map((person) => `<option value="${escapeHtml(person)}" ${selected.has(person) ? 'selected' : ''}>${escapeHtml(person)}</option>`).join('');
+  elements.orderedByFilter.innerHTML = options;
+  renderOrderedBySelection();
+}
+
+function renderOrderedBySelection() {
+  const selected = state.orderedBy.filter(Boolean);
+  elements.orderedBySelectionSummary.textContent = selected.length ? selected.join(', ') : 'Everyone';
+  Array.from(elements.orderedByFilter.options).forEach((option) => {
+    option.selected = selected.includes(option.value);
+  });
 }
 
 function renderMasterListsEditor() {
@@ -434,6 +482,10 @@ async function loadOrders() {
 
   for (const supplier of state.supplier) {
     params.append('supplier', supplier);
+  }
+
+  for (const staff of state.orderedBy) {
+    params.append('ordered_by', staff);
   }
 
   const response = await fetch(`/api/orders?${params.toString()}`);

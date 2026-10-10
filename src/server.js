@@ -68,8 +68,8 @@ function requireAdminAuth(req, res, next) {
   next();
 }
 
-function parseSupplierFilters(req) {
-  const raw = [].concat(req.query.supplier || []);
+function parseMultiValueFilter(req, key) {
+  const raw = [].concat(req.query[key] || []);
   return raw
     .flatMap((value) => (Array.isArray(value) ? value : [value]))
     .map((value) => String(value).trim())
@@ -164,6 +164,15 @@ app.get('/api/suppliers', (req, res) => {
 app.get('/api/master-lists', (req, res) => {
   const suppliers = getAllSuppliers();
   const staffNames = getAllStaffNames();
+  const historicalOrderedBy = getDb()
+    .prepare("SELECT DISTINCT ordered_by FROM orders WHERE ordered_by IS NOT NULL AND ordered_by <> '' ORDER BY ordered_by COLLATE NOCASE ASC")
+    .all()
+    .map((row) => row.ordered_by);
+  const mergedStaffNames = [...new Set([
+    ...staffNames.map((item) => item.name),
+    ...historicalOrderedBy
+  ].filter(Boolean))];
+
   return res.json({
     suppliers: suppliers.map((item) => ({
       id: item.id,
@@ -174,7 +183,8 @@ app.get('/api/master-lists', (req, res) => {
       id: item.id,
       name: item.name,
       active: Number(item.active) !== 0
-    }))
+    })),
+    ordered_by_options: mergedStaffNames
   });
 });
 
@@ -250,7 +260,8 @@ app.get('/api/orders', (req, res) => {
   const statusFilter = (req.query.status || 'Outstanding').toString();
   const viewFilter = (req.query.view || 'All Orders').toString();
   const categoryFilter = (req.query.category || '').toString();
-  const supplierFilters = parseSupplierFilters(req);
+  const supplierFilters = parseMultiValueFilter(req, 'supplier');
+  const orderedByFilters = parseMultiValueFilter(req, 'ordered_by');
   const searchTerm = (req.query.search || '').toString().trim().toLowerCase();
 
   let filtered = rows.filter((order) => {
@@ -278,6 +289,14 @@ app.get('/api/orders', (req, res) => {
 
     if (supplierFilters.length && !supplierFilters.includes(order.supplier)) {
       return false;
+    }
+
+    if (orderedByFilters.length) {
+      const selectedNames = orderedByFilters.map((name) => name.toLowerCase());
+      const orderName = (order.ordered_by || '').trim().toLowerCase();
+      if (!selectedNames.includes(orderName)) {
+        return false;
+      }
     }
 
     if (searchTerm) {
