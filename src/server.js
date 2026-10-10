@@ -106,6 +106,11 @@ function normalizeDraftDepositStatus(value) {
   return 'Awaiting deposit';
 }
 
+function normalizeArchiveSource(value) {
+  const source = normalizeText(value || 'manual');
+  return source === 'future_hcp_automation' ? 'future_hcp_automation' : 'manual';
+}
+
 function getJobDraftById(id) {
   const draftId = normalizeText(id || '');
   if (!draftId) {
@@ -124,17 +129,96 @@ function serializeJobDraft(draft) {
   if (!draft) return null;
 
   const supplierOrderCount = Number(getDb()
-    .prepare('SELECT COUNT(*) as count FROM orders WHERE job_draft_id = ?')
+    .prepare('SELECT COUNT(*) as count FROM orders WHERE job_draft_id = ? AND is_archived = 0')
     .get(draft.id)?.count || 0);
 
   return {
     ...draft,
+    is_archived: Boolean(Number(draft.is_archived || 0)),
     status: draft.status || 'Open',
     deposit_status: normalizeDraftDepositStatus(draft.deposit_status),
     hcp_job_id: normalizeText(draft.hcp_job_id || ''),
     ready_to_order: isDraftReadyForOrdering(draft),
     supplier_order_count: supplierOrderCount
   };
+}
+
+function getArchivedOrderIdsForDraft(draftId) {
+  const rows = getDb()
+    .prepare('SELECT id, customer_name, supplier, po_number, status FROM orders WHERE job_draft_id = ? AND is_archived = 0 ORDER BY date_ordered DESC, created_at DESC')
+    .all(draftId);
+
+  return rows.map((order) => ({
+    id: order.id,
+    customer_name: order.customer_name,
+    supplier: order.supplier,
+    po_number: order.po_number,
+    status: order.status || 'Ordered'
+  }));
+}
+
+function markOrdersArchived(orderIds, metadata = {}) {
+  if (!Array.isArray(orderIds) || !orderIds.length) {
+    return [];
+  }
+
+  const stamp = isoNow();
+  const source = normalizeArchiveSource(metadata.source || 'manual');
+  const reason = (metadata.reason || '').trim();
+
+  const uniqueIds = [...new Set(orderIds.map((id) => normalizeText(id || '')).filter(Boolean))];
+  const placeholders = uniqueIds.map(() => '?').join(', ');
+  getDb().prepare(`UPDATE orders SET is_archived = 1, archived_at = ?, archive_source = ?, archive_reason = ? WHERE id IN (${placeholders})`).run(
+    stamp,
+    source,
+    reason,
+    ...uniqueIds
+  );
+
+  return uniqueIds;
+}
+
+function markDraftsArchived(draftIds, metadata = {}) {
+  if (!Array.isArray(draftIds) || !draftIds.length) {
+    return [];
+  }
+
+  const stamp = isoNow();
+  const source = normalizeArchiveSource(metadata.source || 'manual');
+  const reason = (metadata.reason || '').trim();
+
+  const uniqueIds = [...new Set(draftIds.map((id) => normalizeText(id || '')).filter(Boolean))];
+  const placeholders = uniqueIds.map(() => '?').join(', ');
+  getDb().prepare(`UPDATE job_drafts SET is_archived = 1, archived_at = ?, archive_source = ?, archive_reason = ? WHERE id IN (${placeholders})`).run(
+    stamp,
+    source,
+    reason,
+    ...uniqueIds
+  );
+
+  return uniqueIds;
+}
+
+function restoreOrders(orderIds) {
+  if (!Array.isArray(orderIds) || !orderIds.length) {
+    return [];
+  }
+
+  const uniqueIds = [...new Set(orderIds.map((id) => normalizeText(id || '')).filter(Boolean))];
+  const placeholders = uniqueIds.map(() => '?').join(', ');
+  getDb().prepare(`UPDATE orders SET is_archived = 0, archived_at = NULL, archive_source = NULL, archive_reason = NULL WHERE id IN (${placeholders})`).run(...uniqueIds);
+  return uniqueIds;
+}
+
+function restoreDrafts(draftIds) {
+  if (!Array.isArray(draftIds) || !draftIds.length) {
+    return [];
+  }
+
+  const uniqueIds = [...new Set(draftIds.map((id) => normalizeText(id || '')).filter(Boolean))];
+  const placeholders = uniqueIds.map(() => '?').join(', ');
+  getDb().prepare(`UPDATE job_drafts SET is_archived = 0, archived_at = NULL, archive_source = NULL, archive_reason = NULL WHERE id IN (${placeholders})`).run(...uniqueIds);
+  return uniqueIds;
 }
 
 app.get('/', (req, res) => {
@@ -276,9 +360,12 @@ app.get('/api/events', (req, res) => {
 
 app.get('/api/job-drafts', (req, res) => {
   const statusFilter = normalizeText(req.query.status || '');
-  const rows = statusFilter
-    ? getDb().prepare('SELECT * FROM job_drafts WHERE status = ? ORDER BY updated_at DESC, created_at DESC').all(statusFilter)
-    : getDb().prepare('SELECT * FROM job_drafts ORDER BY updated_at DESC, created_at DESC').all();
+  const archivedOnly = req.query.archived === 'true' || statusFilter === 'Archived';
+  const rows = statusFilter === 'Archived'
+    ? getDb().prepare('SELECT * FROM job_drafts WHERE is_archived = 1 ORDER BY archived_at DESC, updated_at DESC').all()
+    : statusFilter
+      ? getDb().prepare('SELECT * FROM job_drafts WHERE status = ? AND is_archived = ? ORDER BY updated_at DESC, created_at DESC').all(statusFilter, archivedOnly ? 1 : 0)
+      : getDb().prepare('SELECT * FROM job_drafts WHERE is_archived = ? ORDER BY updated_at DESC, created_at DESC').all(archivedOnly ? 1 : 0);
 
   return res.json({ drafts: rows.map((row) => serializeJobDraft(row)) });
 });
@@ -389,6 +476,54 @@ app.post('/api/job-drafts/:id/complete', (req, res) => {
   return res.json({ draft: updated });
 });
 
+app.post('/api/job-drafts/:id/archive', (req, res) => {
+  const draft = getJobDraftById(req.params.id);
+  if (!draft) {
+    return res.status(404).json({ error: 'Job draft not found.' });
+  }
+
+  const linkedOrders = getArchivedOrderIdsForDraft(draft.id);
+  const hasOutstanding = linkedOrders.some((order) => order.status !== 'Received');
+  const confirmed = req.body.confirm === true || req.body.confirm === 'true';
+  const source = normalizeArchiveSource(req.body.source || 'manual');
+  const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
+  const warningMessage = hasOutstanding
+    ? 'This job still has outstanding supplier orders or unfinished ordering work. Archive is allowed only after explicit staff confirmation.'
+    : null;
+
+  const archivedIds = markDraftsArchived([draft.id], { source, reason });
+  const archivedOrderIds = markOrdersArchived(linkedOrders.map((order) => order.id), { source, reason });
+
+  broadcastLiveEvent('job-drafts', { action: 'archived', draftId: draft.id, time: isoNow() });
+  broadcastLiveEvent('orders', { action: 'archived', orderIds: archivedOrderIds, time: isoNow() });
+
+  return res.json({
+    archived: archivedIds.length > 0,
+    draft_id: draft.id,
+    order_ids: archivedOrderIds,
+    warning: warningMessage,
+    requires_confirmation: false,
+    source,
+    reason
+  });
+});
+
+app.post('/api/job-drafts/:id/restore', (req, res) => {
+  const draft = getJobDraftById(req.params.id);
+  if (!draft) {
+    return res.status(404).json({ error: 'Job draft not found.' });
+  }
+
+  const restoredDraftIds = restoreDrafts([draft.id]);
+  const linkedOrders = getDb().prepare('SELECT id FROM orders WHERE job_draft_id = ?').all(draft.id).map((row) => row.id);
+  restoreOrders(linkedOrders);
+
+  broadcastLiveEvent('job-drafts', { action: 'restored', draftId: draft.id, time: isoNow() });
+  broadcastLiveEvent('orders', { action: 'restored', orderIds: linkedOrders, time: isoNow() });
+
+  return res.json({ restored: restoredDraftIds.length > 0, draft_id: draft.id, order_ids: linkedOrders });
+});
+
 app.post('/api/job-drafts/:id/reopen', (req, res) => {
   const draft = getJobDraftById(req.params.id);
   if (!draft) {
@@ -470,6 +605,52 @@ app.post('/api/master-lists/ordered-by', requireAdminAuth, (req, res) => {
   return res.json({ staff_names: saved.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })) });
 });
 
+app.post('/api/orders/archive', (req, res) => {
+  const ids = Array.isArray(req.body.order_ids) ? req.body.order_ids : [];
+  if (!ids.length) {
+    return res.status(400).json({ error: 'At least one order must be selected to archive.' });
+  }
+
+  const source = normalizeArchiveSource(req.body.source || 'manual');
+  const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
+  const selected = ids
+    .map((id) => normalizeText(id || ''))
+    .filter(Boolean);
+
+  if (!selected.length) {
+    return res.status(400).json({ error: 'No valid orders were selected for archiving.' });
+  }
+
+  const archivedIds = markOrdersArchived(selected, { source, reason });
+  const jobDraftIds = getDb().prepare('SELECT DISTINCT job_draft_id FROM orders WHERE id IN (' + selected.map(() => '?').join(', ') + ') AND job_draft_id IS NOT NULL').all(...selected).map((row) => row.job_draft_id).filter(Boolean);
+  if (jobDraftIds.length) {
+    markDraftsArchived(jobDraftIds, { source, reason });
+  }
+
+  broadcastLiveEvent('orders', { action: 'archived', orderIds: archivedIds, time: isoNow() });
+  return res.json({ archived: true, order_ids: archivedIds, source, reason });
+});
+
+app.post('/api/orders/:id/restore', (req, res) => {
+  const order = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+  if (!order) {
+    return res.status(404).json({ error: 'Order not found.' });
+  }
+
+  const restoredIds = restoreOrders([order.id]);
+  if (order.job_draft_id) {
+    const linkedOrders = getDb().prepare('SELECT id FROM orders WHERE job_draft_id = ?').all(order.job_draft_id).map((row) => row.id);
+    restoreOrders(linkedOrders);
+    const linkedDraft = getDb().prepare('SELECT * FROM job_drafts WHERE id = ?').get(order.job_draft_id);
+    if (linkedDraft && Number(linkedDraft.is_archived) === 1) {
+      restoreDrafts([linkedDraft.id]);
+    }
+  }
+
+  broadcastLiveEvent('orders', { action: 'restored', orderId: order.id, time: isoNow() });
+  return res.json({ restored: restoredIds.length > 0, order_id: order.id });
+});
+
 app.get('/api/orders', (req, res) => {
   const rows = getDb()
     .prepare('SELECT * FROM orders ORDER BY date_ordered DESC, created_at DESC')
@@ -485,6 +666,13 @@ app.get('/api/orders', (req, res) => {
   let filtered = rows.filter((order) => {
     const status = statusFromOrder(order);
     const resolvedGroup = order.category ? getOrderGroup(order.category) : (order.combined_group || '');
+
+    if (Number(order.is_archived || 0) === 1 && statusFilter !== 'Archived') {
+      return false;
+    }
+    if (statusFilter === 'Archived' && Number(order.is_archived || 0) !== 1) {
+      return false;
+    }
 
     if (statusFilter === 'Outstanding' && status !== 'Ordered') return false;
     if (statusFilter === 'Overdue') {
