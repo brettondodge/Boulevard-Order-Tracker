@@ -484,12 +484,18 @@ app.post('/api/job-drafts/:id/archive', (req, res) => {
 
   const linkedOrders = getArchivedOrderIdsForDraft(draft.id);
   const hasOutstanding = linkedOrders.some((order) => order.status !== 'Received');
-  const confirmed = req.body.confirm === true || req.body.confirm === 'true';
   const source = normalizeArchiveSource(req.body.source || 'manual');
   const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
-  const warningMessage = hasOutstanding
-    ? 'This job still has outstanding supplier orders or unfinished ordering work. Archive is allowed only after explicit staff confirmation.'
-    : null;
+
+  if (hasOutstanding) {
+    return res.status(409).json({
+      error: 'This job can only be archived after all linked supplier orders have been received.',
+      warning: 'This job still has outstanding supplier orders or unfinished ordering work. Archive is allowed only after all linked supplier orders have been received.',
+      order_ids: linkedOrders.map((order) => order.id),
+      source,
+      reason
+    });
+  }
 
   const archivedIds = markDraftsArchived([draft.id], { source, reason });
   const archivedOrderIds = markOrdersArchived(linkedOrders.map((order) => order.id), { source, reason });
@@ -501,8 +507,7 @@ app.post('/api/job-drafts/:id/archive', (req, res) => {
     archived: archivedIds.length > 0,
     draft_id: draft.id,
     order_ids: archivedOrderIds,
-    warning: warningMessage,
-    requires_confirmation: false,
+    warning: null,
     source,
     reason
   });
@@ -619,6 +624,15 @@ app.post('/api/orders/archive', (req, res) => {
 
   if (!selected.length) {
     return res.status(400).json({ error: 'No valid orders were selected for archiving.' });
+  }
+
+  const statusRows = getDb().prepare('SELECT id, status FROM orders WHERE id IN (' + selected.map(() => '?').join(', ') + ')').all(...selected);
+  const includesUnreceived = statusRows.some((row) => (row.status || 'Ordered') !== 'Received');
+  if (includesUnreceived) {
+    return res.status(409).json({
+      error: 'Only received orders can be archived.',
+      warning: 'Only received orders can be archived. Archive after the supplier order has been marked as received.'
+    });
   }
 
   const archivedIds = markOrdersArchived(selected, { source, reason });

@@ -495,3 +495,183 @@ test('draft queue keeps separate supplier orders out of overdue and delivery cou
 
   child.kill('SIGTERM');
 });
+
+test('job archive is blocked until linked supplier orders are received', async () => {
+  const child = startServer();
+  await delay(1500);
+
+  const customer = `Pending Archive Customer ${Date.now()}`;
+  const draft = await requestJson('http://127.0.0.1:4100/api/job-drafts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: customer,
+      housecall_job_number: `HC-RECEIVE-${Date.now()}`,
+      hcp_job_id: `hcp-receive-${Date.now()}`,
+      notes: 'Waiting for receipt before archiving.',
+      deposit_status: 'Deposit received'
+    })
+  });
+
+  const order = await requestJson('http://127.0.0.1:4100/api/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: customer,
+      housecall_job_number: draft.body.draft.housecall_job_number,
+      job_draft_id: draft.body.draft.id,
+      supplier: 'Northline Glass',
+      category: 'Windows',
+      date_ordered: '2026-10-18',
+      ordered_by: 'Admin User'
+    })
+  });
+
+  assert.equal(draft.status, 201);
+  assert.equal(order.status, 201);
+
+  const blocked = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${draft.body.draft.id}/archive`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirm: true, reason: 'Should fail before receipt', source: 'manual' })
+  });
+
+  assert.equal(blocked.status, 409);
+  assert.match(String(blocked.body.error || blocked.body.warning || ''), /received/i);
+
+  const markReceived = await requestJson(`http://127.0.0.1:4100/api/orders/${order.body.order.id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...order.body.order,
+      status: 'Received',
+      date_received: '2026-10-22',
+      updated_at: order.body.order.updated_at
+    })
+  });
+
+  assert.equal(markReceived.status, 200);
+
+  const archiveResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${draft.body.draft.id}/archive`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirm: true, reason: 'Ready to archive', source: 'manual' })
+  });
+
+  assert.equal(archiveResponse.status, 200);
+  assert.equal(archiveResponse.body.archived, true);
+
+  child.kill('SIGTERM');
+});
+
+test('archive and restore keep linked supplier orders and other jobs separate', async () => {
+  const child = startServer();
+  await delay(1500);
+
+  const sharedCustomer = `Archive Customer ${Date.now()}`;
+
+  const firstDraft = await requestJson('http://127.0.0.1:4100/api/job-drafts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: sharedCustomer,
+      housecall_job_number: `HC-ARCH-1-${Date.now()}`,
+      hcp_job_id: `hcp-arch-1-${Date.now()}`,
+      notes: 'First job kept for archive testing.',
+      deposit_status: 'Deposit received'
+    })
+  });
+
+  const secondDraft = await requestJson('http://127.0.0.1:4100/api/job-drafts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: sharedCustomer,
+      housecall_job_number: `HC-ARCH-2-${Date.now()}`,
+      hcp_job_id: `hcp-arch-2-${Date.now()}`,
+      notes: 'Second job for same customer should remain active.',
+      deposit_status: 'Deposit received'
+    })
+  });
+
+  assert.equal(firstDraft.status, 201);
+  assert.equal(secondDraft.status, 201);
+
+  const firstOrder = await requestJson('http://127.0.0.1:4100/api/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: sharedCustomer,
+      housecall_job_number: firstDraft.body.draft.housecall_job_number,
+      job_draft_id: firstDraft.body.draft.id,
+      supplier: 'Northline Glass',
+      category: 'Windows',
+      date_ordered: '2026-10-18',
+      ordered_by: 'Admin User'
+    })
+  });
+
+  const secondOrder = await requestJson('http://127.0.0.1:4100/api/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: sharedCustomer,
+      housecall_job_number: secondDraft.body.draft.housecall_job_number,
+      job_draft_id: secondDraft.body.draft.id,
+      supplier: 'Bayside Supply',
+      category: 'Flat Glass',
+      date_ordered: '2026-10-19',
+      ordered_by: 'Admin User'
+    })
+  });
+
+  assert.equal(firstOrder.status, 201);
+  assert.equal(secondOrder.status, 201);
+
+  const markReceived = await requestJson(`http://127.0.0.1:4100/api/orders/${firstOrder.body.order.id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...firstOrder.body.order,
+      status: 'Received',
+      date_received: '2026-10-20',
+      updated_at: firstOrder.body.order.updated_at
+    })
+  });
+
+  assert.equal(markReceived.status, 200);
+
+  const archiveResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${firstDraft.body.draft.id}/archive`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: 'Test archive', source: 'manual' })
+  });
+
+  assert.equal(archiveResponse.status, 200);
+  assert.equal(archiveResponse.body.archived, true);
+  assert.equal(archiveResponse.body.order_ids.length, 1);
+
+  const activeOrders = await requestJson('http://127.0.0.1:4100/api/orders?status=Outstanding');
+  const archivedOrders = await requestJson('http://127.0.0.1:4100/api/orders?status=Archived');
+  const activeDrafts = await requestJson('http://127.0.0.1:4100/api/job-drafts');
+
+  assert.equal(activeOrders.status, 200);
+  assert.equal(archivedOrders.status, 200);
+  assert.ok(activeOrders.body.orders.some((order) => order.id === secondOrder.body.order.id));
+  assert.ok(archivedOrders.body.orders.some((order) => order.id === firstOrder.body.order.id));
+  assert.ok(activeDrafts.body.drafts.some((draft) => draft.id === secondDraft.body.draft.id));
+  assert.ok(!activeDrafts.body.drafts.some((draft) => draft.id === firstDraft.body.draft.id));
+
+  const restoreResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${firstDraft.body.draft.id}/restore`, {
+    method: 'POST'
+  });
+
+  assert.equal(restoreResponse.status, 200);
+  assert.equal(restoreResponse.body.restored, true);
+
+  const restoredOrders = await requestJson('http://127.0.0.1:4100/api/orders?status=Archived');
+  assert.equal(restoredOrders.status, 200);
+  assert.ok(!restoredOrders.body.orders.some((order) => order.id === firstOrder.body.order.id));
+
+  child.kill('SIGTERM');
+});

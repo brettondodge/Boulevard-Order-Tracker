@@ -433,6 +433,16 @@ function bindEvents() {
       return;
     }
 
+    if (action === 'archive-order') {
+      await archiveOrder(id);
+      return;
+    }
+
+    if (action === 'restore-order') {
+      await restoreOrder(id);
+      return;
+    }
+
     if (action === 'mark-received') {
       await markReceived(id);
       return;
@@ -458,6 +468,11 @@ function bindEvents() {
 
     if (action === 'edit-draft' && draft) {
       openDraftDialog(draft);
+      return;
+    }
+
+    if (action === 'archive-draft' && draft) {
+      await archiveDraft(id);
       return;
     }
 
@@ -758,6 +773,10 @@ async function loadOrders() {
     params.append('ordered_by', staff);
   }
 
+  if (state.status === 'Archived') {
+    params.set('status', 'Archived');
+  }
+
   const response = await fetch(`/api/orders?${params.toString()}`);
   if (!response.ok) {
     showStatus('Unable to load orders right now.', 'error');
@@ -782,6 +801,10 @@ function renderJobDrafts() {
       const readyToOrder = draft.deposit_status !== 'Awaiting deposit' && draft.status !== 'Completed';
       const depositClass = draft.deposit_status === 'Awaiting deposit' ? 'awaiting' : 'ready';
       const statusLabel = draft.status === 'Completed' ? 'Completed' : 'Open';
+      const linkedOrders = state.orders.filter((order) => order.job_draft_id === draft.id);
+      const archiveSummary = linkedOrders.length
+        ? linkedOrders.map((order) => `${order.supplier || 'Supplier'}${order.po_number ? ` (${order.po_number})` : ''}`).join(', ')
+        : 'No linked supplier orders yet.';
 
       return `
         <article class="draft-card ${draft.status === 'Completed' ? 'completed' : ''}">
@@ -808,6 +831,7 @@ function renderJobDrafts() {
           <div class="action-stack mobile-actions">
             <button type="button" class="action-button" data-action="edit-draft" data-id="${draft.id}">Edit</button>
             <button type="button" class="action-button ${readyToOrder ? 'primary' : ''}" data-action="create-order" data-id="${draft.id}" ${readyToOrder ? '' : 'disabled'}>Create supplier order</button>
+            <button type="button" class="action-button danger" data-action="archive-draft" data-id="${draft.id}" title="Archive this job and its linked supplier orders: ${escapeAttr(archiveSummary)}">Archive job</button>
             ${draft.status === 'Completed'
               ? `<button type="button" class="action-button" data-action="reopen-draft" data-id="${draft.id}">Reopen</button>`
               : `<button type="button" class="action-button danger" data-action="complete-draft" data-id="${draft.id}">All materials ordered</button>`}
@@ -844,9 +868,13 @@ function renderOrders() {
       const notes = escapeHtml(order.notes || '');
       const category = order.category || 'Unassigned';
       const orderedBy = order.ordered_by || '—';
-      const actionButtons = status === 'Received'
-        ? `<button type="button" class="action-button danger" data-action="reopen" data-id="${order.id}">Reopen</button>`
-        : `<button type="button" class="action-button primary" data-action="mark-received" data-id="${order.id}">Mark received</button>`;
+      const archived = Number(order.is_archived || 0) === 1;
+      const actionButtons = archived
+        ? `<button type="button" class="action-button primary" data-action="restore-order" data-id="${order.id}">Restore</button>`
+        : `${status === 'Received'
+          ? `<button type="button" class="action-button danger" data-action="reopen" data-id="${order.id}">Reopen</button>`
+          : `<button type="button" class="action-button primary" data-action="mark-received" data-id="${order.id}">Mark received</button>`}
+          <button type="button" class="action-button danger" data-action="archive-order" data-id="${order.id}">Archive</button>`;
 
       return {
         row: `
@@ -927,9 +955,13 @@ function renderOrders() {
       const notes = escapeHtml(order.notes || '');
       const category = order.category || 'Unassigned';
       const orderedBy = order.ordered_by || '—';
-      const actionButtons = status === 'Received'
-        ? `<button type="button" class="action-button danger" data-action="reopen" data-id="${order.id}">Reopen</button>`
-        : `<button type="button" class="action-button primary" data-action="mark-received" data-id="${order.id}">Mark received</button>`;
+      const archived = Number(order.is_archived || 0) === 1;
+      const actionButtons = archived
+        ? `<button type="button" class="action-button primary" data-action="restore-order" data-id="${order.id}">Restore</button>`
+        : `${status === 'Received'
+          ? `<button type="button" class="action-button danger" data-action="reopen" data-id="${order.id}">Reopen</button>`
+          : `<button type="button" class="action-button primary" data-action="mark-received" data-id="${order.id}">Mark received</button>`}
+          <button type="button" class="action-button danger" data-action="archive-order" data-id="${order.id}">Archive</button>`;
 
       return `
         <article class="order-card ${rowClass}">
@@ -970,6 +1002,92 @@ function renderOrders() {
   updateLayoutMode();
   if (mobile && state.status !== 'Approved – Need to Order') {
     elements.mobileOrderCards.classList.remove('hidden');
+  }
+}
+
+async function archiveDraft(draftId) {
+  const draft = state.jobDrafts.find((entry) => entry.id === draftId);
+  if (!draft) return;
+
+  const linkedOrders = state.orders.filter((order) => order.job_draft_id === draftId);
+  const hasOutstanding = linkedOrders.some((order) => (order.status || 'Ordered') !== 'Received');
+  if (hasOutstanding) {
+    showStatus('This job can only be archived after all linked supplier orders have been received.', 'error');
+    return;
+  }
+
+  const summary = linkedOrders.length
+    ? linkedOrders.map((order) => `${order.supplier || 'Supplier'}${order.po_number ? ` (${order.po_number})` : ''}`).join(', ')
+    : 'No linked supplier orders have been created yet.';
+
+  if (!window.confirm(`Archive this job and the linked supplier orders below?\n\n${summary}`)) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/job-drafts/${draftId}/archive`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true, source: 'manual', reason: 'Manual archive from tracker' })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.warning || data.error || 'Unable to archive the job.');
+    }
+    showStatus('Job archived.', 'success');
+    await loadJobDrafts();
+    await loadOrders();
+  } catch (error) {
+    showStatus(error.message, 'error');
+  }
+}
+
+async function archiveOrder(orderId) {
+  const order = state.orders.find((entry) => entry.id === orderId);
+  if (!order) return;
+
+  if ((order.status || 'Ordered') !== 'Received') {
+    showStatus('Only received orders can be archived.', 'error');
+    return;
+  }
+
+  const confirmText = `Archive this order for ${order.customer_name} from ${order.supplier || 'supplier'}?`;
+  if (!window.confirm(confirmText)) {
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/orders/archive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        order_ids: [orderId],
+        source: 'manual',
+        reason: 'Manual archive from tracker'
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Unable to archive the order.');
+    }
+    showStatus('Order archived.', 'success');
+    await loadOrders();
+  } catch (error) {
+    showStatus(error.message, 'error');
+  }
+}
+
+async function restoreOrder(orderId) {
+  try {
+    const response = await fetch(`/api/orders/${orderId}/restore`, { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Unable to restore the order.');
+    }
+    showStatus('Order restored.', 'success');
+    await loadOrders();
+  } catch (error) {
+    showStatus(error.message, 'error');
   }
 }
 
