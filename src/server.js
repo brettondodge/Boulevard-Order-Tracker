@@ -32,6 +32,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, '../public');
 const app = express();
 const port = Number(process.env.APP_PORT || process.env.PORT || 3000);
+const liveClients = new Set();
+
+function broadcastLiveEvent(type, payload = {}) {
+  const envelope = JSON.stringify({
+    type,
+    timestamp: isoNow(),
+    ...payload
+  });
+
+  for (const client of [...liveClients]) {
+    try {
+      client.write(`event: ${type}\ndata: ${envelope}\n\n`);
+    } catch (error) {
+      liveClients.delete(client);
+    }
+  }
+}
 
 initializeDatabase();
 
@@ -188,6 +205,31 @@ app.get('/api/master-lists', (req, res) => {
   });
 });
 
+app.get('/api/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  liveClients.add(res);
+  res.write(`event: connected\ndata: ${JSON.stringify({ type: 'connected', timestamp: isoNow() })}\n\n`);
+
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(`event: heartbeat\ndata: ${JSON.stringify({ type: 'heartbeat', timestamp: isoNow() })}\n\n`);
+    } catch (error) {
+      clearInterval(heartbeat);
+      liveClients.delete(res);
+    }
+  }, 25000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    liveClients.delete(res);
+  });
+});
+
 app.get('/api/admin/me', (req, res) => {
   if (!req.session.admin || req.session.admin.username !== currentAdminUsername()) {
     return res.status(401).json({ error: 'Not authenticated as admin.' });
@@ -235,6 +277,8 @@ app.post('/api/master-lists/suppliers', requireAdminAuth, (req, res) => {
     .filter(Boolean)
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
+  broadcastLiveEvent('master-lists', { collection: 'suppliers', action: 'updated', count: saved.length, time: isoNow() });
+
   return res.json({ suppliers: saved.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })) });
 });
 
@@ -248,6 +292,8 @@ app.post('/api/master-lists/ordered-by', requireAdminAuth, (req, res) => {
     }))
     .filter(Boolean)
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+  broadcastLiveEvent('master-lists', { collection: 'ordered_by', action: 'updated', count: saved.length, time: isoNow() });
 
   return res.json({ staff_names: saved.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })) });
 });
@@ -359,6 +405,12 @@ app.post('/api/orders', (req, res) => {
       return res.status(400).json({ error: 'Category is required.' });
     }
 
+    if (!orderData.ordered_by) {
+      return res.status(400).json({ error: 'Ordered by is required.' });
+    }
+    if (!orderData.ordered_by) {
+      return res.status(400).json({ error: 'Ordered by is required.' });
+    }
     const supplierRecord = ensureSupplierExists(orderData.supplier);
     if (!supplierRecord) {
       return res.status(400).json({ error: 'Supplier is required.' });
@@ -408,6 +460,7 @@ app.post('/api/orders', (req, res) => {
     );
 
     const created = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+    broadcastLiveEvent('orders', { action: 'created', orderId, updatedAt: created.updated_at, time: isoNow() });
     return res.status(201).json({
       order: {
         ...created,
@@ -446,6 +499,10 @@ app.put('/api/orders/:id', (req, res) => {
 
     if (!orderData.category) {
       return res.status(400).json({ error: 'Category is required.' });
+    }
+
+    if (!orderData.ordered_by) {
+      return res.status(400).json({ error: 'Ordered by is required.' });
     }
 
     const supplierRecord = ensureSupplierExists(orderData.supplier);
@@ -507,6 +564,7 @@ app.put('/api/orders/:id', (req, res) => {
     );
 
     const updated = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+    broadcastLiveEvent('orders', { action: 'updated', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
     return res.json({
       order: {
         ...updated,
@@ -527,6 +585,13 @@ app.post('/api/orders/:id/mark-received', (req, res) => {
     return res.status(404).json({ error: 'Order not found.' });
   }
 
+  const incomingVersion = (req.body.updated_at || req.body.version || '').toString();
+  if (incomingVersion && incomingVersion !== existing.updated_at) {
+    return res.status(409).json({
+      error: 'This order changed elsewhere. Your draft was kept. Review the latest version and try again.'
+    });
+  }
+
   const receivedDate = normalizeText(req.body.date_received) || todayPhoenixString();
   const now = isoNow();
   getDb().prepare(
@@ -534,6 +599,7 @@ app.post('/api/orders/:id/mark-received', (req, res) => {
   ).run(receivedDate, 'Received', now, 'office-user', req.params.id);
 
   const updated = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+  broadcastLiveEvent('orders', { action: 'received', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
   return res.json({ order: { ...updated, status: statusFromOrder(updated) } });
 });
 
@@ -543,12 +609,20 @@ app.post('/api/orders/:id/reopen', (req, res) => {
     return res.status(404).json({ error: 'Order not found.' });
   }
 
+  const incomingVersion = (req.body.updated_at || req.body.version || '').toString();
+  if (incomingVersion && incomingVersion !== existing.updated_at) {
+    return res.status(409).json({
+      error: 'This order changed elsewhere. Your draft was kept. Review the latest version and try again.'
+    });
+  }
+
   const now = isoNow();
   getDb().prepare(
     'UPDATE orders SET date_received = NULL, status = ?, updated_at = ?, updated_by = ? WHERE id = ?'
   ).run('Ordered', now, 'office-user', req.params.id);
 
   const updated = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+  broadcastLiveEvent('orders', { action: 'reopened', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
   return res.json({ order: { ...updated, status: statusFromOrder(updated) } });
 });
 

@@ -97,6 +97,27 @@ test('orders remain publicly searchable without a staff login', async () => {
   assert.ok(Array.isArray(response.body.orders));
 });
 
+test('ordered-by is required when creating an order', async () => {
+  const child = startServer();
+  await delay(1500);
+
+  const response = await requestJson('http://127.0.0.1:4100/api/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: 'Missing Ordered By',
+      supplier: 'Northline Glass',
+      category: 'Windows',
+      date_ordered: '2026-10-12'
+    })
+  });
+
+  child.kill('SIGTERM');
+
+  assert.equal(response.status, 400);
+  assert.match(String(response.body.error || ''), /ordered by/i);
+});
+
 test('admin master-list editing is protected and ordered-by data persists', async () => {
   const child = startServer();
   await delay(1500);
@@ -198,7 +219,8 @@ test('category and group filters work with supplier selection', async () => {
       customer_name: 'Category Test',
       supplier: 'Oldcastle',
       category: 'Windows',
-      date_ordered: '2026-10-09'
+      date_ordered: '2026-10-09',
+      ordered_by: 'Admin User'
     }),
     cookieJar
   });
@@ -210,7 +232,8 @@ test('category and group filters work with supplier selection', async () => {
       customer_name: 'Category Test 2',
       supplier: 'Oldcastle',
       category: 'Flat Glass',
-      date_ordered: '2026-10-10'
+      date_ordered: '2026-10-10',
+      ordered_by: 'Admin User'
     }),
     cookieJar
   });
@@ -222,7 +245,8 @@ test('category and group filters work with supplier selection', async () => {
       customer_name: 'Category Test 3',
       supplier: 'Oldcastle',
       category: 'Showers',
-      date_ordered: '2026-10-11'
+      date_ordered: '2026-10-11',
+      ordered_by: 'Admin User'
     }),
     cookieJar
   });

@@ -11,7 +11,13 @@ const state = {
   staffNames: [],
   masterSuppliers: [],
   masterStaffNames: [],
-  adminLoggedIn: false
+  adminLoggedIn: false,
+  connectionState: 'live',
+  requestCounter: 0,
+  orderRequestCounter: 0,
+  masterRequestCounter: 0,
+  supplierRequestCounter: 0,
+  eventSource: null
 };
 
 const elements = {
@@ -32,6 +38,8 @@ const elements = {
   tableBody: document.getElementById('ordersTableBody'),
   emptyState: document.getElementById('emptyState'),
   statusMessage: document.getElementById('statusMessage'),
+  liveStatus: document.getElementById('liveStatus'),
+  saveStatus: document.getElementById('saveStatus'),
   dialog: document.getElementById('orderDialog'),
   form: document.getElementById('orderForm'),
   formError: document.getElementById('formError'),
@@ -59,6 +67,7 @@ const elements = {
 
 document.addEventListener('DOMContentLoaded', async () => {
   bindEvents();
+  setupLiveUpdates();
 
   try {
     await refreshAdminState();
@@ -67,6 +76,94 @@ document.addEventListener('DOMContentLoaded', async () => {
     showStatus('Unable to load the tracker. Please refresh the page.', 'error');
   }
 });
+
+function setConnectionState(stateName, message = '') {
+  state.connectionState = stateName;
+  if (!elements.liveStatus) return;
+
+  const map = {
+    live: { label: message || 'Live', className: 'live' },
+    reconnecting: { label: message || 'Reconnecting…', className: 'reconnecting' },
+    offline: { label: message || 'Offline', className: 'offline' }
+  };
+
+  const next = map[stateName] || map.live;
+  elements.liveStatus.textContent = next.label;
+  elements.liveStatus.className = `connection-indicator ${next.className}`;
+}
+
+function setSaveState(mode, message = '') {
+  const indicator = elements.saveStatus;
+  if (!indicator) return;
+
+  const map = {
+    saving: { label: message || 'Saving…', className: 'saving' },
+    saved: { label: message || 'Saved', className: 'saved' },
+    failed: { label: message || 'Save failed', className: 'failed' }
+  };
+
+  const next = map[mode] || map.saved;
+  indicator.textContent = next.label;
+  indicator.className = `save-status ${next.className}`;
+}
+
+function setupLiveUpdates() {
+  const reestablishConnection = () => {
+    if (state.eventSource) {
+      state.eventSource.close();
+    }
+
+    setConnectionState('reconnecting', 'Reconnecting…');
+    state.eventSource = new EventSource('/api/events');
+
+    state.eventSource.addEventListener('connected', () => {
+      setConnectionState('live', 'Live');
+      refreshAllData('live-sync');
+    });
+
+    state.eventSource.addEventListener('heartbeat', () => {
+      setConnectionState('live', 'Live');
+    });
+
+    state.eventSource.addEventListener('orders', () => {
+      refreshAllData('live-update');
+    });
+
+    state.eventSource.addEventListener('master-lists', () => {
+      refreshAllData('master-lists');
+    });
+
+    state.eventSource.onerror = () => {
+      setConnectionState('reconnecting', 'Reconnecting…');
+    };
+  };
+
+  reestablishConnection();
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      refreshAllData('visibility');
+    }
+  });
+
+  window.addEventListener('online', () => {
+    setConnectionState('live', 'Live');
+    refreshAllData('online');
+  });
+
+  window.addEventListener('offline', () => {
+    setConnectionState('offline', 'Offline');
+  });
+}
+
+function refreshAllData(reason = 'manual') {
+  if (reason === 'live-update' || reason === 'master-lists') {
+    Promise.all([loadSuppliers(), loadMasterLists(), loadOrders()]);
+    return;
+  }
+
+  Promise.all([loadSuppliers(), loadMasterLists(), loadOrders()]);
+}
 
 function bindEvents() {
   elements.searchInput.addEventListener('input', (event) => {
@@ -336,8 +433,13 @@ async function logoutAsAdmin() {
 }
 
 async function loadSuppliers() {
+  const requestId = ++state.supplierRequestCounter;
   const response = await fetch('/api/suppliers');
+  if (!response.ok) return;
+
   const data = await response.json();
+  if (requestId !== state.supplierRequestCounter) return;
+
   state.suppliers = Array.isArray(data.suppliers) ? data.suppliers : [];
   renderSupplierFilterOptions();
 
@@ -348,8 +450,13 @@ async function loadSuppliers() {
 }
 
 async function loadMasterLists() {
+  const requestId = ++state.masterRequestCounter;
   const response = await fetch('/api/master-lists');
+  if (!response.ok) return;
+
   const data = await response.json();
+  if (requestId !== state.masterRequestCounter) return;
+
   state.masterSuppliers = (data.suppliers || []).map((item) => ({
     id: item.id || '',
     name: item.name || '',
@@ -370,6 +477,7 @@ async function loadMasterLists() {
   state.staffNames = uniqueStaff;
   state.suppliers = state.masterSuppliers.filter((item) => item.active !== false).map((item) => item.name);
   renderSupplierFilterOptions();
+  renderOrderedByOptions();
   renderOrderedByFilterOptions();
   renderMasterListsEditor();
 }
@@ -390,10 +498,19 @@ function renderSupplierSelection() {
 }
 
 function renderOrderedByOptions() {
-  const activeNames = state.masterStaffNames.filter((item) => item.active !== false && item.name.trim());
-  elements.orderedBySelect.innerHTML = '<option value="">Unknown</option>' + activeNames
-    .map((person) => `<option value="${escapeHtml(person.id)}">${escapeHtml(person.name)}</option>`)
+  const optionNames = [...new Set([
+    ...state.masterStaffNames.filter((item) => item.active !== false && item.name.trim()).map((item) => item.name),
+    ...state.staffNames.filter(Boolean)
+  ])].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+  elements.orderedBySelect.innerHTML = '<option value="">Select staff name</option>' + optionNames
+    .map((person) => `<option value="${escapeHtml(person)}">${escapeHtml(person)}</option>`)
     .join('');
+
+  const selectedValue = elements.orderedBySelect.value;
+  if (selectedValue) {
+    elements.orderedBySelect.value = selectedValue;
+  }
 }
 
 function renderOrderedByFilterOptions() {
@@ -472,6 +589,7 @@ async function saveMasterLists() {
 }
 
 async function loadOrders() {
+  const requestId = ++state.orderRequestCounter;
   const params = new URLSearchParams({
     status: state.status,
     view: state.groupView,
@@ -495,6 +613,8 @@ async function loadOrders() {
   }
 
   const data = await response.json();
+  if (requestId !== state.orderRequestCounter) return;
+
   state.orders = data.orders || [];
   renderOrders();
 }
@@ -581,7 +701,8 @@ function openOrderDialog(order = null) {
   document.getElementById('housecallJobLink').value = order.housecall_job_link || '';
   document.getElementById('supplierInput').value = order.supplier || '';
   const orderedByMatch = state.masterStaffNames.find((person) => person.id === order.ordered_by_id || person.name === order.ordered_by);
-  elements.orderedBySelect.value = orderedByMatch ? orderedByMatch.id : (order.ordered_by_id || '');
+  const orderedByValue = orderedByMatch ? (orderedByMatch.id || orderedByMatch.name) : (order.ordered_by_id || order.ordered_by || '');
+  elements.orderedBySelect.value = orderedByValue;
   document.getElementById('poNumber').value = order.po_number || '';
   document.getElementById('dateOrdered').value = order.date_ordered || today;
   document.getElementById('expectedDeliveryDate').value = order.expected_delivery_date || '';
@@ -597,15 +718,22 @@ function closeDialog() {
 }
 
 function readSelectedOrderedBy() {
-  const selectedId = elements.orderedBySelect.value;
-  if (!selectedId) {
+  const selectedValue = elements.orderedBySelect.value;
+  if (!selectedValue) {
     return { id: '', name: '' };
   }
 
-  const person = state.masterStaffNames.find((entry) => entry.id === selectedId);
+  const person = state.masterStaffNames.find((entry) => entry.id === selectedValue || entry.name === selectedValue);
+  if (person) {
+    return {
+      id: person.id || '',
+      name: person.name || ''
+    };
+  }
+
   return {
-    id: person ? person.id : '',
-    name: person ? person.name : ''
+    id: '',
+    name: selectedValue
   };
 }
 
@@ -635,6 +763,11 @@ async function saveOrder() {
 
   if (!payload.category) {
     elements.formError.textContent = 'Category is required.';
+    return;
+  }
+
+  if (!payload.ordered_by) {
+    elements.formError.textContent = 'Ordered by is required.';
     return;
   }
 
