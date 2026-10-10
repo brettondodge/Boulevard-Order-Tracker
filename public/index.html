@@ -15,8 +15,9 @@
       <div class="topbar-actions">
         <span class="preview-pill">Preview data • fictional sample orders</span>
         <div class="user-chip">
-          <span id="currentUser">Loading…</span>
-          <button id="logoutButton" type="button" class="secondary-button">Log out</button>
+          <span id="currentUser">Office staff</span>
+          <button id="masterListsButton" type="button" class="secondary-button">Master Lists</button>
+          <button id="logoutButton" type="button" class="secondary-button hidden">Log out</button>
         </div>
       </div>
     </header>
@@ -53,7 +54,11 @@
           </label>
 
           <label class="supplier-filter-wrap">
-            Supplier
+            <span class="filter-label-row">
+              <span>Supplier</span>
+              <button id="clearSupplierButton" type="button" class="text-button">Clear suppliers</button>
+            </span>
+            <p id="supplierSelectionSummary" class="filter-summary">All Suppliers</p>
             <select id="supplierFilter" multiple size="4"></select>
           </label>
 
@@ -84,6 +89,7 @@
               <th>Category</th>
               <th>Job #</th>
               <th>Supplier</th>
+              <th>Ordered by</th>
               <th>PO / order #</th>
               <th>Ordered</th>
               <th>ETA</th>
@@ -147,6 +153,13 @@
           </label>
 
           <label>
+            Ordered by
+            <select id="orderedBySelect" name="ordered_by">
+              <option value="">Unknown</option>
+            </select>
+          </label>
+
+          <label>
             PO / order number
             <input id="poNumber" name="po_number" type="text" />
           </label>
@@ -177,6 +190,52 @@
         <div class="dialog-actions">
           <button type="button" id="cancelOrderButton" class="secondary-button">Cancel</button>
           <button type="submit" class="primary-button">Save order</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="masterListsDialog">
+      <form id="masterListsForm" method="dialog">
+        <div class="dialog-header">
+          <h2>Master Lists</h2>
+          <button type="button" id="closeMasterListsButton" class="close-button" aria-label="Close">×</button>
+        </div>
+
+        <div id="adminLoginSection" class="master-list-auth">
+          <label>
+            Admin username
+            <input id="adminUsernameInput" type="text" autocomplete="username" />
+          </label>
+          <label>
+            Admin password
+            <input id="adminPasswordInput" type="password" autocomplete="current-password" />
+          </label>
+          <div class="dialog-actions compact-actions">
+            <button type="button" id="adminLoginButton" class="primary-button">Sign in</button>
+          </div>
+        </div>
+
+        <div id="masterListsSection" class="hidden">
+          <div class="master-list-section">
+            <div class="section-header-row">
+              <h3>Suppliers</h3>
+              <button type="button" id="addSupplierEntry" class="secondary-button">Add supplier</button>
+            </div>
+            <div id="supplierMasterList" class="master-list-editor"></div>
+          </div>
+
+          <div class="master-list-section">
+            <div class="section-header-row">
+              <h3>Ordered By staff</h3>
+              <button type="button" id="addStaffEntry" class="secondary-button">Add staff</button>
+            </div>
+            <div id="orderedByMasterList" class="master-list-editor"></div>
+          </div>
+
+          <div class="dialog-actions">
+            <button type="button" id="adminLogoutButton" class="secondary-button">Sign out</button>
+            <button type="button" id="saveMasterListsButton" class="primary-button">Save lists</button>
+          </div>
         </div>
       </form>
     </dialog>

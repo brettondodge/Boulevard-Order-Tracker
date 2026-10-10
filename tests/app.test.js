@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import bcrypt from 'bcryptjs';
 
 const root = process.cwd();
 
@@ -84,7 +85,7 @@ test('server starts and exposes login page', async () => {
   assert.match(response.text, /Boulevard Glass Order Tracker/i);
 });
 
-test('authenticated API requires login for orders', async () => {
+test('orders remain publicly searchable without a staff login', async () => {
   const child = startServer();
   await delay(1500);
 
@@ -92,7 +93,87 @@ test('authenticated API requires login for orders', async () => {
 
   child.kill('SIGTERM');
 
-  assert.equal(response.status, 401);
+  assert.equal(response.status, 200);
+  assert.ok(Array.isArray(response.body.orders));
+});
+
+test('admin master-list editing is protected and ordered-by data persists', async () => {
+  const child = startServer();
+  await delay(1500);
+
+  const cookieJar = createCookieJar();
+  const publicListCheck = await requestJson('http://127.0.0.1:4100/api/master-lists');
+  assert.equal(publicListCheck.status, 200);
+
+  const blockedSupplierUpdate = await requestJson('http://127.0.0.1:4100/api/master-lists/suppliers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items: [{ name: 'Widget Glass', active: true }] })
+  });
+  assert.equal(blockedSupplierUpdate.status, 401);
+
+  const login = await requestJson('http://127.0.0.1:4100/api/admin/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'admin123' }),
+    cookieJar
+  });
+
+  assert.equal(login.status, 200);
+
+  const saveStaff = await requestJson('http://127.0.0.1:4100/api/master-lists/ordered-by', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      items: [
+        { id: '', name: 'Alice Johnson', active: true },
+        { id: '', name: 'Brian Lee', active: true }
+      ]
+    }),
+    cookieJar
+  });
+
+  assert.equal(saveStaff.status, 200);
+  const staffAlice = saveStaff.body.staff_names.find((person) => person.name === 'Alice Johnson');
+  assert.ok(staffAlice);
+
+  const saveSupplier = await requestJson('http://127.0.0.1:4100/api/master-lists/suppliers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      items: [
+        { id: '', name: 'Northline Glass', active: true },
+        { id: '', name: 'Bayside Supply', active: true }
+      ]
+    }),
+    cookieJar
+  });
+
+  assert.equal(saveSupplier.status, 200);
+  assert.ok(saveSupplier.body.suppliers.some((supplier) => supplier.name === 'Northline Glass'));
+
+  const createdOrder = await requestJson('http://127.0.0.1:4100/api/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: 'Master List Test',
+      supplier: 'Northline Glass',
+      category: 'Windows',
+      date_ordered: '2026-10-12',
+      ordered_by: 'Alice Johnson',
+      ordered_by_id: staffAlice.id
+    }),
+    cookieJar
+  });
+
+  assert.equal(createdOrder.status, 201);
+  assert.equal(createdOrder.body.order.ordered_by, 'Alice Johnson');
+
+  const reloaded = await requestJson('http://127.0.0.1:4100/api/orders?search=Master%20List%20Test');
+  child.kill('SIGTERM');
+
+  assert.equal(reloaded.status, 200);
+  assert.ok(reloaded.body.orders.some((order) => order.ordered_by === 'Alice Johnson'));
 });
 
 test('category and group filters work with supplier selection', async () => {
@@ -101,7 +182,7 @@ test('category and group filters work with supplier selection', async () => {
 
   const cookieJar = createCookieJar();
 
-  const login = await requestJson('http://127.0.0.1:4100/api/login', {
+  const login = await requestJson('http://127.0.0.1:4100/api/admin/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username: 'admin', password: 'admin123' }),

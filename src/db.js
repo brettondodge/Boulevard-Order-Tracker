@@ -24,7 +24,17 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS suppliers (
     id TEXT PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
-    created_at TEXT NOT NULL
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS staff_names (
+    id TEXT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
   CREATE TABLE IF NOT EXISTS orders (
@@ -33,12 +43,15 @@ db.exec(`
     housecall_job_number TEXT,
     housecall_job_link TEXT,
     supplier TEXT NOT NULL,
+    supplier_id TEXT,
     category TEXT,
     combined_group TEXT,
     po_number TEXT,
     date_ordered TEXT NOT NULL,
     expected_delivery_date TEXT,
     date_received TEXT,
+    ordered_by TEXT,
+    ordered_by_id TEXT,
     status TEXT NOT NULL DEFAULT 'Ordered',
     notes TEXT,
     created_at TEXT NOT NULL,
@@ -59,6 +72,44 @@ if (Number(hasCombinedGroupColumn.count) === 0) {
   db.exec('ALTER TABLE orders ADD COLUMN combined_group TEXT;');
 }
 
+const hasSupplierIdColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'supplier_id'").get();
+if (Number(hasSupplierIdColumn.count) === 0) {
+  db.exec('ALTER TABLE orders ADD COLUMN supplier_id TEXT;');
+}
+
+const hasOrderedByColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'ordered_by'").get();
+if (Number(hasOrderedByColumn.count) === 0) {
+  db.exec('ALTER TABLE orders ADD COLUMN ordered_by TEXT;');
+}
+
+const hasOrderedByIdColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'ordered_by_id'").get();
+if (Number(hasOrderedByIdColumn.count) === 0) {
+  db.exec('ALTER TABLE orders ADD COLUMN ordered_by_id TEXT;');
+}
+
+const hasSupplierActiveColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('suppliers') WHERE name = 'active'").get();
+if (Number(hasSupplierActiveColumn.count) === 0) {
+  db.exec('ALTER TABLE suppliers ADD COLUMN active INTEGER NOT NULL DEFAULT 1;');
+}
+
+const hasSupplierUpdatedAtColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('suppliers') WHERE name = 'updated_at'").get();
+if (Number(hasSupplierUpdatedAtColumn.count) === 0) {
+  db.exec('ALTER TABLE suppliers ADD COLUMN updated_at TEXT;');
+}
+
+const hasStaffTable = db.prepare("SELECT COUNT(*) as count FROM sqlite_master WHERE type = 'table' AND name = 'staff_names'").get();
+if (Number(hasStaffTable.count) === 0) {
+  db.exec(`
+    CREATE TABLE staff_names (
+      id TEXT PRIMARY KEY,
+      name TEXT UNIQUE NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+}
+
 export function getDb() {
   return db;
 }
@@ -70,21 +121,25 @@ export function ensureSupplierExists(name) {
   }
 
   const existing = db
-    .prepare('SELECT id, name FROM suppliers WHERE lower(name) = lower(?)')
+    .prepare('SELECT id, name, active FROM suppliers WHERE lower(name) = lower(?)')
     .get(trimmed);
 
   if (existing) {
-    return existing.name;
+    if (Number(existing.active) === 0) {
+      db.prepare('UPDATE suppliers SET active = 1, updated_at = ? WHERE id = ?').run(isoNow(), existing.id);
+    }
+    return { id: existing.id, name: existing.name };
   }
 
   const id = cryptoRandomId('supplier');
-  db.prepare('INSERT INTO suppliers (id, name, created_at) VALUES (?, ?, ?)').run(
+  db.prepare('INSERT INTO suppliers (id, name, active, created_at, updated_at) VALUES (?, ?, 1, ?, ?)').run(
     id,
     trimmed,
+    isoNow(),
     isoNow()
   );
 
-  return trimmed;
+  return { id, name: trimmed };
 }
 
 export function seedUsers() {
@@ -104,6 +159,90 @@ export function seedUsers() {
       'INSERT INTO users (id, username, password_hash, full_name, created_at) VALUES (?, ?, ?, ?, ?)'
     ).run(cryptoRandomId('user'), user.username, hash, user.full_name, isoNow());
   }
+}
+
+export function getActiveSuppliers() {
+  return db
+    .prepare('SELECT * FROM suppliers WHERE active = 1 ORDER BY name COLLATE NOCASE ASC')
+    .all();
+}
+
+export function getAllSuppliers() {
+  return db
+    .prepare('SELECT * FROM suppliers ORDER BY name COLLATE NOCASE ASC')
+    .all();
+}
+
+export function getActiveStaffNames() {
+  return db
+    .prepare('SELECT * FROM staff_names WHERE active = 1 ORDER BY name COLLATE NOCASE ASC')
+    .all();
+}
+
+export function getAllStaffNames() {
+  return db
+    .prepare('SELECT * FROM staff_names ORDER BY name COLLATE NOCASE ASC')
+    .all();
+}
+
+export function upsertSupplierMasterRow(record) {
+  const trimmedName = (record.name || '').trim();
+  if (!trimmedName) return null;
+
+  const now = isoNow();
+  const existing = record.id
+    ? db.prepare('SELECT * FROM suppliers WHERE id = ?').get(record.id)
+    : db.prepare('SELECT * FROM suppliers WHERE lower(name) = lower(?)').get(trimmedName);
+
+  if (existing) {
+    db.prepare('UPDATE suppliers SET name = ?, active = ?, updated_at = ? WHERE id = ?').run(
+      trimmedName,
+      record.active === false ? 0 : 1,
+      now,
+      existing.id
+    );
+    return db.prepare('SELECT * FROM suppliers WHERE id = ?').get(existing.id);
+  }
+
+  const id = record.id || cryptoRandomId('supplier');
+  db.prepare('INSERT INTO suppliers (id, name, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
+    id,
+    trimmedName,
+    record.active === false ? 0 : 1,
+    now,
+    now
+  );
+  return db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id);
+}
+
+export function upsertStaffMasterRow(record) {
+  const trimmedName = (record.name || '').trim();
+  if (!trimmedName) return null;
+
+  const now = isoNow();
+  const existing = record.id
+    ? db.prepare('SELECT * FROM staff_names WHERE id = ?').get(record.id)
+    : db.prepare('SELECT * FROM staff_names WHERE lower(name) = lower(?)').get(trimmedName);
+
+  if (existing) {
+    db.prepare('UPDATE staff_names SET name = ?, active = ?, updated_at = ? WHERE id = ?').run(
+      trimmedName,
+      record.active === false ? 0 : 1,
+      now,
+      existing.id
+    );
+    return db.prepare('SELECT * FROM staff_names WHERE id = ?').get(existing.id);
+  }
+
+  const id = record.id || cryptoRandomId('staff');
+  db.prepare('INSERT INTO staff_names (id, name, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
+    id,
+    trimmedName,
+    record.active === false ? 0 : 1,
+    now,
+    now
+  );
+  return db.prepare('SELECT * FROM staff_names WHERE id = ?').get(id);
 }
 
 export function sanitizeSupplierName(value) {

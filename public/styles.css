@@ -109,7 +109,8 @@ input:focus, select:focus, textarea:focus {
 .primary-button,
 .secondary-button,
 .tab-button,
-.action-button {
+.action-button,
+.text-button {
   border: none;
   border-radius: 8px;
   padding: 0.7rem 1rem;
@@ -129,6 +130,13 @@ input:focus, select:focus, textarea:focus {
   background: var(--panel-alt);
   color: var(--text);
   border: 1px solid var(--border);
+}
+
+.text-button {
+  background: transparent;
+  color: var(--primary);
+  padding: 0.2rem 0.35rem;
+  border: none;
 }
 
 .topbar {
@@ -193,6 +201,20 @@ input:focus, select:focus, textarea:focus {
 .search-field {
   min-width: min(100%, 420px);
   flex: 1 1 360px;
+}
+
+.filter-label-row,
+.section-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.filter-summary {
+  margin: 0.3rem 0 0;
+  font-size: 0.82rem;
+  color: var(--muted);
 }
 
 .view-tabs {
@@ -351,7 +373,8 @@ button:disabled {
   border: 0;
 }
 
-#orderDialog {
+#orderDialog,
+#masterListsDialog {
   border: none;
   border-radius: 18px;
   padding: 0;
@@ -359,11 +382,13 @@ button:disabled {
   box-shadow: var(--shadow);
 }
 
-#orderDialog::backdrop {
+#orderDialog::backdrop,
+#masterListsDialog::backdrop {
   background: rgba(15, 23, 42, 0.5);
 }
 
-#orderForm {
+#orderForm,
+#masterListsForm {
   padding: 1.2rem 1.25rem 1.4rem;
 }
 
@@ -408,6 +433,49 @@ button:disabled {
   color: var(--danger);
   font-weight: 600;
   margin-top: 0.75rem;
+}
+
+.master-list-auth,
+.master-list-section {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.master-list-editor {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.master-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.master-list-row.inactive {
+  opacity: 0.6;
+}
+
+.checkbox-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+}
+
+.small-button {
+  padding: 0.5rem 0.7rem;
+  font-size: 0.8rem;
+}
+
+.compact-actions {
+  justify-content: flex-end;
 }
 
 .demo-account-box {

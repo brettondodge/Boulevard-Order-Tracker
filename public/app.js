@@ -6,7 +6,11 @@ const state = {
   search: '',
   sort: 'expected_delivery_date',
   orders: [],
-  suppliers: []
+  suppliers: [],
+  staffNames: [],
+  masterSuppliers: [],
+  masterStaffNames: [],
+  adminLoggedIn: false
 };
 
 const elements = {
@@ -15,8 +19,11 @@ const elements = {
   groupFilter: document.getElementById('groupFilter'),
   categoryFilter: document.getElementById('categoryFilter'),
   supplierFilter: document.getElementById('supplierFilter'),
+  clearSupplierButton: document.getElementById('clearSupplierButton'),
+  supplierSelectionSummary: document.getElementById('supplierSelectionSummary'),
   sortSelect: document.getElementById('sortSelect'),
   addOrderButton: document.getElementById('addOrderButton'),
+  masterListsButton: document.getElementById('masterListsButton'),
   logoutButton: document.getElementById('logoutButton'),
   tableBody: document.getElementById('ordersTableBody'),
   emptyState: document.getElementById('emptyState'),
@@ -29,22 +36,29 @@ const elements = {
   dialogTitle: document.getElementById('dialogTitle'),
   orderId: document.getElementById('orderId'),
   orderUpdatedAt: document.getElementById('orderUpdatedAt'),
-  categorySelect: document.getElementById('categorySelect')
+  categorySelect: document.getElementById('categorySelect'),
+  orderedBySelect: document.getElementById('orderedBySelect'),
+  masterListsDialog: document.getElementById('masterListsDialog'),
+  closeMasterListsButton: document.getElementById('closeMasterListsButton'),
+  adminUsernameInput: document.getElementById('adminUsernameInput'),
+  adminPasswordInput: document.getElementById('adminPasswordInput'),
+  adminLoginButton: document.getElementById('adminLoginButton'),
+  adminLoginSection: document.getElementById('adminLoginSection'),
+  masterListsSection: document.getElementById('masterListsSection'),
+  supplierMasterList: document.getElementById('supplierMasterList'),
+  orderedByMasterList: document.getElementById('orderedByMasterList'),
+  addSupplierEntry: document.getElementById('addSupplierEntry'),
+  addStaffEntry: document.getElementById('addStaffEntry'),
+  saveMasterListsButton: document.getElementById('saveMasterListsButton'),
+  adminLogoutButton: document.getElementById('adminLogoutButton')
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
   bindEvents();
 
   try {
-    const sessionResponse = await fetch('/api/me');
-    if (!sessionResponse.ok) {
-      window.location.href = '/login';
-      return;
-    }
-
-    const { user } = await sessionResponse.json();
-    elements.currentUser.textContent = user.full_name || user.username;
-    await Promise.all([loadSuppliers(), loadOrders()]);
+    await refreshAdminState();
+    await Promise.all([loadSuppliers(), loadMasterLists(), loadOrders()]);
   } catch (error) {
     showStatus('Unable to load the tracker. Please refresh the page.', 'error');
   }
@@ -74,9 +88,27 @@ function bindEvents() {
     loadOrders();
   });
 
-  elements.supplierFilter.addEventListener('change', () => {
-    state.supplier = Array.from(elements.supplierFilter.selectedOptions).map((option) => option.value);
+  elements.supplierFilter.addEventListener('click', (event) => {
+    const option = event.target.closest('option');
+    if (!option) return;
+
+    const value = option.value;
+    const nextValues = new Set(state.supplier);
+    if (nextValues.has(value)) {
+      nextValues.delete(value);
+    } else {
+      nextValues.add(value);
+    }
+
+    state.supplier = Array.from(nextValues);
+    renderSupplierSelection();
     loadOrders();
+  });
+
+  elements.clearSupplierButton.addEventListener('click', async () => {
+    state.supplier = [];
+    renderSupplierSelection();
+    await loadOrders();
   });
 
   elements.sortSelect.addEventListener('change', (event) => {
@@ -87,9 +119,108 @@ function bindEvents() {
   elements.addOrderButton.addEventListener('click', () => openOrderDialog());
   elements.closeDialogButton.addEventListener('click', () => closeDialog());
   elements.cancelOrderButton.addEventListener('click', () => closeDialog());
+
+  elements.masterListsButton.addEventListener('click', async () => {
+    elements.masterListsDialog.showModal();
+    await loadMasterLists();
+  });
+
+  elements.closeMasterListsButton.addEventListener('click', () => {
+    elements.masterListsDialog.close();
+  });
+
+  elements.adminLoginButton.addEventListener('click', async () => {
+    await loginAsAdmin();
+  });
+
+  elements.adminLogoutButton.addEventListener('click', async () => {
+    await logoutAsAdmin();
+  });
+
+  elements.addSupplierEntry.addEventListener('click', () => {
+    state.masterSuppliers.push({ id: '', name: '', active: true });
+    renderMasterListsEditor();
+  });
+
+  elements.addStaffEntry.addEventListener('click', () => {
+    state.masterStaffNames.push({ id: '', name: '', active: true });
+    renderMasterListsEditor();
+  });
+
+  elements.supplierMasterList.addEventListener('input', (event) => {
+    const target = event.target;
+    if (!target.dataset.kind) return;
+    const list = target.dataset.kind === 'supplier' ? state.masterSuppliers : state.masterStaffNames;
+    const activeRow = list.find((item) => item.id === target.dataset.id || (!item.id && target.dataset.index === String(list.indexOf(item))));
+    if (!activeRow) return;
+    if (target.dataset.field === 'name') {
+      activeRow.name = target.value;
+    }
+  });
+
+  elements.supplierMasterList.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!target.dataset.kind) return;
+    const list = target.dataset.kind === 'supplier' ? state.masterSuppliers : state.masterStaffNames;
+    const activeRow = list.find((item) => item.id === target.dataset.id || (!item.id && target.dataset.index === String(list.indexOf(item))));
+    if (!activeRow) return;
+    if (target.dataset.field === 'active') {
+      activeRow.active = target.checked;
+    }
+  });
+
+  elements.orderedByMasterList.addEventListener('input', (event) => {
+    const target = event.target;
+    if (!target.dataset.kind) return;
+    const list = target.dataset.kind === 'staff' ? state.masterStaffNames : state.masterSuppliers;
+    const activeRow = list.find((item) => item.id === target.dataset.id || (!item.id && target.dataset.index === String(list.indexOf(item))));
+    if (!activeRow) return;
+    if (target.dataset.field === 'name') {
+      activeRow.name = target.value;
+    }
+  });
+
+  elements.orderedByMasterList.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!target.dataset.kind) return;
+    const list = target.dataset.kind === 'staff' ? state.masterStaffNames : state.masterSuppliers;
+    const activeRow = list.find((item) => item.id === target.dataset.id || (!item.id && target.dataset.index === String(list.indexOf(item))));
+    if (!activeRow) return;
+    if (target.dataset.field === 'active') {
+      activeRow.active = target.checked;
+    }
+  });
+
+  elements.supplierMasterList.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-action]');
+    if (!button) return;
+    const kind = button.dataset.kind;
+    const list = kind === 'supplier' ? state.masterSuppliers : state.masterStaffNames;
+    const index = Number(button.dataset.index ?? -1);
+    if (index >= 0) {
+      list.splice(index, 1);
+      renderMasterListsEditor();
+    }
+  });
+
+  elements.orderedByMasterList.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-action]');
+    if (!button) return;
+    const kind = button.dataset.kind;
+    const list = kind === 'staff' ? state.masterStaffNames : state.masterSuppliers;
+    const index = Number(button.dataset.index ?? -1);
+    if (index >= 0) {
+      list.splice(index, 1);
+      renderMasterListsEditor();
+    }
+  });
+
+  elements.saveMasterListsButton.addEventListener('click', async () => {
+    await saveMasterLists();
+  });
+
   elements.logoutButton.addEventListener('click', async () => {
-    await fetch('/api/logout', { method: 'POST' });
-    window.location.href = '/login';
+    await logoutAsAdmin();
   });
 
   elements.form.addEventListener('submit', async (event) => {
@@ -120,23 +251,176 @@ function bindEvents() {
   });
 }
 
+async function refreshAdminState() {
+  try {
+    const response = await fetch('/api/admin/me');
+    state.adminLoggedIn = response.ok;
+  } catch (error) {
+    state.adminLoggedIn = false;
+  }
+
+  updateAdminUi();
+}
+
+function updateAdminUi() {
+  elements.adminLoginSection.classList.toggle('hidden', state.adminLoggedIn);
+  elements.masterListsSection.classList.toggle('hidden', !state.adminLoggedIn);
+  elements.logoutButton.classList.toggle('hidden', !state.adminLoggedIn);
+  elements.currentUser.textContent = state.adminLoggedIn ? 'Administrator' : 'Office staff';
+}
+
+async function loginAsAdmin() {
+  const username = elements.adminUsernameInput.value.trim();
+  const password = elements.adminPasswordInput.value;
+
+  try {
+    const response = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Unable to sign in.');
+    }
+
+    state.adminLoggedIn = true;
+    updateAdminUi();
+    await loadMasterLists();
+    elements.adminPasswordInput.value = '';
+    elements.adminUsernameInput.value = '';
+    showStatus('Administrator signed in.', 'success');
+  } catch (error) {
+    showStatus(error.message, 'error');
+  }
+}
+
+async function logoutAsAdmin() {
+  try {
+    await fetch('/api/admin/logout', { method: 'POST' });
+  } catch (error) {
+    // no-op: keep the UI responsive even if logout fails
+  }
+
+  state.adminLoggedIn = false;
+  elements.masterListsDialog.close();
+  updateAdminUi();
+  showStatus('Administrator signed out.', 'success');
+}
+
 async function loadSuppliers() {
   const response = await fetch('/api/suppliers');
   const data = await response.json();
-  state.suppliers = data.suppliers || [];
-
-  const options = state.suppliers.map((supplier) => `<option value="${escapeHtml(supplier)}">${escapeHtml(supplier)}</option>`).join('');
-  elements.supplierFilter.innerHTML = options;
-  const selected = Array.isArray(state.supplier) ? state.supplier : [state.supplier].filter(Boolean);
-  for (const supplier of selected) {
-    const option = [...elements.supplierFilter.options].find((entry) => entry.value === supplier);
-    if (option) option.selected = true;
-  }
+  state.suppliers = Array.isArray(data.suppliers) ? data.suppliers : [];
+  renderSupplierFilterOptions();
 
   const datalist = document.getElementById('supplierList');
   datalist.innerHTML = state.suppliers
     .map((supplier) => `<option value="${escapeHtml(supplier)}"></option>`)
     .join('');
+}
+
+async function loadMasterLists() {
+  const response = await fetch('/api/master-lists');
+  const data = await response.json();
+  state.masterSuppliers = (data.suppliers || []).map((item) => ({
+    id: item.id || '',
+    name: item.name || '',
+    active: item.active !== false
+  }));
+  state.masterStaffNames = (data.staff_names || []).map((item) => ({
+    id: item.id || '',
+    name: item.name || '',
+    active: item.active !== false
+  }));
+
+  state.staffNames = state.masterStaffNames.filter((item) => item.active !== false);
+  state.suppliers = state.masterSuppliers.filter((item) => item.active !== false).map((item) => item.name);
+  renderSupplierFilterOptions();
+  renderOrderedByOptions();
+  renderMasterListsEditor();
+}
+
+function renderSupplierFilterOptions() {
+  const selected = new Set(state.supplier);
+  const options = state.suppliers.map((supplier) => `<option value="${escapeHtml(supplier)}" ${selected.has(supplier) ? 'selected' : ''}>${escapeHtml(supplier)}</option>`).join('');
+  elements.supplierFilter.innerHTML = options;
+  renderSupplierSelection();
+}
+
+function renderSupplierSelection() {
+  const selected = state.supplier.filter(Boolean);
+  elements.supplierSelectionSummary.textContent = selected.length ? selected.join(', ') : 'All Suppliers';
+  Array.from(elements.supplierFilter.options).forEach((option) => {
+    option.selected = selected.includes(option.value);
+  });
+}
+
+function renderOrderedByOptions() {
+  const activeNames = state.masterStaffNames.filter((item) => item.active !== false && item.name.trim());
+  elements.orderedBySelect.innerHTML = '<option value="">Unknown</option>' + activeNames
+    .map((person) => `<option value="${escapeHtml(person.id)}">${escapeHtml(person.name)}</option>`)
+    .join('');
+}
+
+function renderMasterListsEditor() {
+  elements.supplierMasterList.innerHTML = (state.masterSuppliers.length ? state.masterSuppliers : [{ id: '', name: '', active: true }])
+    .map((item, index) => renderMasterListRow('supplier', item, index))
+    .join('');
+
+  elements.orderedByMasterList.innerHTML = (state.masterStaffNames.length ? state.masterStaffNames : [{ id: '', name: '', active: true }])
+    .map((item, index) => renderMasterListRow('staff', item, index))
+    .join('');
+}
+
+function renderMasterListRow(kind, item, index) {
+  const active = item.active !== false;
+  const kindName = kind === 'supplier' ? 'supplier' : 'staff';
+  return `
+    <div class="master-list-row ${active ? '' : 'inactive'}" data-kind="${kindName}">
+      <input type="text" data-kind="${kindName}" data-field="name" data-index="${index}" data-id="${escapeHtml(item.id || '')}" value="${escapeHtml(item.name || '')}" placeholder="${kind === 'supplier' ? 'Supplier name' : 'Staff name'}" />
+      <label class="checkbox-inline">
+        <input type="checkbox" data-kind="${kindName}" data-field="active" data-index="${index}" data-id="${escapeHtml(item.id || '')}" ${active ? 'checked' : ''} />
+        Active
+      </label>
+      <button type="button" class="secondary-button small-button" data-kind="${kindName}" data-action="remove" data-index="${index}">Remove</button>
+    </div>
+  `;
+}
+
+async function saveMasterLists() {
+  const supplierItems = state.masterSuppliers
+    .map((item) => ({ id: item.id || '', name: (item.name || '').trim(), active: item.active !== false }))
+    .filter((item) => item.name || item.id);
+
+  const staffItems = state.masterStaffNames
+    .map((item) => ({ id: item.id || '', name: (item.name || '').trim(), active: item.active !== false }))
+    .filter((item) => item.name || item.id);
+
+  try {
+    const [supplierResponse, staffResponse] = await Promise.all([
+      fetch('/api/master-lists/suppliers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: supplierItems })
+      }),
+      fetch('/api/master-lists/ordered-by', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: staffItems })
+      })
+    ]);
+
+    if (!supplierResponse.ok || !staffResponse.ok) {
+      throw new Error('Unable to save one or more lists.');
+    }
+
+    await Promise.all([loadSuppliers(), loadMasterLists(), loadOrders()]);
+    elements.masterListsDialog.close();
+    showStatus('Master lists saved.', 'success');
+  } catch (error) {
+    showStatus(error.message, 'error');
+  }
 }
 
 async function loadOrders() {
@@ -182,6 +466,7 @@ function renderOrders() {
         : '—';
       const notes = escapeHtml(order.notes || '');
       const category = order.category || 'Unassigned';
+      const orderedBy = order.ordered_by || '—';
       const actionButtons = status === 'Received'
         ? `<button type="button" class="action-button danger" data-action="reopen" data-id="${order.id}">Reopen</button>`
         : `<button type="button" class="action-button primary" data-action="mark-received" data-id="${order.id}">Mark received</button>`;
@@ -196,7 +481,8 @@ function renderOrders() {
             ${order.housecall_job_number ? escapeHtml(order.housecall_job_number) : '—'}<br />
             ${jobLink}
           </td>
-          <td>${escapeHtml(order.supplier)}</td>
+          <td>${escapeHtml(order.supplier || '—')}</td>
+          <td>${escapeHtml(orderedBy)}</td>
           <td>${escapeHtml(order.po_number || '—')}</td>
           <td>${formatDate(order.date_ordered)}</td>
           <td>${eta}</td>
@@ -223,6 +509,7 @@ function openOrderDialog(order = null) {
   elements.orderId.value = '';
   elements.orderUpdatedAt.value = '';
   elements.categorySelect.value = '';
+  elements.orderedBySelect.value = '';
 
   const today = new Date().toISOString().slice(0, 10);
   document.getElementById('dateOrdered').value = today;
@@ -241,6 +528,8 @@ function openOrderDialog(order = null) {
   document.getElementById('housecallJobNumber').value = order.housecall_job_number || '';
   document.getElementById('housecallJobLink').value = order.housecall_job_link || '';
   document.getElementById('supplierInput').value = order.supplier || '';
+  const orderedByMatch = state.masterStaffNames.find((person) => person.id === order.ordered_by_id || person.name === order.ordered_by);
+  elements.orderedBySelect.value = orderedByMatch ? orderedByMatch.id : (order.ordered_by_id || '');
   document.getElementById('poNumber').value = order.po_number || '';
   document.getElementById('dateOrdered').value = order.date_ordered || today;
   document.getElementById('expectedDeliveryDate').value = order.expected_delivery_date || '';
@@ -255,17 +544,34 @@ function closeDialog() {
   elements.formError.textContent = '';
 }
 
+function readSelectedOrderedBy() {
+  const selectedId = elements.orderedBySelect.value;
+  if (!selectedId) {
+    return { id: '', name: '' };
+  }
+
+  const person = state.masterStaffNames.find((entry) => entry.id === selectedId);
+  return {
+    id: person ? person.id : '',
+    name: person ? person.name : ''
+  };
+}
+
 async function saveOrder() {
+  const orderedBy = readSelectedOrderedBy();
   const payload = {
     customer_name: document.getElementById('customerName').value,
     category: elements.categorySelect.value,
     housecall_job_number: document.getElementById('housecallJobNumber').value,
     housecall_job_link: document.getElementById('housecallJobLink').value,
     supplier: document.getElementById('supplierInput').value,
+    supplier_id: '',
     po_number: document.getElementById('poNumber').value,
     date_ordered: document.getElementById('dateOrdered').value,
     expected_delivery_date: document.getElementById('expectedDeliveryDate').value,
     date_received: document.getElementById('dateReceived').value,
+    ordered_by: orderedBy.name,
+    ordered_by_id: orderedBy.id,
     notes: document.getElementById('notes').value,
     status: document.getElementById('dateReceived').value ? 'Received' : 'Ordered'
   };
@@ -290,6 +596,11 @@ async function saveOrder() {
     return;
   }
 
+  if (payload.supplier) {
+    const supplierMatch = state.masterSuppliers.find((supplier) => supplier.name.toLowerCase() === payload.supplier.toLowerCase() && supplier.active !== false);
+    payload.supplier_id = supplierMatch ? supplierMatch.id : '';
+  }
+
   const id = elements.orderId.value;
   const requestOptions = {
     method: id ? 'PUT' : 'POST',
@@ -311,8 +622,7 @@ async function saveOrder() {
 
     closeDialog();
     showStatus(id ? 'Order updated.' : 'Order created.', 'success');
-    await loadSuppliers();
-    await loadOrders();
+    await Promise.all([loadSuppliers(), loadMasterLists(), loadOrders()]);
   } catch (error) {
     elements.formError.textContent = error.message;
   }
