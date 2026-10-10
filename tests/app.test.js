@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -23,7 +24,6 @@ function startServer() {
 }
 
 function requestJson(url, options = {}) {
-  const http = require('node:http');
   return new Promise((resolve, reject) => {
     const req = http.request(url, {
       method: options.method || 'GET',
@@ -34,8 +34,17 @@ function requestJson(url, options = {}) {
         data += chunk;
       });
       res.on('end', () => {
-        const body = data ? JSON.parse(data) : {};
-        resolve({ status: res.statusCode, body });
+        let body = data ? data.toString() : '';
+
+        if (data) {
+          try {
+            body = JSON.parse(data.toString());
+          } catch {
+            body = data.toString();
+          }
+        }
+
+        resolve({ status: res.statusCode, headers: res.headers, body });
       });
     });
     req.on('error', reject);
@@ -44,6 +53,15 @@ function requestJson(url, options = {}) {
     }
     req.end();
   });
+}
+
+function getCookieFromResponse(response) {
+  const raw = response.headers['set-cookie'];
+  if (!raw || !raw.length) {
+    return '';
+  }
+
+  return raw[0].split(';')[0];
 }
 
 test('server starts and exposes login page', async () => {
@@ -81,8 +99,8 @@ test('category and group filters work with supplier selection', async () => {
 
   assert.equal(login.status, 200);
 
-  const jar = login.body;
-  const cookie = `connect.sid=${jar.user ? 'demo' : 'demo'}`;
+  const cookie = getCookieFromResponse(login);
+  assert.ok(cookie, 'login response should include a session cookie');
 
   const createWindows = await requestJson('http://127.0.0.1:4100/api/orders', {
     method: 'POST',
@@ -130,8 +148,12 @@ test('category and group filters work with supplier selection', async () => {
   assert.equal(createFlat.status, 201);
   assert.equal(createShowers.status, 201);
 
-  const groupResponse = await requestJson('http://127.0.0.1:4100/api/orders?view=Windows%20%2F%20Flat%20Glass&supplier=Oldcastle');
-  const categoryResponse = await requestJson('http://127.0.0.1:4100/api/orders?category=Windows&supplier=Oldcastle');
+  const groupResponse = await requestJson('http://127.0.0.1:4100/api/orders?view=Windows%20%2F%20Flat%20Glass&supplier=Oldcastle', {
+    headers: { Cookie: cookie }
+  });
+  const categoryResponse = await requestJson('http://127.0.0.1:4100/api/orders?category=Windows&supplier=Oldcastle', {
+    headers: { Cookie: cookie }
+  });
 
   child.kill('SIGTERM');
 
