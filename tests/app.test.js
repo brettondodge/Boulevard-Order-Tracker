@@ -1,8 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import express from 'express';
+import session from 'express-session';
 import bcrypt from 'bcryptjs';
+import {
+  createPostgresSessionStore,
+  getSessionMiddlewareOptions,
+  configureSessionMiddleware
+} from '../src/session-config.js';
 
 const root = process.cwd();
 
@@ -43,6 +51,47 @@ function startServer() {
 
   return child;
 }
+
+test('production session store is a real express-session Store', () => {
+  const store = createPostgresSessionStore({
+    query: async () => ({ rows: [], rowCount: 0 })
+  });
+
+  assert.ok(store instanceof session.Store);
+  assert.equal(typeof store.get, 'function');
+  assert.equal(typeof store.set, 'function');
+  assert.equal(typeof store.destroy, 'function');
+});
+
+test('Render proxy config keeps secure cookies enabled for HTTPS', async () => {
+  const app = express();
+  const fakeStore = createPostgresSessionStore({
+    query: async () => ({ rows: [], rowCount: 0 })
+  });
+
+  configureSessionMiddleware(app, { store: fakeStore, isProduction: true, secret: 'render-proxy-test' });
+
+  app.get('/session-check', (req, res) => {
+    req.session.user = { username: 'admin' };
+    res.json({ ok: true, user: req.session.user });
+  });
+
+  await new Promise((resolve) => {
+    const server = app.listen(0, async () => {
+      const { port } = server.address();
+      const response = await fetch(`http://127.0.0.1:${port}/session-check`, {
+        headers: {
+          'X-Forwarded-Proto': 'https'
+        }
+      });
+
+      const cookieHeader = response.headers.get('set-cookie') || '';
+      assert.match(cookieHeader, /Secure/i);
+      assert.match(cookieHeader, /SameSite=None/i);
+      server.close(resolve);
+    });
+  });
+});
 
 async function requestJson(url, options = {}) {
   const headers = { ...(options.headers || {}) };
