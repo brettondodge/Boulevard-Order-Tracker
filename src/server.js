@@ -404,7 +404,7 @@ app.post('/api/job-drafts/:id/reopen', (req, res) => {
 
 app.get('/api/admin/me', (req, res) => {
   if (!req.session.admin || req.session.admin.username !== currentAdminUsername()) {
-    return res.status(401).json({ error: 'Not authenticated as admin.' });
+    return res.json({ admin: null });
   }
 
   return res.json({ admin: req.session.admin });
@@ -537,17 +537,29 @@ app.get('/api/orders', (req, res) => {
     return true;
   });
 
-  const sortKey = (req.query.sort || 'expected_delivery_date').toString();
+  const sortKey = (req.query.sort || 'customer_name').toString();
   filtered.sort((a, b) => {
+    if (sortKey === 'customer_name') {
+      const aName = (a.customer_name || '').trim().toLocaleLowerCase();
+      const bName = (b.customer_name || '').trim().toLocaleLowerCase();
+      const nameCompare = aName.localeCompare(bName, undefined, { sensitivity: 'base' });
+      if (nameCompare !== 0) {
+        return nameCompare;
+      }
+      const aTie = a.created_at || a.updated_at || '9999-12-31';
+      const bTie = b.created_at || b.updated_at || '9999-12-31';
+      return aTie.localeCompare(bTie) || String(a.id || '').localeCompare(String(b.id || ''));
+    }
+
     if (sortKey === 'order_date') {
       const aDate = a.date_ordered || '9999-12-31';
       const bDate = b.date_ordered || '9999-12-31';
-      return aDate.localeCompare(bDate);
+      return aDate.localeCompare(bDate) || String(a.id || '').localeCompare(String(b.id || ''));
     }
 
     const aValue = a.expected_delivery_date || '9999-12-31';
     const bValue = b.expected_delivery_date || '9999-12-31';
-    return aValue.localeCompare(bValue);
+    return aValue.localeCompare(bValue) || String(a.id || '').localeCompare(String(b.id || ''));
   });
 
   const normalized = filtered.map((order) => ({

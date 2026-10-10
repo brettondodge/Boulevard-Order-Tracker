@@ -199,6 +199,13 @@ input:focus, select:focus, textarea:focus {
   flex-wrap: wrap;
 }
 
+.action-button-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
 .search-field {
   min-width: min(100%, 420px);
   flex: 1 1 360px;
@@ -229,12 +236,15 @@ input:focus, select:focus, textarea:focus {
   background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text);
+  box-shadow: 0 1px 2px rgba(17, 24, 39, 0.04);
 }
 
 .tab-button.active {
   background: var(--primary);
   color: white;
   border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), 0 0 0 2px rgba(45, 95, 159, 0.18);
+  font-weight: 700;
 }
 
 .sync-status-bar {
@@ -298,6 +308,19 @@ input:focus, select:focus, textarea:focus {
 
 .message-box.error {
   color: var(--danger);
+}
+
+.draft-queue {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  box-shadow: var(--shadow);
+}
+
+.section-header-row h2 {
+  margin: 0;
 }
 
 .table-wrap {
@@ -652,10 +675,17 @@ button:disabled {
     padding: 0.8rem;
   }
 
-  .toolbar-main,
+    .toolbar-main,
   .toolbar-controls {
     display: grid;
     grid-template-columns: 1fr;
+    gap: 0.7rem;
+    width: 100%;
+  }
+
+  .action-button-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.7rem;
     width: 100%;
   }
@@ -733,6 +763,12 @@ button:disabled {
   .mobile-actions {
     display: grid;
     grid-template-columns: 1fr 1fr;
+  }
+
+  .action-button-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
   }
 
   .action-button,

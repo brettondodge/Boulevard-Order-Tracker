@@ -5,7 +5,7 @@ const state = {
   supplier: [],
   orderedBy: [],
   search: '',
-  sort: 'expected_delivery_date',
+  sort: 'customer_name',
   orders: [],
   jobDrafts: [],
   suppliers: [],
@@ -34,9 +34,11 @@ const elements = {
   orderedBySelectionSummary: document.getElementById('orderedBySelectionSummary'),
   sortSelect: document.getElementById('sortSelect'),
   addOrderButton: document.getElementById('addOrderButton'),
+  addDraftButton: document.getElementById('addDraftButton'),
   masterListsButton: document.getElementById('masterListsButton'),
   logoutButton: document.getElementById('logoutButton'),
   tableWrap: document.querySelector('.table-wrap'),
+  draftQueueSection: document.getElementById('draftQueueSection'),
   tableBody: document.getElementById('ordersTableBody'),
   mobileOrderCards: document.getElementById('mobileOrderCards'),
   emptyState: document.getElementById('emptyState'),
@@ -55,7 +57,6 @@ const elements = {
   draftHcpJobId: document.getElementById('draftHcpJobId'),
   draftDepositStatus: document.getElementById('draftDepositStatus'),
   draftNotes: document.getElementById('draftNotes'),
-  addDraftButton: document.getElementById('addDraftButton'),
   jobDraftList: document.getElementById('jobDraftList'),
   closeDraftDialogButton: document.getElementById('closeDraftDialogButton'),
   cancelDraftButton: document.getElementById('cancelDraftButton'),
@@ -87,6 +88,8 @@ const elements = {
 document.addEventListener('DOMContentLoaded', async () => {
   bindEvents();
   setupLiveUpdates();
+  elements.sortSelect.value = state.sort;
+  renderQueueVisibility();
   updateLayoutMode();
   window.addEventListener('resize', updateLayoutMode);
 
@@ -130,12 +133,19 @@ function setSaveState(mode, message = '') {
 
 function updateLayoutMode() {
   const mobile = window.matchMedia('(max-width: 820px)').matches;
+  const draftView = state.status === 'Approved – Need to Order';
+
   if (elements.tableWrap) {
     elements.tableWrap.classList.toggle('desktop-table', !mobile);
-    elements.tableWrap.classList.toggle('mobile-hidden', mobile);
+    elements.tableWrap.classList.toggle('mobile-hidden', mobile || draftView);
+    elements.tableWrap.classList.toggle('hidden', draftView);
   }
   if (elements.mobileOrderCards) {
-    elements.mobileOrderCards.classList.toggle('hidden', !mobile);
+    elements.mobileOrderCards.classList.toggle('hidden', !mobile || draftView);
+  }
+
+  if (elements.draftQueueSection) {
+    elements.draftQueueSection.classList.toggle('hidden', !draftView);
   }
 }
 
@@ -197,6 +207,22 @@ function refreshAllData(reason = 'manual') {
   Promise.all([loadSuppliers(), loadMasterLists(), loadJobDrafts(), loadOrders()]);
 }
 
+function renderQueueVisibility() {
+  const draftView = state.status === 'Approved – Need to Order';
+  if (elements.draftQueueSection) {
+    elements.draftQueueSection.classList.toggle('hidden', !draftView);
+  }
+  if (elements.tableWrap) {
+    elements.tableWrap.classList.toggle('hidden', draftView);
+  }
+  if (elements.mobileOrderCards) {
+    elements.mobileOrderCards.classList.toggle('hidden', draftView || !window.matchMedia('(max-width: 820px)').matches);
+  }
+  if (elements.emptyState) {
+    elements.emptyState.classList.toggle('hidden', draftView || !!state.orders.length);
+  }
+}
+
 function bindEvents() {
   elements.searchInput.addEventListener('input', (event) => {
     state.search = event.target.value.trim();
@@ -207,6 +233,11 @@ function bindEvents() {
     button.addEventListener('click', () => {
       document.querySelectorAll('.tab-button').forEach((node) => node.classList.toggle('active', node === button));
       state.status = button.dataset.view;
+      renderQueueVisibility();
+      if (state.status === 'Approved – Need to Order') {
+        loadJobDrafts();
+        return;
+      }
       loadOrders();
     });
   });
@@ -269,6 +300,10 @@ function bindEvents() {
 
   elements.sortSelect.addEventListener('change', (event) => {
     state.sort = event.target.value;
+    if (state.status === 'Approved – Need to Order') {
+      loadJobDrafts();
+      return;
+    }
     loadOrders();
   });
 
@@ -446,7 +481,8 @@ function bindEvents() {
 async function refreshAdminState() {
   try {
     const response = await fetch('/api/admin/me');
-    state.adminLoggedIn = response.ok;
+    const data = await response.json();
+    state.adminLoggedIn = Boolean(response.ok && data && data.admin && data.admin.username === 'admin');
   } catch (error) {
     state.adminLoggedIn = false;
   }
@@ -656,13 +692,43 @@ async function saveMasterLists() {
   }
 }
 
+function sortCustomerRecords(records) {
+  return [...records].sort((a, b) => {
+    const leftName = String(a.customer_name || '').trim().toLocaleLowerCase();
+    const rightName = String(b.customer_name || '').trim().toLocaleLowerCase();
+    const nameCompare = leftName.localeCompare(rightName, undefined, { sensitivity: 'base' });
+
+    if (nameCompare !== 0) {
+      return nameCompare;
+    }
+
+    const leftOrder = String(a.created_at || a.updated_at || '').localeCompare(String(b.created_at || b.updated_at || ''));
+    if (leftOrder !== 0) {
+      return leftOrder;
+    }
+
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  });
+}
+
 async function loadJobDrafts() {
   try {
     const response = await fetch('/api/job-drafts');
     if (!response.ok) return;
 
     const data = await response.json();
-    state.jobDrafts = Array.isArray(data.drafts) ? data.drafts : [];
+    const drafts = Array.isArray(data.drafts) ? data.drafts : [];
+    state.jobDrafts = state.sort === 'customer_name' ? sortCustomerRecords(drafts) : [...drafts].sort((a, b) => {
+      if (state.sort === 'order_date') {
+        const left = String(a.created_at || '9999-12-31');
+        const right = String(b.created_at || '9999-12-31');
+        return left.localeCompare(right) || String(a.id || '').localeCompare(String(b.id || ''));
+      }
+
+      const left = String(a.updated_at || a.created_at || '9999-12-31');
+      const right = String(b.updated_at || b.created_at || '9999-12-31');
+      return left.localeCompare(right) || String(a.id || '').localeCompare(String(b.id || ''));
+    });
     renderJobDrafts();
   } catch (error) {
     // no-op: queue can refresh on the next pass
@@ -670,6 +736,11 @@ async function loadJobDrafts() {
 }
 
 async function loadOrders() {
+  if (state.status === 'Approved – Need to Order') {
+    renderQueueVisibility();
+    return;
+  }
+
   const requestId = ++state.orderRequestCounter;
   const params = new URLSearchParams({
     status: state.status,
@@ -760,7 +831,8 @@ function renderOrders() {
 
   elements.emptyState.classList.add('hidden');
 
-  const renderedRows = state.orders
+  const orders = [...state.orders];
+  const renderedRows = orders
     .map((order) => {
       const status = order.status || 'Ordered';
       const eta = order.expected_delivery_date ? formatDate(order.expected_delivery_date) : 'No ETA';
@@ -843,7 +915,7 @@ function renderOrders() {
     .join('');
 
   elements.tableBody.innerHTML = renderedRows;
-  elements.mobileOrderCards.innerHTML = state.orders
+  elements.mobileOrderCards.innerHTML = orders
     .map((order) => {
       const status = order.status || 'Ordered';
       const eta = order.expected_delivery_date ? formatDate(order.expected_delivery_date) : 'No ETA';
@@ -894,8 +966,9 @@ function renderOrders() {
     })
     .join('');
 
+  renderQueueVisibility();
   updateLayoutMode();
-  if (mobile) {
+  if (mobile && state.status !== 'Approved – Need to Order') {
     elements.mobileOrderCards.classList.remove('hidden');
   }
 }

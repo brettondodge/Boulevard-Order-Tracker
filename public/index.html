@@ -33,7 +33,10 @@
     <main class="app-shell">
       <section class="toolbar">
         <div class="toolbar-main">
-          <button id="addOrderButton" type="button" class="primary-button">Add order</button>
+          <div class="action-button-row">
+            <button id="addOrderButton" type="button" class="primary-button">Add order</button>
+            <button id="addDraftButton" type="button" class="primary-button secondary-variant">Add draft</button>
+          </div>
           <label class="search-field">
             <span class="sr-only">Search orders</span>
             <input id="searchInput" type="search" placeholder="Search customer, job, supplier, or PO" />
@@ -82,6 +85,7 @@
           <label>
             Sort
             <select id="sortSelect">
+              <option value="customer_name">Alphabetical (A–Z)</option>
               <option value="expected_delivery_date">Expected delivery</option>
               <option value="order_date">Order date</option>
             </select>
@@ -94,6 +98,7 @@
         <button type="button" class="tab-button" data-view="Overdue">Overdue</button>
         <button type="button" class="tab-button" data-view="Received">Received</button>
         <button type="button" class="tab-button" data-view="All Orders">All orders</button>
+        <button type="button" class="tab-button" data-view="Approved – Need to Order">Approved – Need to Order</button>
       </nav>
 
       <div class="sync-status-bar">
@@ -102,10 +107,9 @@
       </div>
       <div id="statusMessage" class="message-box" aria-live="polite"></div>
 
-      <section class="draft-queue">
+      <section id="draftQueueSection" class="draft-queue hidden">
         <div class="section-header-row">
           <h2>Approved – Need to Order</h2>
-          <button id="addDraftButton" type="button" class="primary-button">Add draft</button>
         </div>
         <div id="jobDraftList" class="draft-list"></div>
       </section>
