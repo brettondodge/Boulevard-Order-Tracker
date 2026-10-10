@@ -35,7 +35,9 @@ const elements = {
   addOrderButton: document.getElementById('addOrderButton'),
   masterListsButton: document.getElementById('masterListsButton'),
   logoutButton: document.getElementById('logoutButton'),
+  tableWrap: document.querySelector('.table-wrap'),
   tableBody: document.getElementById('ordersTableBody'),
+  mobileOrderCards: document.getElementById('mobileOrderCards'),
   emptyState: document.getElementById('emptyState'),
   statusMessage: document.getElementById('statusMessage'),
   liveStatus: document.getElementById('liveStatus'),
@@ -68,6 +70,8 @@ const elements = {
 document.addEventListener('DOMContentLoaded', async () => {
   bindEvents();
   setupLiveUpdates();
+  updateLayoutMode();
+  window.addEventListener('resize', updateLayoutMode);
 
   try {
     await refreshAdminState();
@@ -105,6 +109,17 @@ function setSaveState(mode, message = '') {
   const next = map[mode] || map.saved;
   indicator.textContent = next.label;
   indicator.className = `save-status ${next.className}`;
+}
+
+function updateLayoutMode() {
+  const mobile = window.matchMedia('(max-width: 820px)').matches;
+  if (elements.tableWrap) {
+    elements.tableWrap.classList.toggle('desktop-table', !mobile);
+    elements.tableWrap.classList.toggle('mobile-hidden', mobile);
+  }
+  if (elements.mobileOrderCards) {
+    elements.mobileOrderCards.classList.toggle('hidden', !mobile);
+  }
 }
 
 function setupLiveUpdates() {
@@ -620,14 +635,102 @@ async function loadOrders() {
 }
 
 function renderOrders() {
+  const mobile = window.matchMedia('(max-width: 820px)').matches;
+
   if (!state.orders.length) {
     elements.tableBody.innerHTML = '';
+    elements.mobileOrderCards.innerHTML = '';
     elements.emptyState.classList.remove('hidden');
+    updateLayoutMode();
     return;
   }
 
   elements.emptyState.classList.add('hidden');
-  elements.tableBody.innerHTML = state.orders
+
+  const renderedRows = state.orders
+    .map((order) => {
+      const status = order.status || 'Ordered';
+      const eta = order.expected_delivery_date ? formatDate(order.expected_delivery_date) : 'No ETA';
+      const received = order.date_received ? formatDate(order.date_received) : '—';
+      const rowClass = order.is_overdue ? 'overdue' : '';
+      const jobLink = order.housecall_job_link
+        ? `<a href="${escapeAttr(order.housecall_job_link)}" target="_blank" rel="noreferrer">Open</a>`
+        : '—';
+      const notes = escapeHtml(order.notes || '');
+      const category = order.category || 'Unassigned';
+      const orderedBy = order.ordered_by || '—';
+      const actionButtons = status === 'Received'
+        ? `<button type="button" class="action-button danger" data-action="reopen" data-id="${order.id}">Reopen</button>`
+        : `<button type="button" class="action-button primary" data-action="mark-received" data-id="${order.id}">Mark received</button>`;
+
+      return {
+        row: `
+          <tr class="${rowClass}">
+            <td>
+              <strong>${escapeHtml(order.customer_name)}</strong>
+            </td>
+            <td>${escapeHtml(category)}</td>
+            <td>
+              ${order.housecall_job_number ? escapeHtml(order.housecall_job_number) : '—'}<br />
+              ${jobLink}
+            </td>
+            <td>${escapeHtml(order.supplier || '—')}</td>
+            <td>${escapeHtml(orderedBy)}</td>
+            <td>${escapeHtml(order.po_number || '—')}</td>
+            <td>${formatDate(order.date_ordered)}</td>
+            <td>${eta}</td>
+            <td>${received}</td>
+            <td>
+              <span class="status-badge ${status === 'Received' ? 'received' : (order.is_overdue ? 'overdue' : 'ordered')}">${order.is_overdue ? 'Overdue' : status}</span>
+            </td>
+            <td class="notes-cell">${notes || '—'}</td>
+            <td>
+              <div class="action-stack">
+                <button type="button" class="action-button" data-action="edit" data-id="${order.id}">Edit</button>
+                ${actionButtons}
+              </div>
+            </td>
+          </tr>
+        `,
+        card: `
+          <article class="order-card ${rowClass}">
+            <div class="order-card-header">
+              <div>
+                <p class="order-card-label">Customer</p>
+                <h3>${escapeHtml(order.customer_name)}</h3>
+              </div>
+              <span class="status-badge ${status === 'Received' ? 'received' : (order.is_overdue ? 'overdue' : 'ordered')}">${order.is_overdue ? 'Overdue' : status}</span>
+            </div>
+
+            <div class="order-card-grid">
+              <div><span>Category</span><strong>${escapeHtml(category)}</strong></div>
+              <div><span>Supplier</span><strong>${escapeHtml(order.supplier || '—')}</strong></div>
+              <div><span>Expected delivery</span><strong>${eta}</strong></div>
+              <div><span>Ordered by</span><strong>${escapeHtml(orderedBy)}</strong></div>
+              <div><span>Job #</span><strong>${escapeHtml(order.housecall_job_number || '—')}</strong></div>
+              <div><span>PO #</span><strong>${escapeHtml(order.po_number || '—')}</strong></div>
+              <div><span>Ordered</span><strong>${formatDate(order.date_ordered)}</strong></div>
+              <div><span>Received</span><strong>${received}</strong></div>
+            </div>
+
+            <div class="order-card-meta">
+              <div><span>Housecall Pro</span>${jobLink}</div>
+              <div><span>Notes</span><p>${notes || '—'}</p></div>
+            </div>
+
+            <div class="action-stack mobile-actions">
+              <button type="button" class="action-button" data-action="edit" data-id="${order.id}">Edit</button>
+              ${actionButtons}
+            </div>
+          </article>
+        `
+      };
+    })
+    .map((entry) => entry.row)
+    .join('');
+
+  elements.tableBody.innerHTML = renderedRows;
+  elements.mobileOrderCards.innerHTML = state.orders
     .map((order) => {
       const status = order.status || 'Ordered';
       const eta = order.expected_delivery_date ? formatDate(order.expected_delivery_date) : 'No ETA';
@@ -644,35 +747,44 @@ function renderOrders() {
         : `<button type="button" class="action-button primary" data-action="mark-received" data-id="${order.id}">Mark received</button>`;
 
       return `
-        <tr class="${rowClass}">
-          <td>
-            <strong>${escapeHtml(order.customer_name)}</strong>
-          </td>
-          <td>${escapeHtml(category)}</td>
-          <td>
-            ${order.housecall_job_number ? escapeHtml(order.housecall_job_number) : '—'}<br />
-            ${jobLink}
-          </td>
-          <td>${escapeHtml(order.supplier || '—')}</td>
-          <td>${escapeHtml(orderedBy)}</td>
-          <td>${escapeHtml(order.po_number || '—')}</td>
-          <td>${formatDate(order.date_ordered)}</td>
-          <td>${eta}</td>
-          <td>${received}</td>
-          <td>
-            <span class="status-badge ${status === 'Received' ? 'received' : (order.is_overdue ? 'overdue' : 'ordered')}">${order.is_overdue ? 'Overdue' : status}</span>
-          </td>
-          <td class="notes-cell">${notes || '—'}</td>
-          <td>
-            <div class="action-stack">
-              <button type="button" class="action-button" data-action="edit" data-id="${order.id}">Edit</button>
-              ${actionButtons}
+        <article class="order-card ${rowClass}">
+          <div class="order-card-header">
+            <div>
+              <p class="order-card-label">Customer</p>
+              <h3>${escapeHtml(order.customer_name)}</h3>
             </div>
-          </td>
-        </tr>
+            <span class="status-badge ${status === 'Received' ? 'received' : (order.is_overdue ? 'overdue' : 'ordered')}">${order.is_overdue ? 'Overdue' : status}</span>
+          </div>
+
+          <div class="order-card-grid">
+            <div><span>Category</span><strong>${escapeHtml(category)}</strong></div>
+            <div><span>Supplier</span><strong>${escapeHtml(order.supplier || '—')}</strong></div>
+            <div><span>Expected delivery</span><strong>${eta}</strong></div>
+            <div><span>Ordered by</span><strong>${escapeHtml(orderedBy)}</strong></div>
+            <div><span>Job #</span><strong>${escapeHtml(order.housecall_job_number || '—')}</strong></div>
+            <div><span>PO #</span><strong>${escapeHtml(order.po_number || '—')}</strong></div>
+            <div><span>Ordered</span><strong>${formatDate(order.date_ordered)}</strong></div>
+            <div><span>Received</span><strong>${received}</strong></div>
+          </div>
+
+          <div class="order-card-meta">
+            <div><span>Housecall Pro</span>${jobLink}</div>
+            <div><span>Notes</span><p>${notes || '—'}</p></div>
+          </div>
+
+          <div class="action-stack mobile-actions">
+            <button type="button" class="action-button" data-action="edit" data-id="${order.id}">Edit</button>
+            ${actionButtons}
+          </div>
+        </article>
       `;
     })
     .join('');
+
+  updateLayoutMode();
+  if (mobile) {
+    elements.mobileOrderCards.classList.remove('hidden');
+  }
 }
 
 function openOrderDialog(order = null) {
