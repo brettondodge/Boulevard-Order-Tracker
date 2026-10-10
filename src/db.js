@@ -2,11 +2,31 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
+import dotenv from 'dotenv';
 import Database from 'better-sqlite3';
+import pg from 'pg';
 import { isoNow, todayPhoenixString } from './utils.js';
 
+dotenv.config();
+
+const { Pool } = pg;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const dataDir = path.resolve(__dirname, '../data');
+fs.mkdirSync(dataDir, { recursive: true });
+
+export const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
+const db = isProduction ? null : new Database(path.join(dataDir, 'boulevard_orders.db'));
+const postgresPool = isProduction ? new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
+  ssl: process.env.PGSSLMODE === 'require' || process.env.RENDER === 'true'
+    ? { rejectUnauthorized: false }
+    : undefined
+}) : null;
+
 export function validateRuntimeDatabaseConfig() {
-  const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
   if (!isProduction) {
     return;
   }
@@ -19,13 +39,6 @@ export function validateRuntimeDatabaseConfig() {
     throw new Error('DATABASE_URL is not a valid Postgres connection string. Use the existing Render Postgres internal URL for this service.');
   }
 }
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.resolve(__dirname, '../data');
-fs.mkdirSync(dataDir, { recursive: true });
-
-const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
-const db = isProduction ? null : new Database(path.join(dataDir, 'boulevard_orders.db'));
 
 if (!isProduction) {
   db.pragma('journal_mode = WAL');
@@ -202,10 +215,74 @@ if (!isProduction) {
 
 export function getDb() {
   if (isProduction) {
-    throw new Error('Production mode requires a live Postgres database connection. Local SQLite access is intentionally disabled in production.');
+    throw new Error('Production mode requires the Postgres runtime. The SQLite database is intentionally disabled in production.');
   }
 
   return db;
+}
+
+export async function getPool() {
+  if (!isProduction) {
+    return null;
+  }
+
+  return postgresPool;
+}
+
+export async function pingDatabase() {
+  if (!isProduction) {
+    return true;
+  }
+
+  const pool = await getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('SELECT 1');
+    return true;
+  } finally {
+    client.release();
+  }
+}
+
+function normalizeQuestionMarks(sql) {
+  let index = 0;
+  return sql.replace(/\?/g, () => {
+    index += 1;
+    return `$${index}`;
+  });
+}
+
+export async function dbGet(sql, params = []) {
+  if (isProduction) {
+    const pool = await getPool();
+    const result = await pool.query(normalizeQuestionMarks(sql), params);
+    return result.rows[0] || null;
+  }
+
+  return db.prepare(sql).get(...params);
+}
+
+export async function dbAll(sql, params = []) {
+  if (isProduction) {
+    const pool = await getPool();
+    const result = await pool.query(normalizeQuestionMarks(sql), params);
+    return result.rows;
+  }
+
+  return db.prepare(sql).all(...params);
+}
+
+export async function dbRun(sql, params = []) {
+  if (isProduction) {
+    const pool = await getPool();
+    const result = await pool.query(normalizeQuestionMarks(sql), params);
+    return {
+      changes: Number(result.rowCount || 0),
+      lastInsertRowid: result.rows?.[0]?.id || null
+    };
+  }
+
+  return db.prepare(sql).run(...params);
 }
 
 export function ensureSupplierExists(name) {
@@ -236,6 +313,29 @@ export function ensureSupplierExists(name) {
   return { id, name: trimmed };
 }
 
+export async function ensureSupplierExistsAsync(name) {
+  const trimmed = (name || '').trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (!isProduction) {
+    return ensureSupplierExists(trimmed);
+  }
+
+  const existing = await dbGet('SELECT id, name, active FROM suppliers WHERE lower(name) = lower(?)', [trimmed]);
+  if (existing) {
+    if (Number(existing.active) === 0) {
+      await dbRun('UPDATE suppliers SET active = 1, updated_at = ? WHERE id = ?', [isoNow(), existing.id]);
+    }
+    return { id: existing.id, name: existing.name };
+  }
+
+  const id = cryptoRandomId('supplier');
+  await dbRun('INSERT INTO suppliers (id, name, active, created_at, updated_at) VALUES (?, ?, 1, ?, ?)', [id, trimmed, isoNow(), isoNow()]);
+  return { id, name: trimmed };
+}
+
 export function seedUsers() {
   const anyUser = db.prepare('SELECT COUNT(*) as count FROM users').get();
   if (Number(anyUser.count) > 0) {
@@ -255,28 +355,215 @@ export function seedUsers() {
   }
 }
 
+export async function ensureProductionUsers() {
+  if (!isProduction) {
+    return;
+  }
+
+  const pool = await getPool();
+  const userCountResult = await pool.query('SELECT COUNT(*)::int AS count FROM users');
+  if (Number(userCountResult.rows[0].count) > 0) {
+    return;
+  }
+
+  const adminUsername = (process.env.ADMIN_USERNAME || 'admin').trim();
+  const password = process.env.ADMIN_PASSWORD || 'admin123';
+  const hash = bcrypt.hashSync(password, 10);
+  const id = cryptoRandomId('user');
+  await pool.query(
+    'INSERT INTO users (id, username, password_hash, full_name, created_at) VALUES ($1, $2, $3, $4, $5)',
+    [id, adminUsername, hash, 'Office Admin', isoNow()]
+  );
+
+  const staffName = 'Mary Johnson';
+  const staffHash = bcrypt.hashSync(process.env.DEMO_STAFF_PASSWORD || 'staff123', 10);
+  await pool.query(
+    'INSERT INTO users (id, username, password_hash, full_name, created_at) VALUES ($1, $2, $3, $4, $5)',
+    [cryptoRandomId('user'), 'mary', staffHash, staffName, isoNow()]
+  );
+}
+
+export async function initializeDatabase() {
+  if (isProduction) {
+    const pool = await getPool();
+    const statements = [
+      `CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        full_name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );`,
+      `CREATE TABLE IF NOT EXISTS suppliers (
+        id TEXT PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );`,
+      `CREATE TABLE IF NOT EXISTS staff_names (
+        id TEXT PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );`,
+      `CREATE TABLE IF NOT EXISTS job_drafts (
+        id TEXT PRIMARY KEY,
+        customer_name TEXT NOT NULL,
+        housecall_job_number TEXT,
+        housecall_job_link TEXT,
+        hcp_job_id TEXT,
+        notes TEXT,
+        deposit_status TEXT NOT NULL DEFAULT 'Awaiting deposit',
+        status TEXT NOT NULL DEFAULT 'Open',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT,
+        updated_by TEXT,
+        is_archived INTEGER NOT NULL DEFAULT 0,
+        archived_at TEXT,
+        archive_source TEXT,
+        archive_reason TEXT,
+        is_preview_data INTEGER NOT NULL DEFAULT 0
+      );`,
+      `CREATE TABLE IF NOT EXISTS orders (
+        id TEXT PRIMARY KEY,
+        customer_name TEXT NOT NULL,
+        housecall_job_number TEXT,
+        housecall_job_link TEXT,
+        supplier TEXT NOT NULL,
+        supplier_id TEXT,
+        category TEXT,
+        combined_group TEXT,
+        po_number TEXT,
+        date_ordered TEXT NOT NULL,
+        expected_delivery_date TEXT,
+        date_received TEXT,
+        ordered_by TEXT,
+        ordered_by_id TEXT,
+        status TEXT NOT NULL DEFAULT 'Ordered',
+        notes TEXT,
+        job_draft_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT,
+        updated_by TEXT,
+        is_archived INTEGER NOT NULL DEFAULT 0,
+        archived_at TEXT,
+        archive_source TEXT,
+        archive_reason TEXT,
+        is_preview_data INTEGER NOT NULL DEFAULT 0
+      );`,
+      `CREATE TABLE IF NOT EXISTS sessions (
+        sid TEXT PRIMARY KEY,
+        sess JSONB NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL
+      );`,
+      `ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS active INTEGER NOT NULL DEFAULT 1;`,
+      `ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS updated_at TEXT;`,
+      `ALTER TABLE staff_names ADD COLUMN IF NOT EXISTS active INTEGER NOT NULL DEFAULT 1;`,
+      `ALTER TABLE job_drafts ADD COLUMN IF NOT EXISTS is_archived INTEGER NOT NULL DEFAULT 0;`,
+      `ALTER TABLE job_drafts ADD COLUMN IF NOT EXISTS archived_at TEXT;`,
+      `ALTER TABLE job_drafts ADD COLUMN IF NOT EXISTS archive_source TEXT;`,
+      `ALTER TABLE job_drafts ADD COLUMN IF NOT EXISTS archive_reason TEXT;`,
+      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS supplier_id TEXT;`,
+      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS category TEXT;`,
+      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS combined_group TEXT;`,
+      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS ordered_by TEXT;`,
+      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS ordered_by_id TEXT;`,
+      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS job_draft_id TEXT;`,
+      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_archived INTEGER NOT NULL DEFAULT 0;`,
+      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS archived_at TEXT;`,
+      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS archive_source TEXT;`,
+      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS archive_reason TEXT;`
+    ];
+
+    for (const statement of statements) {
+      await pool.query(statement);
+    }
+
+    await ensureProductionUsers();
+    return;
+  }
+
+  seedUsers();
+  if (process.env.PREVIEW_MODE !== 'false') {
+    seedPreviewData();
+  }
+}
+
 export function getActiveSuppliers() {
-  return db
-    .prepare('SELECT * FROM suppliers WHERE active = 1 ORDER BY name COLLATE NOCASE ASC')
-    .all();
+  return db.prepare('SELECT * FROM suppliers WHERE active = 1 ORDER BY name COLLATE NOCASE ASC').all();
+}
+
+export async function getActiveSuppliersAsync() {
+  if (isProduction) {
+    return await dbAll('SELECT * FROM suppliers WHERE active = 1 ORDER BY LOWER(name) ASC');
+  }
+
+  return getActiveSuppliers();
 }
 
 export function getAllSuppliers() {
-  return db
-    .prepare('SELECT * FROM suppliers ORDER BY name COLLATE NOCASE ASC')
-    .all();
+  return db.prepare('SELECT * FROM suppliers ORDER BY name COLLATE NOCASE ASC').all();
+}
+
+export async function getAllSuppliersAsync() {
+  if (isProduction) {
+    return await dbAll('SELECT * FROM suppliers ORDER BY LOWER(name) ASC');
+  }
+
+  return getAllSuppliers();
 }
 
 export function getActiveStaffNames() {
-  return db
-    .prepare('SELECT * FROM staff_names WHERE active = 1 ORDER BY name COLLATE NOCASE ASC')
-    .all();
+  return db.prepare('SELECT * FROM staff_names WHERE active = 1 ORDER BY name COLLATE NOCASE ASC').all();
+}
+
+export async function getActiveStaffNamesAsync() {
+  if (isProduction) {
+    return await dbAll('SELECT * FROM staff_names WHERE active = 1 ORDER BY LOWER(name) ASC');
+  }
+
+  return getActiveStaffNames();
 }
 
 export function getAllStaffNames() {
-  return db
-    .prepare('SELECT * FROM staff_names ORDER BY name COLLATE NOCASE ASC')
-    .all();
+  return db.prepare('SELECT * FROM staff_names ORDER BY name COLLATE NOCASE ASC').all();
+}
+
+export async function getAllStaffNamesAsync() {
+  if (isProduction) {
+    return await dbAll('SELECT * FROM staff_names ORDER BY LOWER(name) ASC');
+  }
+
+  return getAllStaffNames();
+}
+
+export async function upsertSupplierMasterRowAsync(record) {
+  const trimmedName = (record.name || '').trim();
+  if (!trimmedName) {
+    return null;
+  }
+
+  if (!isProduction) {
+    return upsertSupplierMasterRow(record);
+  }
+
+  const now = isoNow();
+  const existing = record.id
+    ? await dbGet('SELECT * FROM suppliers WHERE id = ?', [record.id])
+    : await dbGet('SELECT * FROM suppliers WHERE lower(name) = lower(?)', [trimmedName]);
+
+  if (existing) {
+    await dbRun('UPDATE suppliers SET name = ?, active = ?, updated_at = ? WHERE id = ?', [trimmedName, record.active === false ? 0 : 1, now, existing.id]);
+    return await dbGet('SELECT * FROM suppliers WHERE id = ?', [existing.id]);
+  }
+
+  const id = record.id || cryptoRandomId('supplier');
+  await dbRun('INSERT INTO suppliers (id, name, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?)', [id, trimmedName, record.active === false ? 0 : 1, now, now]);
+  return await dbGet('SELECT * FROM suppliers WHERE id = ?', [id]);
 }
 
 export function upsertSupplierMasterRow(record) {
@@ -289,24 +576,38 @@ export function upsertSupplierMasterRow(record) {
     : db.prepare('SELECT * FROM suppliers WHERE lower(name) = lower(?)').get(trimmedName);
 
   if (existing) {
-    db.prepare('UPDATE suppliers SET name = ?, active = ?, updated_at = ? WHERE id = ?').run(
-      trimmedName,
-      record.active === false ? 0 : 1,
-      now,
-      existing.id
-    );
+    db.prepare('UPDATE suppliers SET name = ?, active = ?, updated_at = ? WHERE id = ?').run(trimmedName, record.active === false ? 0 : 1, now, existing.id);
     return db.prepare('SELECT * FROM suppliers WHERE id = ?').get(existing.id);
   }
 
   const id = record.id || cryptoRandomId('supplier');
-  db.prepare('INSERT INTO suppliers (id, name, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
-    id,
-    trimmedName,
-    record.active === false ? 0 : 1,
-    now,
-    now
-  );
+  db.prepare('INSERT INTO suppliers (id, name, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(id, trimmedName, record.active === false ? 0 : 1, now, now);
   return db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id);
+}
+
+export async function upsertStaffMasterRowAsync(record) {
+  const trimmedName = (record.name || '').trim();
+  if (!trimmedName) {
+    return null;
+  }
+
+  if (!isProduction) {
+    return upsertStaffMasterRow(record);
+  }
+
+  const now = isoNow();
+  const existing = record.id
+    ? await dbGet('SELECT * FROM staff_names WHERE id = ?', [record.id])
+    : await dbGet('SELECT * FROM staff_names WHERE lower(name) = lower(?)', [trimmedName]);
+
+  if (existing) {
+    await dbRun('UPDATE staff_names SET name = ?, active = ?, updated_at = ? WHERE id = ?', [trimmedName, record.active === false ? 0 : 1, now, existing.id]);
+    return await dbGet('SELECT * FROM staff_names WHERE id = ?', [existing.id]);
+  }
+
+  const id = record.id || cryptoRandomId('staff');
+  await dbRun('INSERT INTO staff_names (id, name, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?)', [id, trimmedName, record.active === false ? 0 : 1, now, now]);
+  return await dbGet('SELECT * FROM staff_names WHERE id = ?', [id]);
 }
 
 export function upsertStaffMasterRow(record) {
@@ -319,23 +620,12 @@ export function upsertStaffMasterRow(record) {
     : db.prepare('SELECT * FROM staff_names WHERE lower(name) = lower(?)').get(trimmedName);
 
   if (existing) {
-    db.prepare('UPDATE staff_names SET name = ?, active = ?, updated_at = ? WHERE id = ?').run(
-      trimmedName,
-      record.active === false ? 0 : 1,
-      now,
-      existing.id
-    );
+    db.prepare('UPDATE staff_names SET name = ?, active = ?, updated_at = ? WHERE id = ?').run(trimmedName, record.active === false ? 0 : 1, now, existing.id);
     return db.prepare('SELECT * FROM staff_names WHERE id = ?').get(existing.id);
   }
 
   const id = record.id || cryptoRandomId('staff');
-  db.prepare('INSERT INTO staff_names (id, name, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
-    id,
-    trimmedName,
-    record.active === false ? 0 : 1,
-    now,
-    now
-  );
+  db.prepare('INSERT INTO staff_names (id, name, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(id, trimmedName, record.active === false ? 0 : 1, now, now);
   return db.prepare('SELECT * FROM staff_names WHERE id = ?').get(id);
 }
 
@@ -345,9 +635,7 @@ export function sanitizeSupplierName(value) {
 }
 
 export function seedPreviewData() {
-  const existingPreview = db
-    .prepare('SELECT COUNT(*) as count FROM orders WHERE is_preview_data = 1')
-    .get();
+  const existingPreview = db.prepare('SELECT COUNT(*) as count FROM orders WHERE is_preview_data = 1').get();
 
   if (Number(existingPreview.count) > 0) {
     return;
@@ -472,15 +760,49 @@ export function seedPreviewData() {
   }
 }
 
-export function initializeDatabase() {
-  if (isProduction) {
-    throw new Error('Production mode requires a live Postgres database connection. The app will not initialize against local SQLite in Render.');
-  }
-
-  seedUsers();
-  if (process.env.PREVIEW_MODE !== 'false') {
-    seedPreviewData();
-  }
+export function createPostgresSessionStore(pool) {
+  return {
+    async get(sid, callback) {
+      try {
+        const result = await pool.query('SELECT sess FROM sessions WHERE sid = $1 AND expires_at > NOW()', [sid]);
+        const session = result.rows[0]?.sess || null;
+        callback && callback(null, session ? session : null);
+      } catch (error) {
+        callback && callback(error);
+      }
+    },
+    async set(sid, session, callback) {
+      try {
+        const payload = JSON.stringify(session);
+        const expiresAt = new Date(Date.now() + (session.cookie?.maxAge || 12 * 60 * 60 * 1000)).toISOString();
+        await pool.query(
+          `INSERT INTO sessions (sid, sess, expires_at) VALUES ($1, $2::jsonb, $3)
+           ON CONFLICT (sid) DO UPDATE SET sess = EXCLUDED.sess, expires_at = EXCLUDED.expires_at`,
+          [sid, payload, expiresAt]
+        );
+        callback && callback(null);
+      } catch (error) {
+        callback && callback(error);
+      }
+    },
+    async destroy(sid, callback) {
+      try {
+        await pool.query('DELETE FROM sessions WHERE sid = $1', [sid]);
+        callback && callback(null);
+      } catch (error) {
+        callback && callback(error);
+      }
+    },
+    async touch(sid, session, callback) {
+      try {
+        const expiresAt = new Date(Date.now() + (session.cookie?.maxAge || 12 * 60 * 60 * 1000)).toISOString();
+        await pool.query('UPDATE sessions SET expires_at = $1 WHERE sid = $2', [expiresAt, sid]);
+        callback && callback(null);
+      } catch (error) {
+        callback && callback(error);
+      }
+    }
+  };
 }
 
 function cryptoRandomId(prefix) {

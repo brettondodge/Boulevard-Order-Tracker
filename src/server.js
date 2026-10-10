@@ -5,16 +5,19 @@ import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
 import {
-  getDb,
+  ensureSupplierExistsAsync,
+  getActiveSuppliersAsync,
+  getAllSuppliersAsync,
+  getAllStaffNamesAsync,
   initializeDatabase,
-  ensureSupplierExists,
-  getActiveSuppliers,
-  getAllSuppliers,
-  getActiveStaffNames,
-  getAllStaffNames,
-  upsertSupplierMasterRow,
-  upsertStaffMasterRow,
-  validateRuntimeDatabaseConfig
+  upsertSupplierMasterRowAsync,
+  upsertStaffMasterRowAsync,
+  validateRuntimeDatabaseConfig,
+  createPostgresSessionStore,
+  getPool,
+  dbAll,
+  dbGet,
+  dbRun
 } from './db.js';
 import {
   ORDER_CATEGORIES,
@@ -31,15 +34,20 @@ dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, '../public');
-const app = express();
+const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 const port = Number(process.env.APP_PORT || process.env.PORT || 3000);
 const liveClients = new Set();
-const isProduction = process.env.NODE_ENV === 'production';
 const VALID_DEPOSIT_STATUSES = [
   'Awaiting deposit',
   'Deposit received',
   'Deposit waived / not required'
 ];
+
+validateRuntimeDatabaseConfig();
+await initializeDatabase();
+
+const app = express();
+const sessionStore = isProduction ? createPostgresSessionStore(await getPool()) : undefined;
 
 function broadcastLiveEvent(type, payload = {}) {
   const envelope = JSON.stringify({
@@ -57,23 +65,20 @@ function broadcastLiveEvent(type, payload = {}) {
   }
 }
 
-validateRuntimeDatabaseConfig();
-initializeDatabase();
-
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: '1mb' }));
 app.use(
   session({
+    store: sessionStore,
     secret: process.env.SESSION_SECRET || 'boulevard-session-secret-change-me',
     resave: false,
     saveUninitialized: false,
     rolling: true,
     cookie: {
       maxAge: 1000 * 60 * 60 * 12,
-      sameSite: 'lax',
+      sameSite: isProduction ? 'none' : 'lax',
       httpOnly: true,
-      secure: isProduction,
-      sameSite: isProduction ? 'none' : 'lax'
+      secure: isProduction
     }
   })
 );
@@ -125,13 +130,13 @@ function normalizeArchiveSource(value) {
   return source === 'future_hcp_automation' ? 'future_hcp_automation' : 'manual';
 }
 
-function getJobDraftById(id) {
+async function getJobDraftById(id) {
   const draftId = normalizeText(id || '');
   if (!draftId) {
     return null;
   }
 
-  return getDb().prepare('SELECT * FROM job_drafts WHERE id = ?').get(draftId) || null;
+  return (await dbGet('SELECT * FROM job_drafts WHERE id = ?', [draftId])) || null;
 }
 
 function isDraftReadyForOrdering(draft) {
@@ -139,12 +144,10 @@ function isDraftReadyForOrdering(draft) {
   return draft.status !== 'Completed' && draft.deposit_status !== 'Awaiting deposit';
 }
 
-function serializeJobDraft(draft) {
+async function serializeJobDraft(draft) {
   if (!draft) return null;
 
-  const supplierOrderCount = Number(getDb()
-    .prepare('SELECT COUNT(*) as count FROM orders WHERE job_draft_id = ? AND is_archived = 0')
-    .get(draft.id)?.count || 0);
+  const supplierOrderCount = Number((await dbGet('SELECT COUNT(*) as count FROM orders WHERE job_draft_id = ? AND is_archived = 0', [draft.id]))?.count || 0);
 
   return {
     ...draft,
@@ -157,10 +160,8 @@ function serializeJobDraft(draft) {
   };
 }
 
-function getArchivedOrderIdsForDraft(draftId) {
-  const rows = getDb()
-    .prepare('SELECT id, customer_name, supplier, po_number, status FROM orders WHERE job_draft_id = ? AND is_archived = 0 ORDER BY date_ordered DESC, created_at DESC')
-    .all(draftId);
+async function getArchivedOrderIdsForDraft(draftId) {
+  const rows = await dbAll('SELECT id, customer_name, supplier, po_number, status FROM orders WHERE job_draft_id = ? AND is_archived = 0 ORDER BY date_ordered DESC, created_at DESC', [draftId]);
 
   return rows.map((order) => ({
     id: order.id,
@@ -171,7 +172,7 @@ function getArchivedOrderIdsForDraft(draftId) {
   }));
 }
 
-function markOrdersArchived(orderIds, metadata = {}) {
+async function markOrdersArchived(orderIds, metadata = {}) {
   if (!Array.isArray(orderIds) || !orderIds.length) {
     return [];
   }
@@ -179,20 +180,17 @@ function markOrdersArchived(orderIds, metadata = {}) {
   const stamp = isoNow();
   const source = normalizeArchiveSource(metadata.source || 'manual');
   const reason = (metadata.reason || '').trim();
-
   const uniqueIds = [...new Set(orderIds.map((id) => normalizeText(id || '')).filter(Boolean))];
-  const placeholders = uniqueIds.map(() => '?').join(', ');
-  getDb().prepare(`UPDATE orders SET is_archived = 1, archived_at = ?, archive_source = ?, archive_reason = ? WHERE id IN (${placeholders})`).run(
-    stamp,
-    source,
-    reason,
-    ...uniqueIds
-  );
+  if (!uniqueIds.length) {
+    return [];
+  }
 
+  const placeholders = uniqueIds.map(() => '?').join(', ');
+  await dbRun(`UPDATE orders SET is_archived = 1, archived_at = ?, archive_source = ?, archive_reason = ? WHERE id IN (${placeholders})`, [stamp, source, reason, ...uniqueIds]);
   return uniqueIds;
 }
 
-function markDraftsArchived(draftIds, metadata = {}) {
+async function markDraftsArchived(draftIds, metadata = {}) {
   if (!Array.isArray(draftIds) || !draftIds.length) {
     return [];
   }
@@ -200,54 +198,51 @@ function markDraftsArchived(draftIds, metadata = {}) {
   const stamp = isoNow();
   const source = normalizeArchiveSource(metadata.source || 'manual');
   const reason = (metadata.reason || '').trim();
-
   const uniqueIds = [...new Set(draftIds.map((id) => normalizeText(id || '')).filter(Boolean))];
-  const placeholders = uniqueIds.map(() => '?').join(', ');
-  getDb().prepare(`UPDATE job_drafts SET is_archived = 1, archived_at = ?, archive_source = ?, archive_reason = ? WHERE id IN (${placeholders})`).run(
-    stamp,
-    source,
-    reason,
-    ...uniqueIds
-  );
+  if (!uniqueIds.length) {
+    return [];
+  }
 
+  const placeholders = uniqueIds.map(() => '?').join(', ');
+  await dbRun(`UPDATE job_drafts SET is_archived = 1, archived_at = ?, archive_source = ?, archive_reason = ? WHERE id IN (${placeholders})`, [stamp, source, reason, ...uniqueIds]);
   return uniqueIds;
 }
 
-function restoreOrders(orderIds) {
+async function restoreOrders(orderIds) {
   if (!Array.isArray(orderIds) || !orderIds.length) {
     return [];
   }
 
   const uniqueIds = [...new Set(orderIds.map((id) => normalizeText(id || '')).filter(Boolean))];
+  if (!uniqueIds.length) {
+    return [];
+  }
+
   const placeholders = uniqueIds.map(() => '?').join(', ');
-  getDb().prepare(`UPDATE orders SET is_archived = 0, archived_at = NULL, archive_source = NULL, archive_reason = NULL WHERE id IN (${placeholders})`).run(...uniqueIds);
+  await dbRun(`UPDATE orders SET is_archived = 0, archived_at = NULL, archive_source = NULL, archive_reason = NULL WHERE id IN (${placeholders})`, uniqueIds);
   return uniqueIds;
 }
 
-function restoreDrafts(draftIds) {
+async function restoreDrafts(draftIds) {
   if (!Array.isArray(draftIds) || !draftIds.length) {
     return [];
   }
 
   const uniqueIds = [...new Set(draftIds.map((id) => normalizeText(id || '')).filter(Boolean))];
+  if (!uniqueIds.length) {
+    return [];
+  }
+
   const placeholders = uniqueIds.map(() => '?').join(', ');
-  getDb().prepare(`UPDATE job_drafts SET is_archived = 0, archived_at = NULL, archive_source = NULL, archive_reason = NULL WHERE id IN (${placeholders})`).run(...uniqueIds);
+  await dbRun(`UPDATE job_drafts SET is_archived = 0, archived_at = NULL, archive_source = NULL, archive_reason = NULL WHERE id IN (${placeholders})`, uniqueIds);
   return uniqueIds;
 }
 
-app.get('/', (req, res) => {
-  return res.redirect('/app');
-});
+app.get('/', (req, res) => res.redirect('/app'));
+app.get('/login', (req, res) => res.sendFile(path.join(publicDir, 'login.html')));
+app.get('/app', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
 
-app.get('/login', (req, res) => {
-  return res.sendFile(path.join(publicDir, 'login.html'));
-});
-
-app.get('/app', (req, res) => {
-  return res.sendFile(path.join(publicDir, 'index.html'));
-});
-
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const username = normalizeText(req.body.username);
   const password = normalizeText(req.body.password);
 
@@ -255,7 +250,7 @@ app.post('/api/login', (req, res) => {
     return res.status(400).json({ error: 'Username and password are required.' });
   }
 
-  const user = getDb().prepare('SELECT * FROM users WHERE username = ?').get(username);
+  const user = await dbGet('SELECT * FROM users WHERE username = ?', [username]);
   if (!user) {
     return res.status(401).json({ error: 'Invalid username or password.' });
   }
@@ -271,10 +266,7 @@ app.post('/api/login', (req, res) => {
     full_name: user.full_name
   };
 
-  return res.json({
-    success: true,
-    user: req.session.user
-  });
+  return res.json({ success: true, user: req.session.user });
 });
 
 app.post('/api/logout', (req, res) => {
@@ -291,10 +283,10 @@ app.get('/api/me', (req, res) => {
   return res.json({ user: req.session.user });
 });
 
-function resolveSupplierDisplay(order) {
+async function resolveSupplierDisplay(order) {
   const supplierId = normalizeText(order.supplier_id || '');
   if (supplierId) {
-    const supplier = getDb().prepare('SELECT name FROM suppliers WHERE id = ?').get(supplierId);
+    const supplier = await dbGet('SELECT name FROM suppliers WHERE id = ?', [supplierId]);
     if (supplier && supplier.name) {
       return supplier.name;
     }
@@ -303,10 +295,10 @@ function resolveSupplierDisplay(order) {
   return normalizeText(order.supplier || '');
 }
 
-function resolveOrderedByDisplay(order) {
+async function resolveOrderedByDisplay(order) {
   const orderedById = normalizeText(order.ordered_by_id || '');
   if (orderedById) {
-    const staff = getDb().prepare('SELECT name FROM staff_names WHERE id = ?').get(orderedById);
+    const staff = await dbGet('SELECT name FROM staff_names WHERE id = ?', [orderedById]);
     if (staff && staff.name) {
       return staff.name;
     }
@@ -315,34 +307,21 @@ function resolveOrderedByDisplay(order) {
   return normalizeText(order.ordered_by || '');
 }
 
-app.get('/api/suppliers', (req, res) => {
-  const suppliers = getActiveSuppliers();
+app.get('/api/suppliers', async (req, res) => {
+  const suppliers = await getActiveSuppliersAsync();
   return res.json({ suppliers: suppliers.map((item) => item.name) });
 });
 
-app.get('/api/master-lists', (req, res) => {
-  const suppliers = getAllSuppliers();
-  const staffNames = getAllStaffNames();
-  const historicalOrderedBy = getDb()
-    .prepare("SELECT DISTINCT ordered_by FROM orders WHERE ordered_by IS NOT NULL AND ordered_by <> '' ORDER BY ordered_by COLLATE NOCASE ASC")
-    .all()
+app.get('/api/master-lists', async (req, res) => {
+  const suppliers = await getAllSuppliersAsync();
+  const staffNames = await getAllStaffNamesAsync();
+  const historicalOrderedBy = (await dbAll("SELECT DISTINCT ordered_by FROM orders WHERE ordered_by IS NOT NULL AND ordered_by <> '' ORDER BY LOWER(ordered_by) ASC"))
     .map((row) => row.ordered_by);
-  const mergedStaffNames = [...new Set([
-    ...staffNames.map((item) => item.name),
-    ...historicalOrderedBy
-  ].filter(Boolean))];
+  const mergedStaffNames = [...new Set([ ...staffNames.map((item) => item.name), ...historicalOrderedBy ].filter(Boolean))];
 
   return res.json({
-    suppliers: suppliers.map((item) => ({
-      id: item.id,
-      name: item.name,
-      active: Number(item.active) !== 0
-    })),
-    staff_names: staffNames.map((item) => ({
-      id: item.id,
-      name: item.name,
-      active: Number(item.active) !== 0
-    })),
+    suppliers: suppliers.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })),
+    staff_names: staffNames.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })),
     ordered_by_options: mergedStaffNames
   });
 });
@@ -372,19 +351,19 @@ app.get('/api/events', (req, res) => {
   });
 });
 
-app.get('/api/job-drafts', (req, res) => {
+app.get('/api/job-drafts', async (req, res) => {
   const statusFilter = normalizeText(req.query.status || '');
   const archivedOnly = req.query.archived === 'true' || statusFilter === 'Archived';
   const rows = statusFilter === 'Archived'
-    ? getDb().prepare('SELECT * FROM job_drafts WHERE is_archived = 1 ORDER BY archived_at DESC, updated_at DESC').all()
+    ? await dbAll('SELECT * FROM job_drafts WHERE is_archived = 1 ORDER BY archived_at DESC, updated_at DESC')
     : statusFilter
-      ? getDb().prepare('SELECT * FROM job_drafts WHERE status = ? AND is_archived = ? ORDER BY updated_at DESC, created_at DESC').all(statusFilter, archivedOnly ? 1 : 0)
-      : getDb().prepare('SELECT * FROM job_drafts WHERE is_archived = ? ORDER BY updated_at DESC, created_at DESC').all(archivedOnly ? 1 : 0);
+      ? await dbAll('SELECT * FROM job_drafts WHERE status = ? AND is_archived = ? ORDER BY updated_at DESC, created_at DESC', [statusFilter, archivedOnly ? 1 : 0])
+      : await dbAll('SELECT * FROM job_drafts WHERE is_archived = ? ORDER BY updated_at DESC, created_at DESC', [archivedOnly ? 1 : 0]);
 
-  return res.json({ drafts: rows.map((row) => serializeJobDraft(row)) });
+  return res.json({ drafts: await Promise.all(rows.map((row) => serializeJobDraft(row))) });
 });
 
-app.post('/api/job-drafts', requireStaffAuth, (req, res) => {
+app.post('/api/job-drafts', requireStaffAuth, async (req, res) => {
   const draftData = {
     customer_name: normalizeText(req.body.customer_name),
     housecall_job_number: normalizeText(req.body.housecall_job_number),
@@ -401,12 +380,12 @@ app.post('/api/job-drafts', requireStaffAuth, (req, res) => {
 
   const now = isoNow();
   const id = `draft-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  getDb().prepare(`
+  await dbRun(`
     INSERT INTO job_drafts (
       id, customer_name, housecall_job_number, housecall_job_link, hcp_job_id, notes,
       deposit_status, status, created_at, updated_at, created_by, updated_by, is_preview_data
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-  `).run(
+  `, [
     id,
     draftData.customer_name,
     draftData.housecall_job_number,
@@ -419,15 +398,15 @@ app.post('/api/job-drafts', requireStaffAuth, (req, res) => {
     now,
     'office-user',
     'office-user'
-  );
+  ]);
 
-  const draft = serializeJobDraft(getJobDraftById(id));
+  const draft = await serializeJobDraft(await getJobDraftById(id));
   broadcastLiveEvent('job-drafts', { action: 'created', draftId: id, time: isoNow() });
   return res.status(201).json({ draft });
 });
 
-app.put('/api/job-drafts/:id', requireStaffAuth, (req, res) => {
-  const draft = getJobDraftById(req.params.id);
+app.put('/api/job-drafts/:id', requireStaffAuth, async (req, res) => {
+  const draft = await getJobDraftById(req.params.id);
   if (!draft) {
     return res.status(404).json({ error: 'Job draft not found.' });
   }
@@ -447,7 +426,7 @@ app.put('/api/job-drafts/:id', requireStaffAuth, (req, res) => {
   }
 
   const now = isoNow();
-  getDb().prepare(`
+  await dbRun(`
     UPDATE job_drafts SET
       customer_name = ?,
       housecall_job_number = ?,
@@ -459,7 +438,7 @@ app.put('/api/job-drafts/:id', requireStaffAuth, (req, res) => {
       updated_at = ?,
       updated_by = ?
     WHERE id = ?
-  `).run(
+  `, [
     draftData.customer_name,
     draftData.housecall_job_number,
     draftData.housecall_job_link,
@@ -470,33 +449,33 @@ app.put('/api/job-drafts/:id', requireStaffAuth, (req, res) => {
     now,
     'office-user',
     req.params.id
-  );
+  ]);
 
-  const updated = serializeJobDraft(getJobDraftById(req.params.id));
+  const updated = await serializeJobDraft(await getJobDraftById(req.params.id));
   broadcastLiveEvent('job-drafts', { action: 'updated', draftId: req.params.id, time: isoNow() });
   return res.json({ draft: updated });
 });
 
-app.post('/api/job-drafts/:id/complete', requireStaffAuth, (req, res) => {
-  const draft = getJobDraftById(req.params.id);
+app.post('/api/job-drafts/:id/complete', requireStaffAuth, async (req, res) => {
+  const draft = await getJobDraftById(req.params.id);
   if (!draft) {
     return res.status(404).json({ error: 'Job draft not found.' });
   }
 
   const now = isoNow();
-  getDb().prepare('UPDATE job_drafts SET status = ?, updated_at = ?, updated_by = ? WHERE id = ?').run('Completed', now, 'office-user', req.params.id);
-  const updated = serializeJobDraft(getJobDraftById(req.params.id));
+  await dbRun('UPDATE job_drafts SET status = ?, updated_at = ?, updated_by = ? WHERE id = ?', ['Completed', now, 'office-user', req.params.id]);
+  const updated = await serializeJobDraft(await getJobDraftById(req.params.id));
   broadcastLiveEvent('job-drafts', { action: 'completed', draftId: req.params.id, time: isoNow() });
   return res.json({ draft: updated });
 });
 
-app.post('/api/job-drafts/:id/archive', requireStaffAuth, (req, res) => {
-  const draft = getJobDraftById(req.params.id);
+app.post('/api/job-drafts/:id/archive', requireStaffAuth, async (req, res) => {
+  const draft = await getJobDraftById(req.params.id);
   if (!draft) {
     return res.status(404).json({ error: 'Job draft not found.' });
   }
 
-  const linkedOrders = getArchivedOrderIdsForDraft(draft.id);
+  const linkedOrders = await getArchivedOrderIdsForDraft(draft.id);
   const hasOutstanding = linkedOrders.some((order) => order.status !== 'Received');
   const source = normalizeArchiveSource(req.body.source || 'manual');
   const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
@@ -511,31 +490,24 @@ app.post('/api/job-drafts/:id/archive', requireStaffAuth, (req, res) => {
     });
   }
 
-  const archivedIds = markDraftsArchived([draft.id], { source, reason });
-  const archivedOrderIds = markOrdersArchived(linkedOrders.map((order) => order.id), { source, reason });
+  const archivedIds = await markDraftsArchived([draft.id], { source, reason });
+  const archivedOrderIds = await markOrdersArchived(linkedOrders.map((order) => order.id), { source, reason });
 
   broadcastLiveEvent('job-drafts', { action: 'archived', draftId: draft.id, time: isoNow() });
   broadcastLiveEvent('orders', { action: 'archived', orderIds: archivedOrderIds, time: isoNow() });
 
-  return res.json({
-    archived: archivedIds.length > 0,
-    draft_id: draft.id,
-    order_ids: archivedOrderIds,
-    warning: null,
-    source,
-    reason
-  });
+  return res.json({ archived: archivedIds.length > 0, draft_id: draft.id, order_ids: archivedOrderIds, warning: null, source, reason });
 });
 
-app.post('/api/job-drafts/:id/restore', requireStaffAuth, (req, res) => {
-  const draft = getJobDraftById(req.params.id);
+app.post('/api/job-drafts/:id/restore', requireStaffAuth, async (req, res) => {
+  const draft = await getJobDraftById(req.params.id);
   if (!draft) {
     return res.status(404).json({ error: 'Job draft not found.' });
   }
 
-  const restoredDraftIds = restoreDrafts([draft.id]);
-  const linkedOrders = getDb().prepare('SELECT id FROM orders WHERE job_draft_id = ?').all(draft.id).map((row) => row.id);
-  restoreOrders(linkedOrders);
+  const restoredDraftIds = await restoreDrafts([draft.id]);
+  const linkedOrders = (await dbAll('SELECT id FROM orders WHERE job_draft_id = ?', [draft.id])).map((row) => row.id);
+  await restoreOrders(linkedOrders);
 
   broadcastLiveEvent('job-drafts', { action: 'restored', draftId: draft.id, time: isoNow() });
   broadcastLiveEvent('orders', { action: 'restored', orderIds: linkedOrders, time: isoNow() });
@@ -543,15 +515,15 @@ app.post('/api/job-drafts/:id/restore', requireStaffAuth, (req, res) => {
   return res.json({ restored: restoredDraftIds.length > 0, draft_id: draft.id, order_ids: linkedOrders });
 });
 
-app.post('/api/job-drafts/:id/reopen', requireStaffAuth, (req, res) => {
-  const draft = getJobDraftById(req.params.id);
+app.post('/api/job-drafts/:id/reopen', requireStaffAuth, async (req, res) => {
+  const draft = await getJobDraftById(req.params.id);
   if (!draft) {
     return res.status(404).json({ error: 'Job draft not found.' });
   }
 
   const now = isoNow();
-  getDb().prepare('UPDATE job_drafts SET status = ?, updated_at = ?, updated_by = ? WHERE id = ?').run('Open', now, 'office-user', req.params.id);
-  const updated = serializeJobDraft(getJobDraftById(req.params.id));
+  await dbRun('UPDATE job_drafts SET status = ?, updated_at = ?, updated_by = ? WHERE id = ?', ['Open', now, 'office-user', req.params.id]);
+  const updated = await serializeJobDraft(await getJobDraftById(req.params.id));
   broadcastLiveEvent('job-drafts', { action: 'reopened', draftId: req.params.id, time: isoNow() });
   return res.json({ draft: updated });
 });
@@ -597,39 +569,27 @@ app.post('/api/admin/logout', (req, res) => {
   return res.json({ success: true });
 });
 
-app.post('/api/master-lists/suppliers', requireAdminAuth, (req, res) => {
+app.post('/api/master-lists/suppliers', requireAdminAuth, async (req, res) => {
   const items = Array.isArray(req.body.items) ? req.body.items : [];
-  const saved = items
-    .map((item) => upsertSupplierMasterRow({
-      id: item.id || '',
-      name: item.name,
-      active: item.active !== false
-    }))
+  const saved = (await Promise.all(items.map((item) => upsertSupplierMasterRowAsync({ id: item.id || '', name: item.name, active: item.active !== false }))))
     .filter(Boolean)
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
   broadcastLiveEvent('master-lists', { collection: 'suppliers', action: 'updated', count: saved.length, time: isoNow() });
-
   return res.json({ suppliers: saved.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })) });
 });
 
-app.post('/api/master-lists/ordered-by', requireAdminAuth, (req, res) => {
+app.post('/api/master-lists/ordered-by', requireAdminAuth, async (req, res) => {
   const items = Array.isArray(req.body.items) ? req.body.items : [];
-  const saved = items
-    .map((item) => upsertStaffMasterRow({
-      id: item.id || '',
-      name: item.name,
-      active: item.active !== false
-    }))
+  const saved = (await Promise.all(items.map((item) => upsertStaffMasterRowAsync({ id: item.id || '', name: item.name, active: item.active !== false }))))
     .filter(Boolean)
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
   broadcastLiveEvent('master-lists', { collection: 'ordered_by', action: 'updated', count: saved.length, time: isoNow() });
-
   return res.json({ staff_names: saved.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })) });
 });
 
-app.post('/api/orders/archive', requireStaffAuth, (req, res) => {
+app.post('/api/orders/archive', requireStaffAuth, async (req, res) => {
   const ids = Array.isArray(req.body.order_ids) ? req.body.order_ids : [];
   if (!ids.length) {
     return res.status(400).json({ error: 'At least one order must be selected to archive.' });
@@ -637,15 +597,13 @@ app.post('/api/orders/archive', requireStaffAuth, (req, res) => {
 
   const source = normalizeArchiveSource(req.body.source || 'manual');
   const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
-  const selected = ids
-    .map((id) => normalizeText(id || ''))
-    .filter(Boolean);
+  const selected = ids.map((id) => normalizeText(id || '')).filter(Boolean);
 
   if (!selected.length) {
     return res.status(400).json({ error: 'No valid orders were selected for archiving.' });
   }
 
-  const statusRows = getDb().prepare('SELECT id, status FROM orders WHERE id IN (' + selected.map(() => '?').join(', ') + ')').all(...selected);
+  const statusRows = await dbAll(`SELECT id, status FROM orders WHERE id IN (${selected.map(() => '?').join(', ')})`, selected);
   const includesUnreceived = statusRows.some((row) => (row.status || 'Ordered') !== 'Received');
   if (includesUnreceived) {
     return res.status(409).json({
@@ -654,29 +612,29 @@ app.post('/api/orders/archive', requireStaffAuth, (req, res) => {
     });
   }
 
-  const archivedIds = markOrdersArchived(selected, { source, reason });
-  const jobDraftIds = getDb().prepare('SELECT DISTINCT job_draft_id FROM orders WHERE id IN (' + selected.map(() => '?').join(', ') + ') AND job_draft_id IS NOT NULL').all(...selected).map((row) => row.job_draft_id).filter(Boolean);
+  const archivedIds = await markOrdersArchived(selected, { source, reason });
+  const jobDraftIds = (await dbAll(`SELECT DISTINCT job_draft_id FROM orders WHERE id IN (${selected.map(() => '?').join(', ')}) AND job_draft_id IS NOT NULL`, selected)).map((row) => row.job_draft_id).filter(Boolean);
   if (jobDraftIds.length) {
-    markDraftsArchived(jobDraftIds, { source, reason });
+    await markDraftsArchived(jobDraftIds, { source, reason });
   }
 
   broadcastLiveEvent('orders', { action: 'archived', orderIds: archivedIds, time: isoNow() });
   return res.json({ archived: true, order_ids: archivedIds, source, reason });
 });
 
-app.post('/api/orders/:id/restore', requireStaffAuth, (req, res) => {
-  const order = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+app.post('/api/orders/:id/restore', requireStaffAuth, async (req, res) => {
+  const order = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   if (!order) {
     return res.status(404).json({ error: 'Order not found.' });
   }
 
-  const restoredIds = restoreOrders([order.id]);
+  const restoredIds = await restoreOrders([order.id]);
   if (order.job_draft_id) {
-    const linkedOrders = getDb().prepare('SELECT id FROM orders WHERE job_draft_id = ?').all(order.job_draft_id).map((row) => row.id);
-    restoreOrders(linkedOrders);
-    const linkedDraft = getDb().prepare('SELECT * FROM job_drafts WHERE id = ?').get(order.job_draft_id);
+    const linkedOrders = (await dbAll('SELECT id FROM orders WHERE job_draft_id = ?', [order.job_draft_id])).map((row) => row.id);
+    await restoreOrders(linkedOrders);
+    const linkedDraft = await dbGet('SELECT * FROM job_drafts WHERE id = ?', [order.job_draft_id]);
     if (linkedDraft && Number(linkedDraft.is_archived) === 1) {
-      restoreDrafts([linkedDraft.id]);
+      await restoreDrafts([linkedDraft.id]);
     }
   }
 
@@ -684,10 +642,8 @@ app.post('/api/orders/:id/restore', requireStaffAuth, (req, res) => {
   return res.json({ restored: restoredIds.length > 0, order_id: order.id });
 });
 
-app.get('/api/orders', (req, res) => {
-  const rows = getDb()
-    .prepare('SELECT * FROM orders ORDER BY date_ordered DESC, created_at DESC')
-    .all();
+app.get('/api/orders', async (req, res) => {
+  const rows = await dbAll('SELECT * FROM orders ORDER BY date_ordered DESC, created_at DESC');
 
   const statusFilter = (req.query.status || 'Outstanding').toString();
   const viewFilter = (req.query.view || 'All Orders').toString();
@@ -739,17 +695,7 @@ app.get('/api/orders', (req, res) => {
     }
 
     if (searchTerm) {
-      const haystack = [
-        order.customer_name,
-        order.housecall_job_number,
-        order.supplier,
-        order.po_number,
-        order.category || '',
-        resolvedGroup
-      ]
-        .join(' ')
-        .toLowerCase();
-
+      const haystack = [order.customer_name, order.housecall_job_number, order.supplier, order.po_number, order.category || '', resolvedGroup].join(' ').toLowerCase();
       if (!haystack.includes(searchTerm)) {
         return false;
       }
@@ -794,13 +740,13 @@ app.get('/api/orders', (req, res) => {
   return res.json({ orders: normalized });
 });
 
-app.post('/api/orders', requireStaffAuth, (req, res) => {
+app.post('/api/orders', requireStaffAuth, async (req, res) => {
   try {
     const orderData = normalizeOrderInput(req.body);
     const draftId = normalizeText(req.body.job_draft_id || '');
 
     if (draftId) {
-      const draft = getJobDraftById(draftId);
+      const draft = await getJobDraftById(draftId);
       if (!draft) {
         return res.status(404).json({ error: 'Job draft not found.' });
       }
@@ -816,22 +762,12 @@ app.post('/api/orders', requireStaffAuth, (req, res) => {
       orderData.job_draft_id = draftId;
     }
 
-    if (!orderData.customer_name) {
-      return res.status(400).json({ error: 'Customer name is required.' });
-    }
+    if (!orderData.customer_name) return res.status(400).json({ error: 'Customer name is required.' });
+    if (!orderData.supplier) return res.status(400).json({ error: 'Supplier is required.' });
+    if (!orderData.category) return res.status(400).json({ error: 'Category is required.' });
+    if (!orderData.ordered_by) return res.status(400).json({ error: 'Ordered by is required.' });
 
-    if (!orderData.supplier) {
-      return res.status(400).json({ error: 'Supplier is required.' });
-    }
-
-    if (!orderData.category) {
-      return res.status(400).json({ error: 'Category is required.' });
-    }
-
-    if (!orderData.ordered_by) {
-      return res.status(400).json({ error: 'Ordered by is required.' });
-    }
-    const supplierRecord = ensureSupplierExists(orderData.supplier);
+    const supplierRecord = await ensureSupplierExistsAsync(orderData.supplier);
     if (!supplierRecord) {
       return res.status(400).json({ error: 'Supplier is required.' });
     }
@@ -848,15 +784,13 @@ app.post('/api/orders', requireStaffAuth, (req, res) => {
     const orderId = `order-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     const now = isoNow();
 
-    const insert = getDb().prepare(`
+    await dbRun(`
       INSERT INTO orders (
         id, customer_name, housecall_job_number, housecall_job_link, supplier, supplier_id, category, combined_group,
         po_number, date_ordered, expected_delivery_date, date_received, ordered_by, ordered_by_id, status, notes, job_draft_id,
         created_at, updated_at, created_by, updated_by, is_preview_data
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-    `);
-
-    insert.run(
+    `, [
       orderId,
       orderData.customer_name,
       orderData.housecall_job_number,
@@ -878,16 +812,16 @@ app.post('/api/orders', requireStaffAuth, (req, res) => {
       now,
       'office-user',
       'office-user'
-    );
+    ]);
 
-    const created = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+    const created = await dbGet('SELECT * FROM orders WHERE id = ?', [orderId]);
     broadcastLiveEvent('orders', { action: 'created', orderId, updatedAt: created.updated_at, time: isoNow() });
     return res.status(201).json({
       order: {
         ...created,
         status: statusFromOrder(created),
-        supplier: resolveSupplierDisplay(created),
-        ordered_by: resolveOrderedByDisplay(created)
+        supplier: await resolveSupplierDisplay(created),
+        ordered_by: await resolveOrderedByDisplay(created)
       }
     });
   } catch (error) {
@@ -895,38 +829,25 @@ app.post('/api/orders', requireStaffAuth, (req, res) => {
   }
 });
 
-app.put('/api/orders/:id', requireStaffAuth, (req, res) => {
+app.put('/api/orders/:id', requireStaffAuth, async (req, res) => {
   try {
-    const existing = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+    const existing = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
     if (!existing) {
       return res.status(404).json({ error: 'Order not found.' });
     }
 
     const incomingVersion = (req.body.updated_at || req.body.version || '').toString();
     if (incomingVersion && incomingVersion !== existing.updated_at) {
-      return res.status(409).json({
-        error: 'This order was edited by another staff member. Please refresh and try again.'
-      });
+      return res.status(409).json({ error: 'This order was edited by another staff member. Please refresh and try again.' });
     }
 
     const orderData = normalizeOrderInput(req.body);
-    if (!orderData.customer_name) {
-      return res.status(400).json({ error: 'Customer name is required.' });
-    }
+    if (!orderData.customer_name) return res.status(400).json({ error: 'Customer name is required.' });
+    if (!orderData.supplier) return res.status(400).json({ error: 'Supplier is required.' });
+    if (!orderData.category) return res.status(400).json({ error: 'Category is required.' });
+    if (!orderData.ordered_by) return res.status(400).json({ error: 'Ordered by is required.' });
 
-    if (!orderData.supplier) {
-      return res.status(400).json({ error: 'Supplier is required.' });
-    }
-
-    if (!orderData.category) {
-      return res.status(400).json({ error: 'Category is required.' });
-    }
-
-    if (!orderData.ordered_by) {
-      return res.status(400).json({ error: 'Ordered by is required.' });
-    }
-
-    const supplierRecord = ensureSupplierExists(orderData.supplier);
+    const supplierRecord = await ensureSupplierExistsAsync(orderData.supplier);
     if (!supplierRecord) {
       return res.status(400).json({ error: 'Supplier is required.' });
     }
@@ -943,7 +864,7 @@ app.put('/api/orders/:id', requireStaffAuth, (req, res) => {
     }
 
     const now = isoNow();
-    getDb().prepare(`
+    await dbRun(`
       UPDATE orders SET
         customer_name = ?,
         housecall_job_number = ?,
@@ -963,7 +884,7 @@ app.put('/api/orders/:id', requireStaffAuth, (req, res) => {
         updated_at = ?,
         updated_by = ?
       WHERE id = ?
-    `).run(
+    `, [
       orderData.customer_name,
       orderData.housecall_job_number,
       orderData.housecall_job_link,
@@ -982,16 +903,16 @@ app.put('/api/orders/:id', requireStaffAuth, (req, res) => {
       now,
       'office-user',
       req.params.id
-    );
+    ]);
 
-    const updated = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+    const updated = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
     broadcastLiveEvent('orders', { action: 'updated', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
     return res.json({
       order: {
         ...updated,
         status: statusFromOrder(updated),
-        supplier: resolveSupplierDisplay(updated),
-        ordered_by: resolveOrderedByDisplay(updated),
+        supplier: await resolveSupplierDisplay(updated),
+        ordered_by: await resolveOrderedByDisplay(updated),
         is_overdue: updated.expected_delivery_date && updated.status === 'Ordered' && updated.expected_delivery_date < todayPhoenixString()
       }
     });
@@ -1000,49 +921,41 @@ app.put('/api/orders/:id', requireStaffAuth, (req, res) => {
   }
 });
 
-app.post('/api/orders/:id/mark-received', requireStaffAuth, (req, res) => {
-  const existing = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+app.post('/api/orders/:id/mark-received', requireStaffAuth, async (req, res) => {
+  const existing = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   if (!existing) {
     return res.status(404).json({ error: 'Order not found.' });
   }
 
   const incomingVersion = (req.body.updated_at || req.body.version || '').toString();
   if (incomingVersion && incomingVersion !== existing.updated_at) {
-    return res.status(409).json({
-      error: 'This order changed elsewhere. Your draft was kept. Review the latest version and try again.'
-    });
+    return res.status(409).json({ error: 'This order changed elsewhere. Your draft was kept. Review the latest version and try again.' });
   }
 
   const receivedDate = normalizeText(req.body.date_received) || todayPhoenixString();
   const now = isoNow();
-  getDb().prepare(
-    'UPDATE orders SET date_received = ?, status = ?, updated_at = ?, updated_by = ? WHERE id = ?'
-  ).run(receivedDate, 'Received', now, 'office-user', req.params.id);
+  await dbRun('UPDATE orders SET date_received = ?, status = ?, updated_at = ?, updated_by = ? WHERE id = ?', [receivedDate, 'Received', now, 'office-user', req.params.id]);
 
-  const updated = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+  const updated = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   broadcastLiveEvent('orders', { action: 'received', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
   return res.json({ order: { ...updated, status: statusFromOrder(updated) } });
 });
 
-app.post('/api/orders/:id/reopen', requireStaffAuth, (req, res) => {
-  const existing = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+app.post('/api/orders/:id/reopen', requireStaffAuth, async (req, res) => {
+  const existing = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   if (!existing) {
     return res.status(404).json({ error: 'Order not found.' });
   }
 
   const incomingVersion = (req.body.updated_at || req.body.version || '').toString();
   if (incomingVersion && incomingVersion !== existing.updated_at) {
-    return res.status(409).json({
-      error: 'This order changed elsewhere. Your draft was kept. Review the latest version and try again.'
-    });
+    return res.status(409).json({ error: 'This order changed elsewhere. Your draft was kept. Review the latest version and try again.' });
   }
 
   const now = isoNow();
-  getDb().prepare(
-    'UPDATE orders SET date_received = NULL, status = ?, updated_at = ?, updated_by = ? WHERE id = ?'
-  ).run('Ordered', now, 'office-user', req.params.id);
+  await dbRun('UPDATE orders SET date_received = NULL, status = ?, updated_at = ?, updated_by = ? WHERE id = ?', ['Ordered', now, 'office-user', req.params.id]);
 
-  const updated = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+  const updated = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   broadcastLiveEvent('orders', { action: 'reopened', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
   return res.json({ order: { ...updated, status: statusFromOrder(updated) } });
 });
