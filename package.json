@@ -8,14 +8,25 @@
     "dev": "node --watch src/server.js",
     "test": "node --test --test-concurrency=1",
     "migrate:postgres": "node scripts/migrate-postgres.js",
-    "check:render": "node scripts/check-render-config.js"
+    "check:render": "node scripts/check-render-config.js",
+    "import:sqlite": "node scripts/import-sqlite.js",
+    "backup:postgres": "node scripts/backup-postgres.js",
+    "backup:sqlite": "node scripts/backup-sqlite.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1149.0",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^11.7.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
     "express-session": "^1.18.0",
+    "jose": "^6.2.12",
     "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "embedded-postgres": "^18.4.0-beta.17"
+  },
+  "engines": {
+    "node": ">=22 <23"
   }
 }

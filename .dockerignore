@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+data
+customer-data-backups
+node_modules
+*.db
+*.db-*
+*.sqlite*
+*.backup
+*.bak
+.codex
+.agents
+
+!Dockerfile.backup
+*.dump
+*.dump.verification.json

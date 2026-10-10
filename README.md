@@ -51,47 +51,9 @@ The app includes fictional sample orders for preview use. The sample data is cle
 - Overdue is a calculated flag, not a separate status.
 - Orders without an ETA show `No ETA`.
 
-## Publish the app for office staff online
+## Hosting preparation
 
-For real office use, deploy the app to a host with persistent storage and a custom domain. The recommended production setup for this project is:
-
-- Host: Render
-- Database: Render-managed PostgreSQL, using the existing `DATABASE_URL` connection value
-- Region: Oregon (matching the paid Postgres instance already created)
-- Domain: private or internal company domain if the app is only for staff access
-- Secure session secret: set a strong value in the environment
-
-### Render deployment checklist
-
-1. Create or reuse a Render web service for the app.
-2. Connect the service to the paid Postgres database already created in Render in Oregon.
-3. Set the environment variables listed below in Render.
-4. Use the existing database's internal URL for the app service; do not create another database in Render.
-5. Run the Postgres schema migration before the first production start.
-6. Keep `PREVIEW_MODE=false` for a real office deployment.
-7. Verify the app logs in successfully and that the admin flow works before sharing it with staff.
-
-### Required environment variables for Render
-
-- `DATABASE_URL`: Use the existing Render Postgres internal connection string for the Oregon database. Keep this value in Render secrets.
-- `SESSION_SECRET`: A long random secret value stored in Render's secret environment settings.
-- `ADMIN_USERNAME`: The administrator login name for the app.
-- `ADMIN_PASSWORD` or `ADMIN_PASSWORD_HASH`: Admin password seed or hash. Use a real office login credential.
-- `PREVIEW_MODE`: Set to `false` once the app is ready for live business use.
-- `PORT`: Render sets this automatically in production; keep it as a runtime environment variable.
-- `NODE_ENV`: Set to `production`.
-
-### Render commands
-
-```bash
-npm install --include=dev
-npm run migrate:postgres
-npm start
-```
-
-### Deployment safety rule
-
-The app now refuses to run in production without a `DATABASE_URL` value, so it will not silently fall back to the local SQLite database.
+Follow [the hosting and recovery guide](docs/hosting.md) for the existing Render database, Cloudflare staff protection, exact service fields, import, backups and cutover. Production requires Access configuration and a strong session secret; it cannot fall back to SQLite. Provider deployment, S3 upload and restore must each be tested before staff cutover.
 
 ## Ongoing costs and requirements
 

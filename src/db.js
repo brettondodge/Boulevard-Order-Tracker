@@ -5,13 +5,14 @@ import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
 import Database from 'better-sqlite3';
 import pg from 'pg';
+import { migratePostgres } from './postgres-migrations.js';
 import { isoNow, todayPhoenixString } from './utils.js';
 
 dotenv.config();
 
 const { Pool } = pg;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.resolve(__dirname, '../data');
+const dataDir = process.env.SQLITE_DATA_DIR ? path.resolve(process.env.SQLITE_DATA_DIR) : path.resolve(__dirname, '../data');
 fs.mkdirSync(dataDir, { recursive: true });
 
 export const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
@@ -22,13 +23,23 @@ const postgresPool = isProduction ? new Pool({
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
   ssl: process.env.PGSSLMODE === 'require' || process.env.RENDER === 'true'
-    ? { rejectUnauthorized: false }
+    ? { rejectUnauthorized: true }
     : undefined
 }) : null;
 
 export function validateRuntimeDatabaseConfig() {
   if (!isProduction) {
     return;
+  }
+
+  if (!process.env.CF_ACCESS_TEAM_DOMAIN || !process.env.CF_ACCESS_AUD) {
+    throw new Error('Production requires CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD. Staff access must be configured before deployment.');
+  }
+  if (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32) {
+    throw new Error('Production requires a SESSION_SECRET of at least 32 characters.');
+  }
+  if (!process.env.ADMIN_PASSWORD && !process.env.ADMIN_PASSWORD_HASH) {
+    throw new Error('Production requires ADMIN_PASSWORD or ADMIN_PASSWORD_HASH for the separate admin gate.');
   }
 
   if (!process.env.DATABASE_URL) {
@@ -367,121 +378,20 @@ export async function ensureProductionUsers() {
   }
 
   const adminUsername = (process.env.ADMIN_USERNAME || 'admin').trim();
-  const password = process.env.ADMIN_PASSWORD || 'admin123';
-  const hash = bcrypt.hashSync(password, 10);
+  const password = process.env.ADMIN_PASSWORD;
+  if (!password && !process.env.ADMIN_PASSWORD_HASH) throw new Error('ADMIN_PASSWORD is required to initialize production users.');
+  const hash = process.env.ADMIN_PASSWORD_HASH || bcrypt.hashSync(password, 10);
   const id = cryptoRandomId('user');
   await pool.query(
     'INSERT INTO users (id, username, password_hash, full_name, created_at) VALUES ($1, $2, $3, $4, $5)',
     [id, adminUsername, hash, 'Office Admin', isoNow()]
-  );
-
-  const staffName = 'Mary Johnson';
-  const staffHash = bcrypt.hashSync(process.env.DEMO_STAFF_PASSWORD || 'staff123', 10);
-  await pool.query(
-    'INSERT INTO users (id, username, password_hash, full_name, created_at) VALUES ($1, $2, $3, $4, $5)',
-    [cryptoRandomId('user'), 'mary', staffHash, staffName, isoNow()]
   );
 }
 
 export async function initializeDatabase() {
   if (isProduction) {
     const pool = await getPool();
-    const statements = [
-      `CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        username TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        full_name TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );`,
-      `CREATE TABLE IF NOT EXISTS suppliers (
-        id TEXT PRIMARY KEY,
-        name TEXT UNIQUE NOT NULL,
-        active INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );`,
-      `CREATE TABLE IF NOT EXISTS staff_names (
-        id TEXT PRIMARY KEY,
-        name TEXT UNIQUE NOT NULL,
-        active INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );`,
-      `CREATE TABLE IF NOT EXISTS job_drafts (
-        id TEXT PRIMARY KEY,
-        customer_name TEXT NOT NULL,
-        housecall_job_number TEXT,
-        housecall_job_link TEXT,
-        hcp_job_id TEXT,
-        notes TEXT,
-        deposit_status TEXT NOT NULL DEFAULT 'Awaiting deposit',
-        status TEXT NOT NULL DEFAULT 'Open',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        created_by TEXT,
-        updated_by TEXT,
-        is_archived INTEGER NOT NULL DEFAULT 0,
-        archived_at TEXT,
-        archive_source TEXT,
-        archive_reason TEXT,
-        is_preview_data INTEGER NOT NULL DEFAULT 0
-      );`,
-      `CREATE TABLE IF NOT EXISTS orders (
-        id TEXT PRIMARY KEY,
-        customer_name TEXT NOT NULL,
-        housecall_job_number TEXT,
-        housecall_job_link TEXT,
-        supplier TEXT NOT NULL,
-        supplier_id TEXT,
-        category TEXT,
-        combined_group TEXT,
-        po_number TEXT,
-        date_ordered TEXT NOT NULL,
-        expected_delivery_date TEXT,
-        date_received TEXT,
-        ordered_by TEXT,
-        ordered_by_id TEXT,
-        status TEXT NOT NULL DEFAULT 'Ordered',
-        notes TEXT,
-        job_draft_id TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        created_by TEXT,
-        updated_by TEXT,
-        is_archived INTEGER NOT NULL DEFAULT 0,
-        archived_at TEXT,
-        archive_source TEXT,
-        archive_reason TEXT,
-        is_preview_data INTEGER NOT NULL DEFAULT 0
-      );`,
-      `CREATE TABLE IF NOT EXISTS sessions (
-        sid TEXT PRIMARY KEY,
-        sess JSONB NOT NULL,
-        expires_at TIMESTAMPTZ NOT NULL
-      );`,
-      `ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS active INTEGER NOT NULL DEFAULT 1;`,
-      `ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS updated_at TEXT;`,
-      `ALTER TABLE staff_names ADD COLUMN IF NOT EXISTS active INTEGER NOT NULL DEFAULT 1;`,
-      `ALTER TABLE job_drafts ADD COLUMN IF NOT EXISTS is_archived INTEGER NOT NULL DEFAULT 0;`,
-      `ALTER TABLE job_drafts ADD COLUMN IF NOT EXISTS archived_at TEXT;`,
-      `ALTER TABLE job_drafts ADD COLUMN IF NOT EXISTS archive_source TEXT;`,
-      `ALTER TABLE job_drafts ADD COLUMN IF NOT EXISTS archive_reason TEXT;`,
-      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS supplier_id TEXT;`,
-      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS category TEXT;`,
-      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS combined_group TEXT;`,
-      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS ordered_by TEXT;`,
-      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS ordered_by_id TEXT;`,
-      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS job_draft_id TEXT;`,
-      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_archived INTEGER NOT NULL DEFAULT 0;`,
-      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS archived_at TEXT;`,
-      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS archive_source TEXT;`,
-      `ALTER TABLE orders ADD COLUMN IF NOT EXISTS archive_reason TEXT;`
-    ];
-
-    for (const statement of statements) {
-      await pool.query(statement);
-    }
+    await migratePostgres(pool);
 
     await ensureProductionUsers();
     return;
@@ -760,50 +670,6 @@ export function seedPreviewData() {
   }
 }
 
-export function createPostgresSessionStore(pool) {
-  return {
-    async get(sid, callback) {
-      try {
-        const result = await pool.query('SELECT sess FROM sessions WHERE sid = $1 AND expires_at > NOW()', [sid]);
-        const session = result.rows[0]?.sess || null;
-        callback && callback(null, session ? session : null);
-      } catch (error) {
-        callback && callback(error);
-      }
-    },
-    async set(sid, session, callback) {
-      try {
-        const payload = JSON.stringify(session);
-        const expiresAt = new Date(Date.now() + (session.cookie?.maxAge || 12 * 60 * 60 * 1000)).toISOString();
-        await pool.query(
-          `INSERT INTO sessions (sid, sess, expires_at) VALUES ($1, $2::jsonb, $3)
-           ON CONFLICT (sid) DO UPDATE SET sess = EXCLUDED.sess, expires_at = EXCLUDED.expires_at`,
-          [sid, payload, expiresAt]
-        );
-        callback && callback(null);
-      } catch (error) {
-        callback && callback(error);
-      }
-    },
-    async destroy(sid, callback) {
-      try {
-        await pool.query('DELETE FROM sessions WHERE sid = $1', [sid]);
-        callback && callback(null);
-      } catch (error) {
-        callback && callback(error);
-      }
-    },
-    async touch(sid, session, callback) {
-      try {
-        const expiresAt = new Date(Date.now() + (session.cookie?.maxAge || 12 * 60 * 60 * 1000)).toISOString();
-        await pool.query('UPDATE sessions SET expires_at = $1 WHERE sid = $2', [expiresAt, sid]);
-        callback && callback(null);
-      } catch (error) {
-        callback && callback(error);
-      }
-    }
-  };
-}
 
 function cryptoRandomId(prefix) {
   const random = `${Date.now()}-${Math.random().toString(16).slice(2)}`;

@@ -1,5 +1,6 @@
 import express from 'express';
-import session from 'express-session';
+import { createAccessMiddleware } from './access.js';
+import { createPostgresSessionStore, configureSessionMiddleware } from './session-config.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
@@ -13,7 +14,6 @@ import {
   upsertSupplierMasterRowAsync,
   upsertStaffMasterRowAsync,
   validateRuntimeDatabaseConfig,
-  createPostgresSessionStore,
   getPool,
   dbAll,
   dbGet,
@@ -47,6 +47,13 @@ validateRuntimeDatabaseConfig();
 await initializeDatabase();
 
 const app = express();
+app.get('/healthz', async (req, res) => {
+  try { await dbGet('SELECT 1'); res.json({ ok: true }); }
+  catch { res.status(503).json({ ok: false }); }
+});
+if (isProduction) {
+  app.use(createAccessMiddleware({ teamDomain: process.env.CF_ACCESS_TEAM_DOMAIN, audience: process.env.CF_ACCESS_AUD }));
+}
 const sessionStore = isProduction ? createPostgresSessionStore(await getPool()) : undefined;
 
 function broadcastLiveEvent(type, payload = {}) {
@@ -67,21 +74,11 @@ function broadcastLiveEvent(type, payload = {}) {
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: '1mb' }));
-app.use(
-  session({
-    store: sessionStore,
-    secret: process.env.SESSION_SECRET || 'boulevard-session-secret-change-me',
-    resave: false,
-    saveUninitialized: false,
-    rolling: true,
-    cookie: {
-      maxAge: 1000 * 60 * 60 * 12,
-      sameSite: isProduction ? 'none' : 'lax',
-      httpOnly: true,
-      secure: isProduction
-    }
-  })
-);
+configureSessionMiddleware(app, { store: sessionStore, isProduction });
+if (isProduction) app.use((req, res, next) => {
+  req.session.user = req.accessUser;
+  next();
+});
 
 app.use(express.static(publicDir));
 
@@ -243,6 +240,7 @@ app.get('/login', (req, res) => res.sendFile(path.join(publicDir, 'login.html'))
 app.get('/app', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
 
 app.post('/api/login', async (req, res) => {
+  if (isProduction) return res.json({ success: true, user: req.accessUser });
   const username = normalizeText(req.body.username);
   const password = normalizeText(req.body.password);
 

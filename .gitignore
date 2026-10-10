@@ -11,3 +11,7 @@ node_modules/
 customer-data-backups/
 data/
 .DS_Store
+
+!Dockerfile.backup
+*.dump
+*.dump.verification.json

@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import express from 'express';
@@ -8,7 +10,6 @@ import session from 'express-session';
 import bcrypt from 'bcryptjs';
 import {
   createPostgresSessionStore,
-  getSessionMiddlewareOptions,
   configureSessionMiddleware
 } from '../src/session-config.js';
 
@@ -40,10 +41,13 @@ function startServer() {
     ...process.env,
     SESSION_SECRET: 'test-secret',
     PREVIEW_MODE: 'true',
-    APP_PORT: '4100'
+    APP_PORT: '4100',
+    NODE_ENV: 'test',
+    RENDER: 'false',
+    SQLITE_DATA_DIR: mkdtempSync(path.join(tmpdir(), 'boulevard-test-'))
   };
 
-  const child = spawn('node', ['src/server.js'], {
+  const child = spawn(process.execPath, ['src/server.js'], {
     cwd: root,
     env,
     stdio: ['ignore', 'pipe', 'pipe']
@@ -87,7 +91,7 @@ test('Render proxy config keeps secure cookies enabled for HTTPS', async () => {
 
       const cookieHeader = response.headers.get('set-cookie') || '';
       assert.match(cookieHeader, /Secure/i);
-      assert.match(cookieHeader, /SameSite=None/i);
+      assert.match(cookieHeader, /SameSite=Lax/i);
       server.close(resolve);
     });
   });
