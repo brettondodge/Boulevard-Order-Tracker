@@ -1,6 +1,6 @@
 const state = {
   status: 'Outstanding',
-  view: 'All Orders',
+  groupView: 'All Orders',
   category: '',
   supplier: [],
   search: '',
@@ -12,7 +12,6 @@ const state = {
 const elements = {
   currentUser: document.getElementById('currentUser'),
   searchInput: document.getElementById('searchInput'),
-  statusFilter: document.getElementById('statusFilter'),
   groupFilter: document.getElementById('groupFilter'),
   categoryFilter: document.getElementById('categoryFilter'),
   supplierFilter: document.getElementById('supplierFilter'),
@@ -57,13 +56,16 @@ function bindEvents() {
     loadOrders();
   });
 
-  elements.statusFilter.addEventListener('change', (event) => {
-    state.status = event.target.value;
-    loadOrders();
+  document.querySelectorAll('.tab-button').forEach((button) => {
+    button.addEventListener('click', () => {
+      document.querySelectorAll('.tab-button').forEach((node) => node.classList.toggle('active', node === button));
+      state.status = button.dataset.view;
+      loadOrders();
+    });
   });
 
   elements.groupFilter.addEventListener('change', (event) => {
-    state.view = event.target.value;
+    state.groupView = event.target.value;
     loadOrders();
   });
 
@@ -140,7 +142,7 @@ async function loadSuppliers() {
 async function loadOrders() {
   const params = new URLSearchParams({
     status: state.status,
-    view: state.view,
+    view: state.groupView,
     category: state.category,
     sort: state.sort,
     search: state.search

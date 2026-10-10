@@ -33,16 +33,6 @@
 
         <div class="toolbar-controls">
           <label>
-            Status
-            <select id="statusFilter">
-              <option value="Outstanding">Outstanding</option>
-              <option value="Overdue">Overdue</option>
-              <option value="Received">Received</option>
-              <option value="All Orders">All Orders</option>
-            </select>
-          </label>
-
-          <label>
             Group
             <select id="groupFilter">
               <option value="All Orders">All Orders</option>
@@ -76,6 +66,13 @@
           </label>
         </div>
       </section>
+
+      <nav class="view-tabs" aria-label="Order views">
+        <button type="button" class="tab-button active" data-view="Outstanding">Outstanding</button>
+        <button type="button" class="tab-button" data-view="Overdue">Overdue</button>
+        <button type="button" class="tab-button" data-view="Received">Received</button>
+        <button type="button" class="tab-button" data-view="All Orders">All orders</button>
+      </nav>
 
       <div id="statusMessage" class="message-box" aria-live="polite"></div>
 
