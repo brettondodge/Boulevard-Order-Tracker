@@ -37,6 +37,22 @@ db.exec(`
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS job_drafts (
+    id TEXT PRIMARY KEY,
+    customer_name TEXT NOT NULL,
+    housecall_job_number TEXT,
+    housecall_job_link TEXT,
+    hcp_job_id TEXT,
+    notes TEXT,
+    deposit_status TEXT NOT NULL DEFAULT 'Awaiting deposit',
+    status TEXT NOT NULL DEFAULT 'Open',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    created_by TEXT,
+    updated_by TEXT,
+    is_preview_data INTEGER NOT NULL DEFAULT 0
+  );
+
   CREATE TABLE IF NOT EXISTS orders (
     id TEXT PRIMARY KEY,
     customer_name TEXT NOT NULL,
@@ -54,6 +70,7 @@ db.exec(`
     ordered_by_id TEXT,
     status TEXT NOT NULL DEFAULT 'Ordered',
     notes TEXT,
+    job_draft_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     created_by TEXT,
@@ -85,6 +102,32 @@ if (Number(hasOrderedByColumn.count) === 0) {
 const hasOrderedByIdColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'ordered_by_id'").get();
 if (Number(hasOrderedByIdColumn.count) === 0) {
   db.exec('ALTER TABLE orders ADD COLUMN ordered_by_id TEXT;');
+}
+
+const hasJobDraftIdColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'job_draft_id'").get();
+if (Number(hasJobDraftIdColumn.count) === 0) {
+  db.exec('ALTER TABLE orders ADD COLUMN job_draft_id TEXT;');
+}
+
+const hasJobDraftTable = db.prepare("SELECT COUNT(*) as count FROM sqlite_master WHERE type = 'table' AND name = 'job_drafts'").get();
+if (Number(hasJobDraftTable.count) === 0) {
+  db.exec(`
+    CREATE TABLE job_drafts (
+      id TEXT PRIMARY KEY,
+      customer_name TEXT NOT NULL,
+      housecall_job_number TEXT,
+      housecall_job_link TEXT,
+      hcp_job_id TEXT,
+      notes TEXT,
+      deposit_status TEXT NOT NULL DEFAULT 'Awaiting deposit',
+      status TEXT NOT NULL DEFAULT 'Open',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      created_by TEXT,
+      updated_by TEXT,
+      is_preview_data INTEGER NOT NULL DEFAULT 0
+    );
+  `);
 }
 
 const hasSupplierActiveColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('suppliers') WHERE name = 'active'").get();

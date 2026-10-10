@@ -102,6 +102,14 @@
       </div>
       <div id="statusMessage" class="message-box" aria-live="polite"></div>
 
+      <section class="draft-queue">
+        <div class="section-header-row">
+          <h2>Approved – Need to Order</h2>
+          <button id="addDraftButton" type="button" class="primary-button">Add draft</button>
+        </div>
+        <div id="jobDraftList" class="draft-list"></div>
+      </section>
+
       <div class="table-wrap">
         <table>
           <thead>
@@ -136,6 +144,7 @@
       <form id="orderForm" method="dialog">
         <input type="hidden" id="orderId" />
         <input type="hidden" id="orderUpdatedAt" />
+        <input type="hidden" id="jobDraftId" />
 
         <div class="dialog-header">
           <h2 id="dialogTitle">Add order</h2>
@@ -213,6 +222,60 @@
         <div class="dialog-actions">
           <button type="button" id="cancelOrderButton" class="secondary-button">Cancel</button>
           <button type="submit" class="primary-button">Save order</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="draftDialog">
+      <form id="draftForm" method="dialog">
+        <input type="hidden" id="draftId" />
+
+        <div class="dialog-header">
+          <h2 id="draftDialogTitle">Add draft</h2>
+          <button type="button" id="closeDraftDialogButton" class="close-button" aria-label="Close">×</button>
+        </div>
+
+        <div class="form-grid">
+          <label class="full-width">
+            Customer name
+            <input id="draftCustomerName" name="customer_name" type="text" required />
+          </label>
+
+          <label>
+            Housecall Pro job #
+            <input id="draftHousecallJobNumber" name="housecall_job_number" type="text" />
+          </label>
+
+          <label>
+            Stable HCP job ID
+            <input id="draftHcpJobId" name="hcp_job_id" type="text" placeholder="Optional future import key" />
+          </label>
+
+          <label class="full-width">
+            Housecall Pro job link
+            <input id="draftHousecallJobLink" name="housecall_job_link" type="url" placeholder="https://..." />
+          </label>
+
+          <label>
+            Deposit status
+            <select id="draftDepositStatus" name="deposit_status" required>
+              <option value="Awaiting deposit">Awaiting deposit</option>
+              <option value="Deposit received">Deposit received</option>
+              <option value="Deposit waived / not required">Deposit waived / not required</option>
+            </select>
+          </label>
+
+          <label class="full-width">
+            Notes
+            <textarea id="draftNotes" name="notes" rows="4"></textarea>
+          </label>
+        </div>
+
+        <div id="draftFormError" class="form-error" aria-live="polite"></div>
+
+        <div class="dialog-actions">
+          <button type="button" id="cancelDraftButton" class="secondary-button">Cancel</button>
+          <button type="submit" class="primary-button">Save draft</button>
         </div>
       </form>
     </dialog>

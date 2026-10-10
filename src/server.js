@@ -33,6 +33,11 @@ const publicDir = path.resolve(__dirname, '../public');
 const app = express();
 const port = Number(process.env.APP_PORT || process.env.PORT || 3000);
 const liveClients = new Set();
+const VALID_DEPOSIT_STATUSES = [
+  'Awaiting deposit',
+  'Deposit received',
+  'Deposit waived / not required'
+];
 
 function broadcastLiveEvent(type, payload = {}) {
   const envelope = JSON.stringify({
@@ -91,6 +96,45 @@ function parseMultiValueFilter(req, key) {
     .flatMap((value) => (Array.isArray(value) ? value : [value]))
     .map((value) => String(value).trim())
     .filter(Boolean);
+}
+
+function normalizeDraftDepositStatus(value) {
+  const status = normalizeText(value || '');
+  if (VALID_DEPOSIT_STATUSES.includes(status)) {
+    return status;
+  }
+  return 'Awaiting deposit';
+}
+
+function getJobDraftById(id) {
+  const draftId = normalizeText(id || '');
+  if (!draftId) {
+    return null;
+  }
+
+  return getDb().prepare('SELECT * FROM job_drafts WHERE id = ?').get(draftId) || null;
+}
+
+function isDraftReadyForOrdering(draft) {
+  if (!draft) return false;
+  return draft.status !== 'Completed' && draft.deposit_status !== 'Awaiting deposit';
+}
+
+function serializeJobDraft(draft) {
+  if (!draft) return null;
+
+  const supplierOrderCount = Number(getDb()
+    .prepare('SELECT COUNT(*) as count FROM orders WHERE job_draft_id = ?')
+    .get(draft.id)?.count || 0);
+
+  return {
+    ...draft,
+    status: draft.status || 'Open',
+    deposit_status: normalizeDraftDepositStatus(draft.deposit_status),
+    hcp_job_id: normalizeText(draft.hcp_job_id || ''),
+    ready_to_order: isDraftReadyForOrdering(draft),
+    supplier_order_count: supplierOrderCount
+  };
 }
 
 app.get('/', (req, res) => {
@@ -228,6 +272,134 @@ app.get('/api/events', (req, res) => {
     clearInterval(heartbeat);
     liveClients.delete(res);
   });
+});
+
+app.get('/api/job-drafts', (req, res) => {
+  const statusFilter = normalizeText(req.query.status || '');
+  const rows = statusFilter
+    ? getDb().prepare('SELECT * FROM job_drafts WHERE status = ? ORDER BY updated_at DESC, created_at DESC').all(statusFilter)
+    : getDb().prepare('SELECT * FROM job_drafts ORDER BY updated_at DESC, created_at DESC').all();
+
+  return res.json({ drafts: rows.map((row) => serializeJobDraft(row)) });
+});
+
+app.post('/api/job-drafts', (req, res) => {
+  const draftData = {
+    customer_name: normalizeText(req.body.customer_name),
+    housecall_job_number: normalizeText(req.body.housecall_job_number),
+    housecall_job_link: normalizeText(req.body.housecall_job_link),
+    hcp_job_id: normalizeText(req.body.hcp_job_id),
+    notes: typeof req.body.notes === 'string' ? req.body.notes.trim() : '',
+    deposit_status: normalizeDraftDepositStatus(req.body.deposit_status),
+    status: 'Open'
+  };
+
+  if (!draftData.customer_name) {
+    return res.status(400).json({ error: 'Customer name is required.' });
+  }
+
+  const now = isoNow();
+  const id = `draft-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  getDb().prepare(`
+    INSERT INTO job_drafts (
+      id, customer_name, housecall_job_number, housecall_job_link, hcp_job_id, notes,
+      deposit_status, status, created_at, updated_at, created_by, updated_by, is_preview_data
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+  `).run(
+    id,
+    draftData.customer_name,
+    draftData.housecall_job_number,
+    draftData.housecall_job_link,
+    draftData.hcp_job_id,
+    draftData.notes,
+    draftData.deposit_status,
+    draftData.status,
+    now,
+    now,
+    'office-user',
+    'office-user'
+  );
+
+  const draft = serializeJobDraft(getJobDraftById(id));
+  broadcastLiveEvent('job-drafts', { action: 'created', draftId: id, time: isoNow() });
+  return res.status(201).json({ draft });
+});
+
+app.put('/api/job-drafts/:id', (req, res) => {
+  const draft = getJobDraftById(req.params.id);
+  if (!draft) {
+    return res.status(404).json({ error: 'Job draft not found.' });
+  }
+
+  const draftData = {
+    customer_name: normalizeText(req.body.customer_name || draft.customer_name),
+    housecall_job_number: normalizeText(req.body.housecall_job_number || draft.housecall_job_number),
+    housecall_job_link: normalizeText(req.body.housecall_job_link || draft.housecall_job_link),
+    hcp_job_id: normalizeText(req.body.hcp_job_id || draft.hcp_job_id),
+    notes: typeof req.body.notes === 'string' ? req.body.notes.trim() : (draft.notes || ''),
+    deposit_status: normalizeDraftDepositStatus(req.body.deposit_status || draft.deposit_status),
+    status: normalizeText(req.body.status || draft.status || 'Open')
+  };
+
+  if (!draftData.customer_name) {
+    return res.status(400).json({ error: 'Customer name is required.' });
+  }
+
+  const now = isoNow();
+  getDb().prepare(`
+    UPDATE job_drafts SET
+      customer_name = ?,
+      housecall_job_number = ?,
+      housecall_job_link = ?,
+      hcp_job_id = ?,
+      notes = ?,
+      deposit_status = ?,
+      status = ?,
+      updated_at = ?,
+      updated_by = ?
+    WHERE id = ?
+  `).run(
+    draftData.customer_name,
+    draftData.housecall_job_number,
+    draftData.housecall_job_link,
+    draftData.hcp_job_id,
+    draftData.notes,
+    draftData.deposit_status,
+    draftData.status === 'Completed' ? 'Completed' : 'Open',
+    now,
+    'office-user',
+    req.params.id
+  );
+
+  const updated = serializeJobDraft(getJobDraftById(req.params.id));
+  broadcastLiveEvent('job-drafts', { action: 'updated', draftId: req.params.id, time: isoNow() });
+  return res.json({ draft: updated });
+});
+
+app.post('/api/job-drafts/:id/complete', (req, res) => {
+  const draft = getJobDraftById(req.params.id);
+  if (!draft) {
+    return res.status(404).json({ error: 'Job draft not found.' });
+  }
+
+  const now = isoNow();
+  getDb().prepare('UPDATE job_drafts SET status = ?, updated_at = ?, updated_by = ? WHERE id = ?').run('Completed', now, 'office-user', req.params.id);
+  const updated = serializeJobDraft(getJobDraftById(req.params.id));
+  broadcastLiveEvent('job-drafts', { action: 'completed', draftId: req.params.id, time: isoNow() });
+  return res.json({ draft: updated });
+});
+
+app.post('/api/job-drafts/:id/reopen', (req, res) => {
+  const draft = getJobDraftById(req.params.id);
+  if (!draft) {
+    return res.status(404).json({ error: 'Job draft not found.' });
+  }
+
+  const now = isoNow();
+  getDb().prepare('UPDATE job_drafts SET status = ?, updated_at = ?, updated_by = ? WHERE id = ?').run('Open', now, 'office-user', req.params.id);
+  const updated = serializeJobDraft(getJobDraftById(req.params.id));
+  broadcastLiveEvent('job-drafts', { action: 'reopened', draftId: req.params.id, time: isoNow() });
+  return res.json({ draft: updated });
 });
 
 app.get('/api/admin/me', (req, res) => {
@@ -392,6 +564,24 @@ app.get('/api/orders', (req, res) => {
 app.post('/api/orders', (req, res) => {
   try {
     const orderData = normalizeOrderInput(req.body);
+    const draftId = normalizeText(req.body.job_draft_id || '');
+
+    if (draftId) {
+      const draft = getJobDraftById(draftId);
+      if (!draft) {
+        return res.status(404).json({ error: 'Job draft not found.' });
+      }
+
+      if (draft.status === 'Completed') {
+        return res.status(400).json({ error: 'This job draft is already marked complete. Reopen it before ordering more materials.' });
+      }
+
+      if (draft.deposit_status === 'Awaiting deposit') {
+        return res.status(400).json({ error: 'Deposit must be received or waived before creating a supplier order.' });
+      }
+
+      orderData.job_draft_id = draftId;
+    }
 
     if (!orderData.customer_name) {
       return res.status(400).json({ error: 'Customer name is required.' });
@@ -405,9 +595,6 @@ app.post('/api/orders', (req, res) => {
       return res.status(400).json({ error: 'Category is required.' });
     }
 
-    if (!orderData.ordered_by) {
-      return res.status(400).json({ error: 'Ordered by is required.' });
-    }
     if (!orderData.ordered_by) {
       return res.status(400).json({ error: 'Ordered by is required.' });
     }
@@ -431,9 +618,9 @@ app.post('/api/orders', (req, res) => {
     const insert = getDb().prepare(`
       INSERT INTO orders (
         id, customer_name, housecall_job_number, housecall_job_link, supplier, supplier_id, category, combined_group,
-        po_number, date_ordered, expected_delivery_date, date_received, ordered_by, ordered_by_id, status, notes,
+        po_number, date_ordered, expected_delivery_date, date_received, ordered_by, ordered_by_id, status, notes, job_draft_id,
         created_at, updated_at, created_by, updated_by, is_preview_data
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
     `);
 
     insert.run(
@@ -453,6 +640,7 @@ app.post('/api/orders', (req, res) => {
       orderData.ordered_by_id || null,
       orderData.date_received ? 'Received' : 'Ordered',
       orderData.notes,
+      orderData.job_draft_id || null,
       now,
       now,
       'office-user',

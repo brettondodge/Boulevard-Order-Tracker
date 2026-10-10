@@ -7,6 +7,7 @@ const state = {
   search: '',
   sort: 'expected_delivery_date',
   orders: [],
+  jobDrafts: [],
   suppliers: [],
   staffNames: [],
   masterSuppliers: [],
@@ -43,7 +44,23 @@ const elements = {
   liveStatus: document.getElementById('liveStatus'),
   saveStatus: document.getElementById('saveStatus'),
   dialog: document.getElementById('orderDialog'),
+  draftDialog: document.getElementById('draftDialog'),
+  draftForm: document.getElementById('draftForm'),
+  draftFormError: document.getElementById('draftFormError'),
+  draftDialogTitle: document.getElementById('draftDialogTitle'),
+  draftId: document.getElementById('draftId'),
+  draftCustomerName: document.getElementById('draftCustomerName'),
+  draftHousecallJobNumber: document.getElementById('draftHousecallJobNumber'),
+  draftHousecallJobLink: document.getElementById('draftHousecallJobLink'),
+  draftHcpJobId: document.getElementById('draftHcpJobId'),
+  draftDepositStatus: document.getElementById('draftDepositStatus'),
+  draftNotes: document.getElementById('draftNotes'),
+  addDraftButton: document.getElementById('addDraftButton'),
+  jobDraftList: document.getElementById('jobDraftList'),
+  closeDraftDialogButton: document.getElementById('closeDraftDialogButton'),
+  cancelDraftButton: document.getElementById('cancelDraftButton'),
   form: document.getElementById('orderForm'),
+  jobDraftId: document.getElementById('jobDraftId'),
   formError: document.getElementById('formError'),
   closeDialogButton: document.getElementById('closeDialogButton'),
   cancelOrderButton: document.getElementById('cancelOrderButton'),
@@ -75,7 +92,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   try {
     await refreshAdminState();
-    await Promise.all([loadSuppliers(), loadMasterLists(), loadOrders()]);
+    await Promise.all([loadSuppliers(), loadMasterLists(), loadJobDrafts(), loadOrders()]);
   } catch (error) {
     showStatus('Unable to load the tracker. Please refresh the page.', 'error');
   }
@@ -172,12 +189,12 @@ function setupLiveUpdates() {
 }
 
 function refreshAllData(reason = 'manual') {
-  if (reason === 'live-update' || reason === 'master-lists') {
-    Promise.all([loadSuppliers(), loadMasterLists(), loadOrders()]);
+  if (reason === 'live-update' || reason === 'master-lists' || reason === 'live-sync') {
+    Promise.all([loadSuppliers(), loadMasterLists(), loadJobDrafts(), loadOrders()]);
     return;
   }
 
-  Promise.all([loadSuppliers(), loadMasterLists(), loadOrders()]);
+  Promise.all([loadSuppliers(), loadMasterLists(), loadJobDrafts(), loadOrders()]);
 }
 
 function bindEvents() {
@@ -256,8 +273,11 @@ function bindEvents() {
   });
 
   elements.addOrderButton.addEventListener('click', () => openOrderDialog());
+  elements.addDraftButton.addEventListener('click', () => openDraftDialog());
   elements.closeDialogButton.addEventListener('click', () => closeDialog());
   elements.cancelOrderButton.addEventListener('click', () => closeDialog());
+  elements.closeDraftDialogButton.addEventListener('click', () => closeDraftDialog());
+  elements.cancelDraftButton.addEventListener('click', () => closeDraftDialog());
 
   elements.masterListsButton.addEventListener('click', async () => {
     elements.masterListsDialog.showModal();
@@ -385,6 +405,39 @@ function bindEvents() {
 
     if (action === 'reopen') {
       await reopenOrder(id);
+      return;
+    }
+  });
+
+  elements.draftForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await saveDraft();
+  });
+
+  elements.jobDraftList.addEventListener('click', async (event) => {
+    const button = event.target.closest('button[data-action]');
+    if (!button) return;
+
+    const { action, id } = button.dataset;
+    const draft = state.jobDrafts.find((entry) => entry.id === id);
+
+    if (action === 'edit-draft' && draft) {
+      openDraftDialog(draft);
+      return;
+    }
+
+    if (action === 'create-order' && draft) {
+      openOrderDialog(null, draft);
+      return;
+    }
+
+    if (action === 'complete-draft' && draft) {
+      await completeDraft(id);
+      return;
+    }
+
+    if (action === 'reopen-draft' && draft) {
+      await reopenDraft(id);
       return;
     }
   });
@@ -603,6 +656,19 @@ async function saveMasterLists() {
   }
 }
 
+async function loadJobDrafts() {
+  try {
+    const response = await fetch('/api/job-drafts');
+    if (!response.ok) return;
+
+    const data = await response.json();
+    state.jobDrafts = Array.isArray(data.drafts) ? data.drafts : [];
+    renderJobDrafts();
+  } catch (error) {
+    // no-op: queue can refresh on the next pass
+  }
+}
+
 async function loadOrders() {
   const requestId = ++state.orderRequestCounter;
   const params = new URLSearchParams({
@@ -632,6 +698,53 @@ async function loadOrders() {
 
   state.orders = data.orders || [];
   renderOrders();
+}
+
+function renderJobDrafts() {
+  if (!state.jobDrafts.length) {
+    elements.jobDraftList.innerHTML = '<div class="empty-state small-empty-state"><h3>No approved jobs waiting to order</h3><p>When a job is approved, add it here and mark the deposit status as soon as it is confirmed.</p></div>';
+    return;
+  }
+
+  elements.jobDraftList.innerHTML = state.jobDrafts
+    .map((draft) => {
+      const readyToOrder = draft.deposit_status !== 'Awaiting deposit' && draft.status !== 'Completed';
+      const depositClass = draft.deposit_status === 'Awaiting deposit' ? 'awaiting' : 'ready';
+      const statusLabel = draft.status === 'Completed' ? 'Completed' : 'Open';
+
+      return `
+        <article class="draft-card ${draft.status === 'Completed' ? 'completed' : ''}">
+          <div class="draft-card-header">
+            <div>
+              <p class="order-card-label">Customer</p>
+              <h3>${escapeHtml(draft.customer_name)}</h3>
+            </div>
+            <span class="deposit-status ${depositClass}">${escapeHtml(draft.deposit_status || 'Awaiting deposit')}</span>
+          </div>
+
+          <div class="draft-meta-grid">
+            <div><span>HCP #</span><strong>${escapeHtml(draft.housecall_job_number || '—')}</strong></div>
+            <div><span>Stable HCP ID</span><strong>${escapeHtml(draft.hcp_job_id || '—')}</strong></div>
+            <div><span>Queue status</span><strong>${statusLabel}</strong></div>
+            <div><span>Supplier orders</span><strong>${Number(draft.supplier_order_count || 0)}</strong></div>
+          </div>
+
+          <div class="draft-notes">
+            <span>Notes</span>
+            <p>${escapeHtml(draft.notes || 'No notes yet.')}</p>
+          </div>
+
+          <div class="action-stack mobile-actions">
+            <button type="button" class="action-button" data-action="edit-draft" data-id="${draft.id}">Edit</button>
+            <button type="button" class="action-button ${readyToOrder ? 'primary' : ''}" data-action="create-order" data-id="${draft.id}" ${readyToOrder ? '' : 'disabled'}>Create supplier order</button>
+            ${draft.status === 'Completed'
+              ? `<button type="button" class="action-button" data-action="reopen-draft" data-id="${draft.id}">Reopen</button>`
+              : `<button type="button" class="action-button danger" data-action="complete-draft" data-id="${draft.id}">All materials ordered</button>`}
+          </div>
+        </article>
+      `;
+    })
+    .join('');
 }
 
 function renderOrders() {
@@ -787,16 +900,27 @@ function renderOrders() {
   }
 }
 
-function openOrderDialog(order = null) {
+function openOrderDialog(order = null, draft = null) {
   elements.form.reset();
   elements.formError.textContent = '';
   elements.orderId.value = '';
   elements.orderUpdatedAt.value = '';
+  elements.jobDraftId.value = '';
   elements.categorySelect.value = '';
   elements.orderedBySelect.value = '';
 
   const today = new Date().toISOString().slice(0, 10);
   document.getElementById('dateOrdered').value = today;
+
+  if (draft) {
+    elements.jobDraftId.value = draft.id || '';
+    document.getElementById('customerName').value = draft.customer_name || '';
+    document.getElementById('housecallJobNumber').value = draft.housecall_job_number || '';
+    document.getElementById('housecallJobLink').value = draft.housecall_job_link || '';
+    elements.dialogTitle.textContent = 'Create supplier order from draft';
+    elements.dialog.showModal();
+    return;
+  }
 
   if (!order) {
     elements.dialogTitle.textContent = 'Add order';
@@ -807,6 +931,7 @@ function openOrderDialog(order = null) {
   elements.dialogTitle.textContent = 'Edit order';
   elements.orderId.value = order.id;
   elements.orderUpdatedAt.value = order.updated_at || '';
+  elements.jobDraftId.value = order.job_draft_id || '';
   document.getElementById('customerName').value = order.customer_name || '';
   elements.categorySelect.value = order.category || '';
   document.getElementById('housecallJobNumber').value = order.housecall_job_number || '';
@@ -827,6 +952,95 @@ function openOrderDialog(order = null) {
 function closeDialog() {
   elements.dialog.close();
   elements.formError.textContent = '';
+}
+
+function openDraftDialog(draft = null) {
+  elements.draftForm.reset();
+  elements.draftFormError.textContent = '';
+  elements.draftId.value = '';
+  elements.draftDepositStatus.value = 'Awaiting deposit';
+
+  if (!draft) {
+    elements.draftDialogTitle.textContent = 'Add draft';
+    elements.draftDialog.showModal();
+    return;
+  }
+
+  elements.draftDialogTitle.textContent = 'Edit draft';
+  elements.draftId.value = draft.id || '';
+  elements.draftCustomerName.value = draft.customer_name || '';
+  elements.draftHousecallJobNumber.value = draft.housecall_job_number || '';
+  elements.draftHousecallJobLink.value = draft.housecall_job_link || '';
+  elements.draftHcpJobId.value = draft.hcp_job_id || '';
+  elements.draftDepositStatus.value = draft.deposit_status || 'Awaiting deposit';
+  elements.draftNotes.value = draft.notes || '';
+  elements.draftDialog.showModal();
+}
+
+function closeDraftDialog() {
+  elements.draftDialog.close();
+  elements.draftFormError.textContent = '';
+}
+
+async function saveDraft() {
+  const payload = {
+    customer_name: elements.draftCustomerName.value,
+    housecall_job_number: elements.draftHousecallJobNumber.value,
+    housecall_job_link: elements.draftHousecallJobLink.value,
+    hcp_job_id: elements.draftHcpJobId.value,
+    deposit_status: elements.draftDepositStatus.value,
+    notes: elements.draftNotes.value
+  };
+
+  if (!payload.customer_name.trim()) {
+    elements.draftFormError.textContent = 'Customer name is required.';
+    return;
+  }
+
+  const id = elements.draftId.value;
+  const response = await fetch(id ? `/api/job-drafts/${id}` : '/api/job-drafts', {
+    method: id ? 'PUT' : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    elements.draftFormError.textContent = data.error || 'Unable to save the draft.';
+    return;
+  }
+
+  closeDraftDialog();
+  showStatus(id ? 'Draft updated.' : 'Draft saved.', 'success');
+  await loadJobDrafts();
+}
+
+async function completeDraft(draftId) {
+  try {
+    const response = await fetch(`/api/job-drafts/${draftId}/complete`, { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Unable to complete the draft.');
+    }
+    showStatus('Draft marked as complete.', 'success');
+    await loadJobDrafts();
+  } catch (error) {
+    showStatus(error.message, 'error');
+  }
+}
+
+async function reopenDraft(draftId) {
+  try {
+    const response = await fetch(`/api/job-drafts/${draftId}/reopen`, { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Unable to reopen the draft.');
+    }
+    showStatus('Draft reopened.', 'success');
+    await loadJobDrafts();
+  } catch (error) {
+    showStatus(error.message, 'error');
+  }
 }
 
 function readSelectedOrderedBy() {
@@ -865,6 +1079,7 @@ async function saveOrder() {
     ordered_by: orderedBy.name,
     ordered_by_id: orderedBy.id,
     notes: document.getElementById('notes').value,
+    job_draft_id: elements.jobDraftId.value || '',
     status: document.getElementById('dateReceived').value ? 'Received' : 'Ordered'
   };
 

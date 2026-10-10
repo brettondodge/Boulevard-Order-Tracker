@@ -358,3 +358,140 @@ test('ordered-by multi-select filter supports any-of matching and historical nam
 
   child.kill('SIGTERM');
 });
+
+test('approved job drafts stay queued until deposit is received or waived and can create supplier orders', async () => {
+  const child = startServer();
+  await delay(1500);
+
+  const draftName = `Draft Queue ${Date.now()}`;
+  const draftResponse = await requestJson('http://127.0.0.1:4100/api/job-drafts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: draftName,
+      housecall_job_number: 'HC-DRAFT-1001',
+      housecall_job_link: 'https://example.com/jobs/hc-draft-1001',
+      notes: 'Approved and waiting on deposit.',
+      deposit_status: 'Awaiting deposit',
+      hcp_job_id: 'hcp-draft-1001'
+    })
+  });
+
+  assert.equal(draftResponse.status, 201);
+  assert.equal(draftResponse.body.draft.deposit_status, 'Awaiting deposit');
+  assert.equal(draftResponse.body.draft.status, 'Open');
+
+  const draftId = draftResponse.body.draft.id;
+  const blockedOrder = await requestJson('http://127.0.0.1:4100/api/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: draftName,
+      housecall_job_number: 'HC-DRAFT-1001',
+      job_draft_id: draftId,
+      supplier: 'Northline Glass',
+      category: 'Windows',
+      date_ordered: '2026-10-18',
+      ordered_by: 'Admin User'
+    })
+  });
+
+  assert.equal(blockedOrder.status, 400);
+  assert.match(String(blockedOrder.body.error || ''), /deposit/i);
+
+  const readyResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${draftId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      deposit_status: 'Deposit received',
+      notes: 'Approved and deposit received.'
+    })
+  });
+
+  assert.equal(readyResponse.status, 200);
+  assert.equal(readyResponse.body.draft.deposit_status, 'Deposit received');
+
+  const supplierOrder = await requestJson('http://127.0.0.1:4100/api/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: draftName,
+      housecall_job_number: 'HC-DRAFT-1001',
+      job_draft_id: draftId,
+      supplier: 'Northline Glass',
+      category: 'Windows',
+      date_ordered: '2026-10-18',
+      ordered_by: 'Admin User'
+    })
+  });
+
+  assert.equal(supplierOrder.status, 201);
+  assert.equal(supplierOrder.body.order.job_draft_id, draftId);
+
+  const completeResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${draftId}/complete`, {
+    method: 'POST'
+  });
+
+  assert.equal(completeResponse.status, 200);
+  assert.equal(completeResponse.body.draft.status, 'Completed');
+
+  const reopenedResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${draftId}/reopen`, {
+    method: 'POST'
+  });
+
+  assert.equal(reopenedResponse.status, 200);
+  assert.equal(reopenedResponse.body.draft.status, 'Open');
+
+  child.kill('SIGTERM');
+});
+
+test('draft queue keeps separate supplier orders out of overdue and delivery counts', async () => {
+  const child = startServer();
+  await delay(1500);
+
+  const draftResponse = await requestJson('http://127.0.0.1:4100/api/job-drafts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: `Draft Queue Only ${Date.now()}`,
+      housecall_job_number: 'HC-DRAFT-1002',
+      notes: 'Draft only; no materials ordered yet.',
+      deposit_status: 'Deposit waived / not required',
+      hcp_job_id: 'hcp-draft-1002'
+    })
+  });
+
+  assert.equal(draftResponse.status, 201);
+  const draftId = draftResponse.body.draft.id;
+
+  const readyResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${draftId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deposit_status: 'Deposit waived / not required' })
+  });
+
+  assert.equal(readyResponse.status, 200);
+
+  const createOrder = await requestJson('http://127.0.0.1:4100/api/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_name: readyResponse.body.draft.customer_name,
+      housecall_job_number: readyResponse.body.draft.housecall_job_number,
+      job_draft_id: draftId,
+      supplier: 'Arrow Shower Door',
+      category: 'Showers',
+      date_ordered: '2026-10-20',
+      ordered_by: 'Admin User'
+    })
+  });
+
+  assert.equal(createOrder.status, 201);
+
+  const queue = await requestJson('http://127.0.0.1:4100/api/job-drafts');
+  assert.equal(queue.status, 200);
+  assert.ok(queue.body.drafts.some((draft) => draft.id === draftId));
+  assert.ok(createOrder.body.order.job_draft_id === draftId);
+
+  child.kill('SIGTERM');
+});
