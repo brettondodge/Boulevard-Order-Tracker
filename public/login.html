@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Boulevard Glass Order Tracker Login</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="auth-page">
+    <main class="auth-card">
+      <div class="brand-block">
+        <p class="eyebrow">Internal office tool</p>
+        <h1>Boulevard Glass Order Tracker</h1>
+      </div>
+
+      <div class="preview-pill">Preview data • fictional sample orders</div>
+
+      <form id="loginForm" class="auth-form">
+        <label>
+          Username
+          <input id="username" name="username" type="text" autocomplete="username" required />
+        </label>
+
+        <label>
+          Password
+          <input id="password" name="password" type="password" autocomplete="current-password" required />
+        </label>
+
+        <button type="submit" class="primary-button">Sign in</button>
+      </form>
+
+      <div id="loginMessage" class="message-box" aria-live="polite"></div>
+
+      <section class="demo-account-box">
+        <h2>Demo accounts</h2>
+        <ul>
+          <li><strong>admin</strong> / admin123</li>
+          <li><strong>mary</strong> / staff123</li>
+        </ul>
+      </section>
+    </main>
+
+    <script src="/login.js"></script>
+  </body>
+</html>

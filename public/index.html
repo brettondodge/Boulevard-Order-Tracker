@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Boulevard Glass Order Tracker</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-block">
+        <p class="eyebrow">Internal office tool</p>
+        <h1>Boulevard Glass Order Tracker</h1>
+      </div>
+      <div class="topbar-actions">
+        <span class="preview-pill">Preview data • fictional sample orders</span>
+        <div class="user-chip">
+          <span id="currentUser">Loading…</span>
+          <button id="logoutButton" type="button" class="secondary-button">Log out</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="app-shell">
+      <section class="toolbar">
+        <div class="toolbar-main">
+          <button id="addOrderButton" type="button" class="primary-button">Add order</button>
+          <label class="search-field">
+            <span class="sr-only">Search orders</span>
+            <input id="searchInput" type="search" placeholder="Search customer, job, supplier, or PO" />
+          </label>
+        </div>
+
+        <div class="toolbar-controls">
+          <label>
+            Status
+            <select id="statusFilter">
+              <option value="Outstanding">Outstanding</option>
+              <option value="Overdue">Overdue</option>
+              <option value="Received">Received</option>
+              <option value="All Orders">All Orders</option>
+            </select>
+          </label>
+
+          <label>
+            Group
+            <select id="groupFilter">
+              <option value="All Orders">All Orders</option>
+              <option value="Windows / Flat Glass">Windows / Flat Glass</option>
+              <option value="Heavy Glass / Storefront">Heavy Glass / Storefront</option>
+            </select>
+          </label>
+
+          <label>
+            Category
+            <select id="categoryFilter">
+              <option value="">All categories</option>
+              <option value="Windows">Windows</option>
+              <option value="Flat Glass">Flat Glass</option>
+              <option value="Showers">Showers</option>
+              <option value="Storefront">Storefront</option>
+            </select>
+          </label>
+
+          <label class="supplier-filter-wrap">
+            Supplier
+            <select id="supplierFilter" multiple size="4"></select>
+          </label>
+
+          <label>
+            Sort
+            <select id="sortSelect">
+              <option value="expected_delivery_date">Expected delivery</option>
+              <option value="order_date">Order date</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <div id="statusMessage" class="message-box" aria-live="polite"></div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Customer</th>
+              <th>Category</th>
+              <th>Job #</th>
+              <th>Supplier</th>
+              <th>PO / order #</th>
+              <th>Ordered</th>
+              <th>ETA</th>
+              <th>Received</th>
+              <th>Status</th>
+              <th>Notes</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="ordersTableBody"></tbody>
+        </table>
+      </div>
+
+      <div id="emptyState" class="empty-state hidden">
+        <h2>No matching orders</h2>
+        <p>Adjust your search, change the selected filters, or add a new order.</p>
+      </div>
+    </main>
+
+    <dialog id="orderDialog">
+      <form id="orderForm" method="dialog">
+        <input type="hidden" id="orderId" />
+        <input type="hidden" id="orderUpdatedAt" />
+
+        <div class="dialog-header">
+          <h2 id="dialogTitle">Add order</h2>
+          <button type="button" id="closeDialogButton" class="close-button" aria-label="Close">×</button>
+        </div>
+
+        <div class="form-grid">
+          <label>
+            Customer name
+            <input id="customerName" name="customer_name" type="text" required />
+          </label>
+
+          <label>
+            Category
+            <select id="categorySelect" name="category" required>
+              <option value="">Select category</option>
+              <option value="Windows">Windows</option>
+              <option value="Flat Glass">Flat Glass</option>
+              <option value="Showers">Showers</option>
+              <option value="Storefront">Storefront</option>
+            </select>
+          </label>
+
+          <label>
+            Housecall Pro job #
+            <input id="housecallJobNumber" name="housecall_job_number" type="text" />
+          </label>
+
+          <label class="full-width">
+            Housecall Pro job link
+            <input id="housecallJobLink" name="housecall_job_link" type="url" placeholder="https://..." />
+          </label>
+
+          <label>
+            Supplier
+            <input id="supplierInput" name="supplier" list="supplierList" type="text" required />
+            <datalist id="supplierList"></datalist>
+          </label>
+
+          <label>
+            PO / order number
+            <input id="poNumber" name="po_number" type="text" />
+          </label>
+
+          <label>
+            Date ordered
+            <input id="dateOrdered" name="date_ordered" type="date" required />
+          </label>
+
+          <label>
+            Expected delivery date
+            <input id="expectedDeliveryDate" name="expected_delivery_date" type="date" />
+          </label>
+
+          <label>
+            Date received
+            <input id="dateReceived" name="date_received" type="date" />
+          </label>
+
+          <label class="full-width">
+            Notes
+            <textarea id="notes" name="notes" rows="4"></textarea>
+          </label>
+        </div>
+
+        <div id="formError" class="form-error" aria-live="polite"></div>
+
+        <div class="dialog-actions">
+          <button type="button" id="cancelOrderButton" class="secondary-button">Cancel</button>
+          <button type="submit" class="primary-button">Save order</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
