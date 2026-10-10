@@ -50,6 +50,10 @@ db.exec(`
     updated_at TEXT NOT NULL,
     created_by TEXT,
     updated_by TEXT,
+    is_archived INTEGER NOT NULL DEFAULT 0,
+    archived_at TEXT,
+    archive_source TEXT,
+    archive_reason TEXT,
     is_preview_data INTEGER NOT NULL DEFAULT 0
   );
 
@@ -75,6 +79,10 @@ db.exec(`
     updated_at TEXT NOT NULL,
     created_by TEXT,
     updated_by TEXT,
+    is_archived INTEGER NOT NULL DEFAULT 0,
+    archived_at TEXT,
+    archive_source TEXT,
+    archive_reason TEXT,
     is_preview_data INTEGER NOT NULL DEFAULT 0
   );
 `);
@@ -125,9 +133,29 @@ if (Number(hasJobDraftTable.count) === 0) {
       updated_at TEXT NOT NULL,
       created_by TEXT,
       updated_by TEXT,
+      is_archived INTEGER NOT NULL DEFAULT 0,
+      archived_at TEXT,
+      archive_source TEXT,
+      archive_reason TEXT,
       is_preview_data INTEGER NOT NULL DEFAULT 0
     );
   `);
+}
+
+const hasJobDraftArchivedColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('job_drafts') WHERE name = 'is_archived'").get();
+if (Number(hasJobDraftArchivedColumn.count) === 0) {
+  db.exec('ALTER TABLE job_drafts ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0;');
+  db.exec('ALTER TABLE job_drafts ADD COLUMN archived_at TEXT;');
+  db.exec('ALTER TABLE job_drafts ADD COLUMN archive_source TEXT;');
+  db.exec('ALTER TABLE job_drafts ADD COLUMN archive_reason TEXT;');
+}
+
+const hasOrderArchivedColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'is_archived'").get();
+if (Number(hasOrderArchivedColumn.count) === 0) {
+  db.exec('ALTER TABLE orders ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0;');
+  db.exec('ALTER TABLE orders ADD COLUMN archived_at TEXT;');
+  db.exec('ALTER TABLE orders ADD COLUMN archive_source TEXT;');
+  db.exec('ALTER TABLE orders ADD COLUMN archive_reason TEXT;');
 }
 
 const hasSupplierActiveColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('suppliers') WHERE name = 'active'").get();

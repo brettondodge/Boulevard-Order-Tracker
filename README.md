@@ -73,6 +73,30 @@ Recommended production settings:
 - Shared online deployment: usually a small monthly hosting fee, plus optional domain and backups.
 - If you want a fully managed database and permanent external access, expect a small monthly service cost depending on the host.
 
+## HCP automation readiness
+
+The archive workflow is designed to support a later Housecall Pro import or automation step without connecting to HCP from this project.
+
+Eligibility for a future automated archive decision:
+
+- The job is completed.
+- The job has been invoiced.
+- The job is paid in full.
+- All linked supplier orders have been received.
+
+Important exclusions:
+
+- Deposit payments alone do not qualify.
+- Individually paid progress invoices do not qualify on their own.
+- If HCP conditions are satisfied but local ordering or receiving work is still incomplete, the job should be flagged for review instead of being auto-hidden.
+
+Safety rules for later integration:
+
+- Use stable HCP job IDs and treat repeated notifications as idempotent.
+- Keep archive metadata in the local database with source values like `manual` and `future_hcp_automation` and the optional archive reason.
+- Verify the actual HCP API fields, event semantics, and payload naming during the later integration.
+- Do not connect to HCP or change anything in HCP during this task.
+
 ## Notes for beginners
 
 - The app is intentionally simple and maintainable.
