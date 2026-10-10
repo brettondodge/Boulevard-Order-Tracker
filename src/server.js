@@ -34,6 +34,7 @@ const publicDir = path.resolve(__dirname, '../public');
 const app = express();
 const port = Number(process.env.APP_PORT || process.env.PORT || 3000);
 const liveClients = new Set();
+const isProduction = process.env.NODE_ENV === 'production';
 const VALID_DEPOSIT_STATUSES = [
   'Awaiting deposit',
   'Deposit received',
@@ -66,15 +67,26 @@ app.use(
     secret: process.env.SESSION_SECRET || 'boulevard-session-secret-change-me',
     resave: false,
     saveUninitialized: false,
+    rolling: true,
     cookie: {
       maxAge: 1000 * 60 * 60 * 12,
       sameSite: 'lax',
-      httpOnly: true
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? 'none' : 'lax'
     }
   })
 );
 
 app.use(express.static(publicDir));
+
+function requireStaffAuth(req, res, next) {
+  if (!req.session || !req.session.user || !req.session.user.username) {
+    return res.status(401).json({ error: 'Staff authentication required.' });
+  }
+
+  next();
+}
 
 function currentAdminUsername() {
   return (process.env.ADMIN_USERNAME || 'admin').trim();
@@ -372,7 +384,7 @@ app.get('/api/job-drafts', (req, res) => {
   return res.json({ drafts: rows.map((row) => serializeJobDraft(row)) });
 });
 
-app.post('/api/job-drafts', (req, res) => {
+app.post('/api/job-drafts', requireStaffAuth, (req, res) => {
   const draftData = {
     customer_name: normalizeText(req.body.customer_name),
     housecall_job_number: normalizeText(req.body.housecall_job_number),
@@ -414,7 +426,7 @@ app.post('/api/job-drafts', (req, res) => {
   return res.status(201).json({ draft });
 });
 
-app.put('/api/job-drafts/:id', (req, res) => {
+app.put('/api/job-drafts/:id', requireStaffAuth, (req, res) => {
   const draft = getJobDraftById(req.params.id);
   if (!draft) {
     return res.status(404).json({ error: 'Job draft not found.' });
@@ -465,7 +477,7 @@ app.put('/api/job-drafts/:id', (req, res) => {
   return res.json({ draft: updated });
 });
 
-app.post('/api/job-drafts/:id/complete', (req, res) => {
+app.post('/api/job-drafts/:id/complete', requireStaffAuth, (req, res) => {
   const draft = getJobDraftById(req.params.id);
   if (!draft) {
     return res.status(404).json({ error: 'Job draft not found.' });
@@ -478,7 +490,7 @@ app.post('/api/job-drafts/:id/complete', (req, res) => {
   return res.json({ draft: updated });
 });
 
-app.post('/api/job-drafts/:id/archive', (req, res) => {
+app.post('/api/job-drafts/:id/archive', requireStaffAuth, (req, res) => {
   const draft = getJobDraftById(req.params.id);
   if (!draft) {
     return res.status(404).json({ error: 'Job draft not found.' });
@@ -515,7 +527,7 @@ app.post('/api/job-drafts/:id/archive', (req, res) => {
   });
 });
 
-app.post('/api/job-drafts/:id/restore', (req, res) => {
+app.post('/api/job-drafts/:id/restore', requireStaffAuth, (req, res) => {
   const draft = getJobDraftById(req.params.id);
   if (!draft) {
     return res.status(404).json({ error: 'Job draft not found.' });
@@ -531,7 +543,7 @@ app.post('/api/job-drafts/:id/restore', (req, res) => {
   return res.json({ restored: restoredDraftIds.length > 0, draft_id: draft.id, order_ids: linkedOrders });
 });
 
-app.post('/api/job-drafts/:id/reopen', (req, res) => {
+app.post('/api/job-drafts/:id/reopen', requireStaffAuth, (req, res) => {
   const draft = getJobDraftById(req.params.id);
   if (!draft) {
     return res.status(404).json({ error: 'Job draft not found.' });
@@ -572,7 +584,12 @@ app.post('/api/admin/login', (req, res) => {
   }
 
   req.session.admin = { username: adminUsername };
-  return res.json({ success: true, admin: req.session.admin });
+  req.session.user = {
+    id: `admin:${adminUsername}`,
+    username: adminUsername,
+    full_name: 'Office Admin'
+  };
+  return res.json({ success: true, admin: req.session.admin, user: req.session.user });
 });
 
 app.post('/api/admin/logout', (req, res) => {
@@ -612,7 +629,7 @@ app.post('/api/master-lists/ordered-by', requireAdminAuth, (req, res) => {
   return res.json({ staff_names: saved.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })) });
 });
 
-app.post('/api/orders/archive', (req, res) => {
+app.post('/api/orders/archive', requireStaffAuth, (req, res) => {
   const ids = Array.isArray(req.body.order_ids) ? req.body.order_ids : [];
   if (!ids.length) {
     return res.status(400).json({ error: 'At least one order must be selected to archive.' });
@@ -647,7 +664,7 @@ app.post('/api/orders/archive', (req, res) => {
   return res.json({ archived: true, order_ids: archivedIds, source, reason });
 });
 
-app.post('/api/orders/:id/restore', (req, res) => {
+app.post('/api/orders/:id/restore', requireStaffAuth, (req, res) => {
   const order = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
   if (!order) {
     return res.status(404).json({ error: 'Order not found.' });
@@ -777,7 +794,7 @@ app.get('/api/orders', (req, res) => {
   return res.json({ orders: normalized });
 });
 
-app.post('/api/orders', (req, res) => {
+app.post('/api/orders', requireStaffAuth, (req, res) => {
   try {
     const orderData = normalizeOrderInput(req.body);
     const draftId = normalizeText(req.body.job_draft_id || '');
@@ -878,7 +895,7 @@ app.post('/api/orders', (req, res) => {
   }
 });
 
-app.put('/api/orders/:id', (req, res) => {
+app.put('/api/orders/:id', requireStaffAuth, (req, res) => {
   try {
     const existing = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
     if (!existing) {
@@ -983,7 +1000,7 @@ app.put('/api/orders/:id', (req, res) => {
   }
 });
 
-app.post('/api/orders/:id/mark-received', (req, res) => {
+app.post('/api/orders/:id/mark-received', requireStaffAuth, (req, res) => {
   const existing = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
   if (!existing) {
     return res.status(404).json({ error: 'Order not found.' });
@@ -1007,7 +1024,7 @@ app.post('/api/orders/:id/mark-received', (req, res) => {
   return res.json({ order: { ...updated, status: statusFromOrder(updated) } });
 });
 
-app.post('/api/orders/:id/reopen', (req, res) => {
+app.post('/api/orders/:id/reopen', requireStaffAuth, (req, res) => {
   const existing = getDb().prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
   if (!existing) {
     return res.status(404).json({ error: 'Order not found.' });

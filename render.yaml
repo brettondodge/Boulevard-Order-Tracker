@@ -16,17 +16,8 @@ services:
       - key: SESSION_SECRET
         sync: false
       - key: ADMIN_USERNAME
-        value: admin
+        sync: false
       - key: ADMIN_PASSWORD
         sync: false
       - key: DATABASE_URL
-        fromDatabase:
-          name: boulevard-order-tracker-db
-          property: connectionString
-
-databases:
-  - name: boulevard-order-tracker-db
-    databaseName: boulevard_order_tracker
-    user: boulevard
-    region: oregon
-    plan: starter
+        sync: false

@@ -101,6 +101,16 @@ test('ordered-by is required when creating an order', async () => {
   const child = startServer();
   await delay(1500);
 
+  const cookieJar = createCookieJar();
+  const login = await requestJson('http://127.0.0.1:4100/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'mary', password: 'staff123' }),
+    cookieJar
+  });
+
+  assert.equal(login.status, 200);
+
   const response = await requestJson('http://127.0.0.1:4100/api/orders', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -109,7 +119,8 @@ test('ordered-by is required when creating an order', async () => {
       supplier: 'Northline Glass',
       category: 'Windows',
       date_ordered: '2026-10-12'
-    })
+    }),
+    cookieJar
   });
 
   child.kill('SIGTERM');
@@ -363,6 +374,16 @@ test('approved job drafts stay queued until deposit is received or waived and ca
   const child = startServer();
   await delay(1500);
 
+  const cookieJar = createCookieJar();
+  const login = await requestJson('http://127.0.0.1:4100/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'mary', password: 'staff123' }),
+    cookieJar
+  });
+
+  assert.equal(login.status, 200);
+
   const draftName = `Draft Queue ${Date.now()}`;
   const draftResponse = await requestJson('http://127.0.0.1:4100/api/job-drafts', {
     method: 'POST',
@@ -374,7 +395,8 @@ test('approved job drafts stay queued until deposit is received or waived and ca
       notes: 'Approved and waiting on deposit.',
       deposit_status: 'Awaiting deposit',
       hcp_job_id: 'hcp-draft-1001'
-    })
+    }),
+    cookieJar
   });
 
   assert.equal(draftResponse.status, 201);
@@ -393,7 +415,8 @@ test('approved job drafts stay queued until deposit is received or waived and ca
       category: 'Windows',
       date_ordered: '2026-10-18',
       ordered_by: 'Admin User'
-    })
+    }),
+    cookieJar
   });
 
   assert.equal(blockedOrder.status, 400);
@@ -405,7 +428,8 @@ test('approved job drafts stay queued until deposit is received or waived and ca
     body: JSON.stringify({
       deposit_status: 'Deposit received',
       notes: 'Approved and deposit received.'
-    })
+    }),
+    cookieJar
   });
 
   assert.equal(readyResponse.status, 200);
@@ -422,21 +446,24 @@ test('approved job drafts stay queued until deposit is received or waived and ca
       category: 'Windows',
       date_ordered: '2026-10-18',
       ordered_by: 'Admin User'
-    })
+    }),
+    cookieJar
   });
 
   assert.equal(supplierOrder.status, 201);
   assert.equal(supplierOrder.body.order.job_draft_id, draftId);
 
   const completeResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${draftId}/complete`, {
-    method: 'POST'
+    method: 'POST',
+    cookieJar
   });
 
   assert.equal(completeResponse.status, 200);
   assert.equal(completeResponse.body.draft.status, 'Completed');
 
   const reopenedResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${draftId}/reopen`, {
-    method: 'POST'
+    method: 'POST',
+    cookieJar
   });
 
   assert.equal(reopenedResponse.status, 200);
@@ -449,6 +476,16 @@ test('draft queue keeps separate supplier orders out of overdue and delivery cou
   const child = startServer();
   await delay(1500);
 
+  const cookieJar = createCookieJar();
+  const login = await requestJson('http://127.0.0.1:4100/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'mary', password: 'staff123' }),
+    cookieJar
+  });
+
+  assert.equal(login.status, 200);
+
   const draftResponse = await requestJson('http://127.0.0.1:4100/api/job-drafts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -458,7 +495,8 @@ test('draft queue keeps separate supplier orders out of overdue and delivery cou
       notes: 'Draft only; no materials ordered yet.',
       deposit_status: 'Deposit waived / not required',
       hcp_job_id: 'hcp-draft-1002'
-    })
+    }),
+    cookieJar
   });
 
   assert.equal(draftResponse.status, 201);
@@ -467,7 +505,8 @@ test('draft queue keeps separate supplier orders out of overdue and delivery cou
   const readyResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${draftId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ deposit_status: 'Deposit waived / not required' })
+    body: JSON.stringify({ deposit_status: 'Deposit waived / not required' }),
+    cookieJar
   });
 
   assert.equal(readyResponse.status, 200);
@@ -483,7 +522,8 @@ test('draft queue keeps separate supplier orders out of overdue and delivery cou
       category: 'Showers',
       date_ordered: '2026-10-20',
       ordered_by: 'Admin User'
-    })
+    }),
+    cookieJar
   });
 
   assert.equal(createOrder.status, 201);
@@ -500,6 +540,16 @@ test('job archive is blocked until linked supplier orders are received', async (
   const child = startServer();
   await delay(1500);
 
+  const cookieJar = createCookieJar();
+  const login = await requestJson('http://127.0.0.1:4100/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'mary', password: 'staff123' }),
+    cookieJar
+  });
+
+  assert.equal(login.status, 200);
+
   const customer = `Pending Archive Customer ${Date.now()}`;
   const draft = await requestJson('http://127.0.0.1:4100/api/job-drafts', {
     method: 'POST',
@@ -510,7 +560,8 @@ test('job archive is blocked until linked supplier orders are received', async (
       hcp_job_id: `hcp-receive-${Date.now()}`,
       notes: 'Waiting for receipt before archiving.',
       deposit_status: 'Deposit received'
-    })
+    }),
+    cookieJar
   });
 
   const order = await requestJson('http://127.0.0.1:4100/api/orders', {
@@ -524,7 +575,8 @@ test('job archive is blocked until linked supplier orders are received', async (
       category: 'Windows',
       date_ordered: '2026-10-18',
       ordered_by: 'Admin User'
-    })
+    }),
+    cookieJar
   });
 
   assert.equal(draft.status, 201);
@@ -533,7 +585,8 @@ test('job archive is blocked until linked supplier orders are received', async (
   const blocked = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${draft.body.draft.id}/archive`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirm: true, reason: 'Should fail before receipt', source: 'manual' })
+    body: JSON.stringify({ confirm: true, reason: 'Should fail before receipt', source: 'manual' }),
+    cookieJar
   });
 
   assert.equal(blocked.status, 409);
@@ -547,7 +600,8 @@ test('job archive is blocked until linked supplier orders are received', async (
       status: 'Received',
       date_received: '2026-10-22',
       updated_at: order.body.order.updated_at
-    })
+    }),
+    cookieJar
   });
 
   assert.equal(markReceived.status, 200);
@@ -555,7 +609,8 @@ test('job archive is blocked until linked supplier orders are received', async (
   const archiveResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${draft.body.draft.id}/archive`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirm: true, reason: 'Ready to archive', source: 'manual' })
+    body: JSON.stringify({ confirm: true, reason: 'Ready to archive', source: 'manual' }),
+    cookieJar
   });
 
   assert.equal(archiveResponse.status, 200);
@@ -568,6 +623,16 @@ test('archive and restore keep linked supplier orders and other jobs separate', 
   const child = startServer();
   await delay(1500);
 
+  const cookieJar = createCookieJar();
+  const login = await requestJson('http://127.0.0.1:4100/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'mary', password: 'staff123' }),
+    cookieJar
+  });
+
+  assert.equal(login.status, 200);
+
   const sharedCustomer = `Archive Customer ${Date.now()}`;
 
   const firstDraft = await requestJson('http://127.0.0.1:4100/api/job-drafts', {
@@ -579,7 +644,8 @@ test('archive and restore keep linked supplier orders and other jobs separate', 
       hcp_job_id: `hcp-arch-1-${Date.now()}`,
       notes: 'First job kept for archive testing.',
       deposit_status: 'Deposit received'
-    })
+    }),
+    cookieJar
   });
 
   const secondDraft = await requestJson('http://127.0.0.1:4100/api/job-drafts', {
@@ -591,7 +657,8 @@ test('archive and restore keep linked supplier orders and other jobs separate', 
       hcp_job_id: `hcp-arch-2-${Date.now()}`,
       notes: 'Second job for same customer should remain active.',
       deposit_status: 'Deposit received'
-    })
+    }),
+    cookieJar
   });
 
   assert.equal(firstDraft.status, 201);
@@ -608,7 +675,8 @@ test('archive and restore keep linked supplier orders and other jobs separate', 
       category: 'Windows',
       date_ordered: '2026-10-18',
       ordered_by: 'Admin User'
-    })
+    }),
+    cookieJar
   });
 
   const secondOrder = await requestJson('http://127.0.0.1:4100/api/orders', {
@@ -622,7 +690,8 @@ test('archive and restore keep linked supplier orders and other jobs separate', 
       category: 'Flat Glass',
       date_ordered: '2026-10-19',
       ordered_by: 'Admin User'
-    })
+    }),
+    cookieJar
   });
 
   assert.equal(firstOrder.status, 201);
@@ -636,7 +705,8 @@ test('archive and restore keep linked supplier orders and other jobs separate', 
       status: 'Received',
       date_received: '2026-10-20',
       updated_at: firstOrder.body.order.updated_at
-    })
+    }),
+    cookieJar
   });
 
   assert.equal(markReceived.status, 200);
@@ -644,7 +714,8 @@ test('archive and restore keep linked supplier orders and other jobs separate', 
   const archiveResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${firstDraft.body.draft.id}/archive`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason: 'Test archive', source: 'manual' })
+    body: JSON.stringify({ reason: 'Test archive', source: 'manual' }),
+    cookieJar
   });
 
   assert.equal(archiveResponse.status, 200);
@@ -663,7 +734,8 @@ test('archive and restore keep linked supplier orders and other jobs separate', 
   assert.ok(!activeDrafts.body.drafts.some((draft) => draft.id === firstDraft.body.draft.id));
 
   const restoreResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${firstDraft.body.draft.id}/restore`, {
-    method: 'POST'
+    method: 'POST',
+    cookieJar
   });
 
   assert.equal(restoreResponse.status, 200);

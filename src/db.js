@@ -6,8 +6,17 @@ import Database from 'better-sqlite3';
 import { isoNow, todayPhoenixString } from './utils.js';
 
 export function validateRuntimeDatabaseConfig() {
-  if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL) {
-    throw new Error('Production deployment requires DATABASE_URL. Do not silently fall back to a local SQLite database in Render.');
+  const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
+  if (!isProduction) {
+    return;
+  }
+
+  if (!process.env.DATABASE_URL) {
+    throw new Error('Production deployment requires DATABASE_URL. The app will not fall back to the local SQLite database in Render.');
+  }
+
+  if (!/^postgres(ql)?:\/\//i.test(process.env.DATABASE_URL)) {
+    throw new Error('DATABASE_URL is not a valid Postgres connection string. Use the existing Render Postgres internal URL for this service.');
   }
 }
 
@@ -15,118 +24,38 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.resolve(__dirname, '../data');
 fs.mkdirSync(dataDir, { recursive: true });
 
-const db = new Database(path.join(dataDir, 'boulevard_orders.db'));
-db.pragma('journal_mode = WAL');
+const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
+const db = isProduction ? null : new Database(path.join(dataDir, 'boulevard_orders.db'));
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    full_name TEXT NOT NULL,
-    created_at TEXT NOT NULL
-  );
+if (!isProduction) {
+  db.pragma('journal_mode = WAL');
 
-  CREATE TABLE IF NOT EXISTS suppliers (
-    id TEXT PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
-    active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS staff_names (
-    id TEXT PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
-    active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS job_drafts (
-    id TEXT PRIMARY KEY,
-    customer_name TEXT NOT NULL,
-    housecall_job_number TEXT,
-    housecall_job_link TEXT,
-    hcp_job_id TEXT,
-    notes TEXT,
-    deposit_status TEXT NOT NULL DEFAULT 'Awaiting deposit',
-    status TEXT NOT NULL DEFAULT 'Open',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    created_by TEXT,
-    updated_by TEXT,
-    is_archived INTEGER NOT NULL DEFAULT 0,
-    archived_at TEXT,
-    archive_source TEXT,
-    archive_reason TEXT,
-    is_preview_data INTEGER NOT NULL DEFAULT 0
-  );
-
-  CREATE TABLE IF NOT EXISTS orders (
-    id TEXT PRIMARY KEY,
-    customer_name TEXT NOT NULL,
-    housecall_job_number TEXT,
-    housecall_job_link TEXT,
-    supplier TEXT NOT NULL,
-    supplier_id TEXT,
-    category TEXT,
-    combined_group TEXT,
-    po_number TEXT,
-    date_ordered TEXT NOT NULL,
-    expected_delivery_date TEXT,
-    date_received TEXT,
-    ordered_by TEXT,
-    ordered_by_id TEXT,
-    status TEXT NOT NULL DEFAULT 'Ordered',
-    notes TEXT,
-    job_draft_id TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    created_by TEXT,
-    updated_by TEXT,
-    is_archived INTEGER NOT NULL DEFAULT 0,
-    archived_at TEXT,
-    archive_source TEXT,
-    archive_reason TEXT,
-    is_preview_data INTEGER NOT NULL DEFAULT 0
-  );
-`);
-
-const hasCategoryColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'category'").get();
-if (Number(hasCategoryColumn.count) === 0) {
-  db.exec('ALTER TABLE orders ADD COLUMN category TEXT;');
-}
-
-const hasCombinedGroupColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'combined_group'").get();
-if (Number(hasCombinedGroupColumn.count) === 0) {
-  db.exec('ALTER TABLE orders ADD COLUMN combined_group TEXT;');
-}
-
-const hasSupplierIdColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'supplier_id'").get();
-if (Number(hasSupplierIdColumn.count) === 0) {
-  db.exec('ALTER TABLE orders ADD COLUMN supplier_id TEXT;');
-}
-
-const hasOrderedByColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'ordered_by'").get();
-if (Number(hasOrderedByColumn.count) === 0) {
-  db.exec('ALTER TABLE orders ADD COLUMN ordered_by TEXT;');
-}
-
-const hasOrderedByIdColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'ordered_by_id'").get();
-if (Number(hasOrderedByIdColumn.count) === 0) {
-  db.exec('ALTER TABLE orders ADD COLUMN ordered_by_id TEXT;');
-}
-
-const hasJobDraftIdColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'job_draft_id'").get();
-if (Number(hasJobDraftIdColumn.count) === 0) {
-  db.exec('ALTER TABLE orders ADD COLUMN job_draft_id TEXT;');
-}
-
-const hasJobDraftTable = db.prepare("SELECT COUNT(*) as count FROM sqlite_master WHERE type = 'table' AND name = 'job_drafts'").get();
-if (Number(hasJobDraftTable.count) === 0) {
   db.exec(`
-    CREATE TABLE job_drafts (
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      full_name TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS suppliers (
+      id TEXT PRIMARY KEY,
+      name TEXT UNIQUE NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS staff_names (
+      id TEXT PRIMARY KEY,
+      name TEXT UNIQUE NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS job_drafts (
       id TEXT PRIMARY KEY,
       customer_name TEXT NOT NULL,
       housecall_job_number TEXT,
@@ -145,49 +74,137 @@ if (Number(hasJobDraftTable.count) === 0) {
       archive_reason TEXT,
       is_preview_data INTEGER NOT NULL DEFAULT 0
     );
-  `);
-}
 
-const hasJobDraftArchivedColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('job_drafts') WHERE name = 'is_archived'").get();
-if (Number(hasJobDraftArchivedColumn.count) === 0) {
-  db.exec('ALTER TABLE job_drafts ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0;');
-  db.exec('ALTER TABLE job_drafts ADD COLUMN archived_at TEXT;');
-  db.exec('ALTER TABLE job_drafts ADD COLUMN archive_source TEXT;');
-  db.exec('ALTER TABLE job_drafts ADD COLUMN archive_reason TEXT;');
-}
-
-const hasOrderArchivedColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'is_archived'").get();
-if (Number(hasOrderArchivedColumn.count) === 0) {
-  db.exec('ALTER TABLE orders ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0;');
-  db.exec('ALTER TABLE orders ADD COLUMN archived_at TEXT;');
-  db.exec('ALTER TABLE orders ADD COLUMN archive_source TEXT;');
-  db.exec('ALTER TABLE orders ADD COLUMN archive_reason TEXT;');
-}
-
-const hasSupplierActiveColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('suppliers') WHERE name = 'active'").get();
-if (Number(hasSupplierActiveColumn.count) === 0) {
-  db.exec('ALTER TABLE suppliers ADD COLUMN active INTEGER NOT NULL DEFAULT 1;');
-}
-
-const hasSupplierUpdatedAtColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('suppliers') WHERE name = 'updated_at'").get();
-if (Number(hasSupplierUpdatedAtColumn.count) === 0) {
-  db.exec('ALTER TABLE suppliers ADD COLUMN updated_at TEXT;');
-}
-
-const hasStaffTable = db.prepare("SELECT COUNT(*) as count FROM sqlite_master WHERE type = 'table' AND name = 'staff_names'").get();
-if (Number(hasStaffTable.count) === 0) {
-  db.exec(`
-    CREATE TABLE staff_names (
+    CREATE TABLE IF NOT EXISTS orders (
       id TEXT PRIMARY KEY,
-      name TEXT UNIQUE NOT NULL,
-      active INTEGER NOT NULL DEFAULT 1,
+      customer_name TEXT NOT NULL,
+      housecall_job_number TEXT,
+      housecall_job_link TEXT,
+      supplier TEXT NOT NULL,
+      supplier_id TEXT,
+      category TEXT,
+      combined_group TEXT,
+      po_number TEXT,
+      date_ordered TEXT NOT NULL,
+      expected_delivery_date TEXT,
+      date_received TEXT,
+      ordered_by TEXT,
+      ordered_by_id TEXT,
+      status TEXT NOT NULL DEFAULT 'Ordered',
+      notes TEXT,
+      job_draft_id TEXT,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      updated_at TEXT NOT NULL,
+      created_by TEXT,
+      updated_by TEXT,
+      is_archived INTEGER NOT NULL DEFAULT 0,
+      archived_at TEXT,
+      archive_source TEXT,
+      archive_reason TEXT,
+      is_preview_data INTEGER NOT NULL DEFAULT 0
     );
   `);
+
+  const hasCategoryColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'category'").get();
+  if (Number(hasCategoryColumn.count) === 0) {
+    db.exec('ALTER TABLE orders ADD COLUMN category TEXT;');
+  }
+
+  const hasCombinedGroupColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'combined_group'").get();
+  if (Number(hasCombinedGroupColumn.count) === 0) {
+    db.exec('ALTER TABLE orders ADD COLUMN combined_group TEXT;');
+  }
+
+  const hasSupplierIdColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'supplier_id'").get();
+  if (Number(hasSupplierIdColumn.count) === 0) {
+    db.exec('ALTER TABLE orders ADD COLUMN supplier_id TEXT;');
+  }
+
+  const hasOrderedByColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'ordered_by'").get();
+  if (Number(hasOrderedByColumn.count) === 0) {
+    db.exec('ALTER TABLE orders ADD COLUMN ordered_by TEXT;');
+  }
+
+  const hasOrderedByIdColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'ordered_by_id'").get();
+  if (Number(hasOrderedByIdColumn.count) === 0) {
+    db.exec('ALTER TABLE orders ADD COLUMN ordered_by_id TEXT;');
+  }
+
+  const hasJobDraftIdColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'job_draft_id'").get();
+  if (Number(hasJobDraftIdColumn.count) === 0) {
+    db.exec('ALTER TABLE orders ADD COLUMN job_draft_id TEXT;');
+  }
+
+  const hasJobDraftTable = db.prepare("SELECT COUNT(*) as count FROM sqlite_master WHERE type = 'table' AND name = 'job_drafts'").get();
+  if (Number(hasJobDraftTable.count) === 0) {
+    db.exec(`
+      CREATE TABLE job_drafts (
+        id TEXT PRIMARY KEY,
+        customer_name TEXT NOT NULL,
+        housecall_job_number TEXT,
+        housecall_job_link TEXT,
+        hcp_job_id TEXT,
+        notes TEXT,
+        deposit_status TEXT NOT NULL DEFAULT 'Awaiting deposit',
+        status TEXT NOT NULL DEFAULT 'Open',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT,
+        updated_by TEXT,
+        is_archived INTEGER NOT NULL DEFAULT 0,
+        archived_at TEXT,
+        archive_source TEXT,
+        archive_reason TEXT,
+        is_preview_data INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+  }
+
+  const hasJobDraftArchivedColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('job_drafts') WHERE name = 'is_archived'").get();
+  if (Number(hasJobDraftArchivedColumn.count) === 0) {
+    db.exec('ALTER TABLE job_drafts ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0;');
+    db.exec('ALTER TABLE job_drafts ADD COLUMN archived_at TEXT;');
+    db.exec('ALTER TABLE job_drafts ADD COLUMN archive_source TEXT;');
+    db.exec('ALTER TABLE job_drafts ADD COLUMN archive_reason TEXT;');
+  }
+
+  const hasOrderArchivedColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'is_archived'").get();
+  if (Number(hasOrderArchivedColumn.count) === 0) {
+    db.exec('ALTER TABLE orders ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0;');
+    db.exec('ALTER TABLE orders ADD COLUMN archived_at TEXT;');
+    db.exec('ALTER TABLE orders ADD COLUMN archive_source TEXT;');
+    db.exec('ALTER TABLE orders ADD COLUMN archive_reason TEXT;');
+  }
+
+  const hasSupplierActiveColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('suppliers') WHERE name = 'active'").get();
+  if (Number(hasSupplierActiveColumn.count) === 0) {
+    db.exec('ALTER TABLE suppliers ADD COLUMN active INTEGER NOT NULL DEFAULT 1;');
+  }
+
+  const hasSupplierUpdatedAtColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('suppliers') WHERE name = 'updated_at'").get();
+  if (Number(hasSupplierUpdatedAtColumn.count) === 0) {
+    db.exec('ALTER TABLE suppliers ADD COLUMN updated_at TEXT;');
+  }
+
+  const hasStaffTable = db.prepare("SELECT COUNT(*) as count FROM sqlite_master WHERE type = 'table' AND name = 'staff_names'").get();
+  if (Number(hasStaffTable.count) === 0) {
+    db.exec(`
+      CREATE TABLE staff_names (
+        id TEXT PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+  }
 }
 
 export function getDb() {
+  if (isProduction) {
+    throw new Error('Production mode requires a live Postgres database connection. Local SQLite access is intentionally disabled in production.');
+  }
+
   return db;
 }
 
@@ -456,6 +473,10 @@ export function seedPreviewData() {
 }
 
 export function initializeDatabase() {
+  if (isProduction) {
+    throw new Error('Production mode requires a live Postgres database connection. The app will not initialize against local SQLite in Render.');
+  }
+
   seedUsers();
   if (process.env.PREVIEW_MODE !== 'false') {
     seedPreviewData();

@@ -64,15 +64,16 @@ For real office use, deploy the app to a host with persistent storage and a cust
 ### Render deployment checklist
 
 1. Create or reuse a Render web service for the app.
-2. Connect the service to the paid Postgres database already created in Render.
+2. Connect the service to the paid Postgres database already created in Render in Oregon.
 3. Set the environment variables listed below in Render.
-4. Run the Postgres schema migration before the first production start.
-5. Keep `PREVIEW_MODE=false` for a real office deployment.
-6. Verify the app logs in successfully and that the admin flow works before sharing it with staff.
+4. Use the existing database's internal URL for the app service; do not create another database in Render.
+5. Run the Postgres schema migration before the first production start.
+6. Keep `PREVIEW_MODE=false` for a real office deployment.
+7. Verify the app logs in successfully and that the admin flow works before sharing it with staff.
 
 ### Required environment variables for Render
 
-- `DATABASE_URL`: Use the Postgres connection string from Render's database page.
+- `DATABASE_URL`: Use the existing Render Postgres internal connection string for the Oregon database. Keep this value in Render secrets.
 - `SESSION_SECRET`: A long random secret value stored in Render's secret environment settings.
 - `ADMIN_USERNAME`: The administrator login name for the app.
 - `ADMIN_PASSWORD` or `ADMIN_PASSWORD_HASH`: Admin password seed or hash. Use a real office login credential.
