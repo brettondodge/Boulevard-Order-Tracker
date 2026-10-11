@@ -86,6 +86,10 @@ Do not switch staff until the final import passes, the hosted app is Access-prot
 
 Housecall Pro integration and future tools are outside this hosting preparation.
 
+## Follow-up: Master Lists removal
+
+The supplier and staff **Remove** buttons currently remove rows only from the browser's editor. Saving upserts the remaining rows without deleting or deactivating omitted database records, so removed entries return after reload. Fix this behavior in a later task, with explicit handling for entries linked to historical orders and drafts. Until then, uncheck **Active** and save to hide an entry from new-order choices.
+
 ## Provider references
 
 - [Render Cloudflare DNS and certificate sequence](https://render.com/docs/configure-cloudflare-dns)
