@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { recordFingerprint } from '../src/record-fingerprint.js';
+import { postgresOptions } from '../src/postgres-connection.js';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -13,7 +14,9 @@ const db = new URL(process.env.DATABASE_URL);
 const directory = await mkdtemp(path.join(tmpdir(), 'boulevard-backup-'));
 const filename = path.join(directory, 'database.dump');
 const key = `${process.env.S3_BACKUP_PREFIX.replace(/\/+$/, '')}/${new Date().toISOString().slice(0, 10)}.dump`;
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 10000 });
+const connectionOptions = postgresOptions(process.env.DATABASE_URL);
+const pool = new pg.Pool(connectionOptions);
+const dumpSslMode = connectionOptions.ssl === false ? 'disable' : connectionOptions.ssl.rejectUnauthorized ? 'verify-full' : 'require';
 let client;
 const s3 = new S3Client({ region: process.env.AWS_REGION });
 try {
@@ -23,7 +26,7 @@ try {
   const fingerprint = await recordFingerprint(client);
   await new Promise((resolve, reject) => {
     const child = spawn('pg_dump', ['--format=custom', '--no-owner', '--no-acl', '--snapshot', snapshot, '--file', filename], {
-      env: { ...process.env, PGHOST: db.hostname, PGPORT: db.port || '5432', PGDATABASE: decodeURIComponent(db.pathname.slice(1)), PGUSER: decodeURIComponent(db.username), PGPASSWORD: decodeURIComponent(db.password), PGSSLMODE: db.searchParams.get('sslmode') || process.env.PGSSLMODE || 'prefer' }, stdio: 'ignore'
+      env: { ...process.env, PGHOST: db.hostname, PGPORT: db.port || '5432', PGDATABASE: decodeURIComponent(db.pathname.slice(1)), PGUSER: decodeURIComponent(db.username), PGPASSWORD: decodeURIComponent(db.password), PGSSLMODE: dumpSslMode }, stdio: 'ignore'
     });
     child.on('error', reject);
     child.on('exit', code => code === 0 ? resolve() : reject(new Error('pg_dump failed')));

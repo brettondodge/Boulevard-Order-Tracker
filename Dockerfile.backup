@@ -10,4 +10,5 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 COPY scripts/backup-postgres.js ./scripts/backup-postgres.js
 COPY src/record-fingerprint.js ./src/record-fingerprint.js
+COPY src/postgres-connection.js ./src/postgres-connection.js
 CMD ["node", "scripts/backup-postgres.js"]

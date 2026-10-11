@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import Database from 'better-sqlite3';
 import pg from 'pg';
 import { migratePostgres } from './postgres-migrations.js';
+import { postgresOptions } from './postgres-connection.js';
 import { isoNow, todayPhoenixString } from './utils.js';
 
 dotenv.config();
@@ -17,15 +18,7 @@ fs.mkdirSync(dataDir, { recursive: true });
 
 export const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 const db = isProduction ? null : new Database(path.join(dataDir, 'boulevard_orders.db'));
-const postgresPool = isProduction ? new Pool({
-  connectionString: process.env.DATABASE_URL,
-  max: 10,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
-  ssl: process.env.PGSSLMODE === 'require' || process.env.RENDER === 'true'
-    ? { rejectUnauthorized: true }
-    : undefined
-}) : null;
+let postgresPool = null;
 
 export function validateRuntimeDatabaseConfig() {
   if (!isProduction) {
@@ -237,6 +230,8 @@ export async function getPool() {
     return null;
   }
 
+  validateRuntimeDatabaseConfig();
+  postgresPool ||= new Pool({ ...postgresOptions(process.env.DATABASE_URL), max: 10, idleTimeoutMillis: 30000 });
   return postgresPool;
 }
 

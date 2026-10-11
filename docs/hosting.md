@@ -49,6 +49,8 @@ Add tools.blvdglass.com under Render Custom Domains. Copy Render's exact DNS tar
 
 ## Step 3: Final SQLite import
 
+Postgres transport uses a shared connection policy for the runtime, migrations, import, backup and restore verification. Render private `dpg-…-a` hostnames, when running on Render, require encrypted TLS with no plaintext fallback and accept Render's self-signed internal certificates. External connections require certificate verification. Plaintext is allowed only for local loopback connections outside Render when TLS is not requested. URL SSL parameters cannot weaken the external policy. See [Render's internal SSL documentation](https://render.com/docs/postgresql-creating-connecting#ssl-modes-for-internal-connections).
+
 1. Rehearse against a separate empty test database first. Never use the live database for automated tests.
 2. Stop local staff writes for the final snapshot. Run npm run backup:sqlite and use the verified snapshot, not a raw copy of a live SQLite file.
 3. In a private terminal environment set IMPORT_DATABASE_URL to the target connection URL and CONFIRM_EMPTY_IMPORT=yes. Do not put URLs/passwords in chat, scripts, Git or screenshots.
