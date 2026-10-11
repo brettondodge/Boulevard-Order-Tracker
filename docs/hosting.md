@@ -8,6 +8,16 @@ The Mac SQLite database was backed up with the supported online backup API. A re
 
 Eighteen checks passed across the local suite, the Postgres integration test, and production configuration tests. Tests use temporary SQLite databases and a temporary real Postgres cluster. The Postgres test substitutes synthetic Cloudflare signing keys inside the test child process; it does not establish a working Cloudflare account, DNS, live Access login, Render deployment, S3 upload or hosted restore.
 
+### Deployment and recovery evidence — October 11, 2026
+
+The production preparation branch has since passed 22 regression checks, including Postgres TLS and request-error recovery. Staff login, order loading, live updates, the separate Master Lists admin gate and service restart persistence were confirmed by the operator on the hosted application at tools.blvdglass.com/app. The custom domain certificate is valid, the tools DNS record is proxied, and direct requests to the disabled Render hostname returned 404. Unauthenticated custom-domain requests redirected to Access. The only reported Access policy allows company-domain email accounts with a one-week session; an unapproved email received no PIN, but a missing email alone does not independently establish a denied authentication. The bare custom-domain address still needs its reported Safari blank-page issue resolved.
+
+The operator created the private S3 backup bucket in Ohio (us-east-2), configured 30-day expiration for the daily prefix, required HTTPS, and configured the restricted backup identity and Healthchecks monitor. The Render Docker backup container built, and a manual run reported successful upload and download-checksum verification. Healthchecks reported healthy. This is evidence of one manual backup, not yet an observed scheduled daily run or a verified failure/missed-run notification.
+
+The uploaded October 11 backup was downloaded using the operator's separate AWS console identity through CloudShell. Its S3 SHA-256 checksum was checked there and again on the Mac. It was restored with Postgres.app 18.6 into a new empty local recovery database using a single transaction, without touching boulevard-tools-db. The supported verifier compared every business table's counts and field hashes successfully: 322 orders, 80 drafts, 104 suppliers, 4 staff names and 2 users. All 78 order-to-draft links were intact; no referenced supplier, staff or draft IDs were missing. Archived history included 12 orders and 13 drafts.
+
+A separate local clone of the restored database passed production API checks for orders, drafts, master lists and archived records; missing, forged, expired, wrong-audience and direct-host access denial; the separate admin gate; test order/draft creation and editing; linked archive/restore; live-update connection; and data/admin-session persistence across app restart. These local Access checks used synthetic signing keys injected only into the test child, not the live Cloudflare account. The untouched recovery database still matched the uploaded snapshot after testing. Local test servers were stopped. Detailed evidence, the downloaded dump and recovery database are kept under the ignored data/backups/uploaded-restore-* directory; the ZIP also remains in Downloads. Neither is committed to Git. Failure alerts, missed-run alerts, Render failure notifications and a scheduled run still require verification before office cutover.
+
 ## Step 1: Preserve DNS and prepare Cloudflare
 
 1. In FatCow save/export every existing DNS record. Include A, AAAA, CNAME, MX and TXT records (SPF, DKIM and DMARC). Save their names, values and priorities privately.
@@ -61,7 +71,7 @@ Postgres transport uses a shared connection policy for the runtime, migrations, 
 
 ## Step 4: Independent daily backups
 
-Repository code and schedule are prepared, but S3, alerts and the backup container require provider configuration and an actual successful run. Docker, pg_dump and pg_restore are unavailable on this Mac; the container build, backup/upload and restore have not been tested here.
+The first Render container build, manual backup/upload and uploaded-backup restore have succeeded as recorded above. Docker remains unavailable on this Mac; Postgres.app now provides Postgres 18 command-line tools. Alert tests, Render failure notifications and the first scheduled run remain outstanding.
 
 Create one private S3 bucket with Block Public Access enabled, default SSE-S3 encryption, and a lifecycle rule limited to boulevard-tools/daily/ expiring objects after 30 days. Daily keys overwrite the same day's backup on retries. If versioning is enabled, configure noncurrent version expiry too; otherwise old versions can survive the 30-day retention period.
 
