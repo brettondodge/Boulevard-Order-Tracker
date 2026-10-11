@@ -47,10 +47,12 @@ validateRuntimeDatabaseConfig();
 await initializeDatabase();
 
 const app = express();
-app.get('/healthz', async (req, res) => {
+// Express 4 needs rejected route promises forwarded to its error middleware.
+const asyncRoute = (handler) => (req, res, next) => Promise.resolve().then(() => handler(req, res, next)).catch(next);
+app.get('/healthz', asyncRoute(async (req, res) => {
   try { await dbGet('SELECT 1'); res.json({ ok: true }); }
   catch { res.status(503).json({ ok: false }); }
-});
+}));
 if (isProduction) {
   app.use(createAccessMiddleware({ teamDomain: process.env.CF_ACCESS_TEAM_DOMAIN, audience: process.env.CF_ACCESS_AUD }));
 }
@@ -239,7 +241,7 @@ app.get('/', (req, res) => res.redirect('/app'));
 app.get('/login', (req, res) => res.sendFile(path.join(publicDir, 'login.html')));
 app.get('/app', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
 
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', asyncRoute(async (req, res) => {
   if (isProduction) return res.json({ success: true, user: req.accessUser });
   const username = normalizeText(req.body.username);
   const password = normalizeText(req.body.password);
@@ -265,7 +267,7 @@ app.post('/api/login', async (req, res) => {
   };
 
   return res.json({ success: true, user: req.session.user });
-});
+}));
 
 app.post('/api/logout', (req, res) => {
   req.session.destroy(() => {
@@ -305,15 +307,15 @@ async function resolveOrderedByDisplay(order) {
   return normalizeText(order.ordered_by || '');
 }
 
-app.get('/api/suppliers', async (req, res) => {
+app.get('/api/suppliers', asyncRoute(async (req, res) => {
   const suppliers = await getActiveSuppliersAsync();
   return res.json({ suppliers: suppliers.map((item) => item.name) });
-});
+}));
 
-app.get('/api/master-lists', async (req, res) => {
+app.get('/api/master-lists', asyncRoute(async (req, res) => {
   const suppliers = await getAllSuppliersAsync();
   const staffNames = await getAllStaffNamesAsync();
-  const historicalOrderedBy = (await dbAll("SELECT DISTINCT ordered_by FROM orders WHERE ordered_by IS NOT NULL AND ordered_by <> '' ORDER BY LOWER(ordered_by) ASC"))
+  const historicalOrderedBy = (await dbAll("SELECT ordered_by FROM (SELECT DISTINCT ordered_by FROM orders WHERE ordered_by IS NOT NULL AND ordered_by <> '') AS historical_names ORDER BY LOWER(ordered_by) ASC, ordered_by ASC"))
     .map((row) => row.ordered_by);
   const mergedStaffNames = [...new Set([ ...staffNames.map((item) => item.name), ...historicalOrderedBy ].filter(Boolean))];
 
@@ -322,7 +324,7 @@ app.get('/api/master-lists', async (req, res) => {
     staff_names: staffNames.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })),
     ordered_by_options: mergedStaffNames
   });
-});
+}));
 
 app.get('/api/events', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -349,7 +351,7 @@ app.get('/api/events', (req, res) => {
   });
 });
 
-app.get('/api/job-drafts', async (req, res) => {
+app.get('/api/job-drafts', asyncRoute(async (req, res) => {
   const statusFilter = normalizeText(req.query.status || '');
   const archivedOnly = req.query.archived === 'true' || statusFilter === 'Archived';
   const rows = statusFilter === 'Archived'
@@ -359,9 +361,9 @@ app.get('/api/job-drafts', async (req, res) => {
       : await dbAll('SELECT * FROM job_drafts WHERE is_archived = ? ORDER BY updated_at DESC, created_at DESC', [archivedOnly ? 1 : 0]);
 
   return res.json({ drafts: await Promise.all(rows.map((row) => serializeJobDraft(row))) });
-});
+}));
 
-app.post('/api/job-drafts', requireStaffAuth, async (req, res) => {
+app.post('/api/job-drafts', requireStaffAuth, asyncRoute(async (req, res) => {
   const draftData = {
     customer_name: normalizeText(req.body.customer_name),
     housecall_job_number: normalizeText(req.body.housecall_job_number),
@@ -401,9 +403,9 @@ app.post('/api/job-drafts', requireStaffAuth, async (req, res) => {
   const draft = await serializeJobDraft(await getJobDraftById(id));
   broadcastLiveEvent('job-drafts', { action: 'created', draftId: id, time: isoNow() });
   return res.status(201).json({ draft });
-});
+}));
 
-app.put('/api/job-drafts/:id', requireStaffAuth, async (req, res) => {
+app.put('/api/job-drafts/:id', requireStaffAuth, asyncRoute(async (req, res) => {
   const draft = await getJobDraftById(req.params.id);
   if (!draft) {
     return res.status(404).json({ error: 'Job draft not found.' });
@@ -452,9 +454,9 @@ app.put('/api/job-drafts/:id', requireStaffAuth, async (req, res) => {
   const updated = await serializeJobDraft(await getJobDraftById(req.params.id));
   broadcastLiveEvent('job-drafts', { action: 'updated', draftId: req.params.id, time: isoNow() });
   return res.json({ draft: updated });
-});
+}));
 
-app.post('/api/job-drafts/:id/complete', requireStaffAuth, async (req, res) => {
+app.post('/api/job-drafts/:id/complete', requireStaffAuth, asyncRoute(async (req, res) => {
   const draft = await getJobDraftById(req.params.id);
   if (!draft) {
     return res.status(404).json({ error: 'Job draft not found.' });
@@ -465,9 +467,9 @@ app.post('/api/job-drafts/:id/complete', requireStaffAuth, async (req, res) => {
   const updated = await serializeJobDraft(await getJobDraftById(req.params.id));
   broadcastLiveEvent('job-drafts', { action: 'completed', draftId: req.params.id, time: isoNow() });
   return res.json({ draft: updated });
-});
+}));
 
-app.post('/api/job-drafts/:id/archive', requireStaffAuth, async (req, res) => {
+app.post('/api/job-drafts/:id/archive', requireStaffAuth, asyncRoute(async (req, res) => {
   const draft = await getJobDraftById(req.params.id);
   if (!draft) {
     return res.status(404).json({ error: 'Job draft not found.' });
@@ -495,9 +497,9 @@ app.post('/api/job-drafts/:id/archive', requireStaffAuth, async (req, res) => {
   broadcastLiveEvent('orders', { action: 'archived', orderIds: archivedOrderIds, time: isoNow() });
 
   return res.json({ archived: archivedIds.length > 0, draft_id: draft.id, order_ids: archivedOrderIds, warning: null, source, reason });
-});
+}));
 
-app.post('/api/job-drafts/:id/restore', requireStaffAuth, async (req, res) => {
+app.post('/api/job-drafts/:id/restore', requireStaffAuth, asyncRoute(async (req, res) => {
   const draft = await getJobDraftById(req.params.id);
   if (!draft) {
     return res.status(404).json({ error: 'Job draft not found.' });
@@ -511,9 +513,9 @@ app.post('/api/job-drafts/:id/restore', requireStaffAuth, async (req, res) => {
   broadcastLiveEvent('orders', { action: 'restored', orderIds: linkedOrders, time: isoNow() });
 
   return res.json({ restored: restoredDraftIds.length > 0, draft_id: draft.id, order_ids: linkedOrders });
-});
+}));
 
-app.post('/api/job-drafts/:id/reopen', requireStaffAuth, async (req, res) => {
+app.post('/api/job-drafts/:id/reopen', requireStaffAuth, asyncRoute(async (req, res) => {
   const draft = await getJobDraftById(req.params.id);
   if (!draft) {
     return res.status(404).json({ error: 'Job draft not found.' });
@@ -524,7 +526,7 @@ app.post('/api/job-drafts/:id/reopen', requireStaffAuth, async (req, res) => {
   const updated = await serializeJobDraft(await getJobDraftById(req.params.id));
   broadcastLiveEvent('job-drafts', { action: 'reopened', draftId: req.params.id, time: isoNow() });
   return res.json({ draft: updated });
-});
+}));
 
 app.get('/api/admin/me', (req, res) => {
   if (!req.session.admin || req.session.admin.username !== currentAdminUsername()) {
@@ -567,7 +569,7 @@ app.post('/api/admin/logout', (req, res) => {
   return res.json({ success: true });
 });
 
-app.post('/api/master-lists/suppliers', requireAdminAuth, async (req, res) => {
+app.post('/api/master-lists/suppliers', requireAdminAuth, asyncRoute(async (req, res) => {
   const items = Array.isArray(req.body.items) ? req.body.items : [];
   const saved = (await Promise.all(items.map((item) => upsertSupplierMasterRowAsync({ id: item.id || '', name: item.name, active: item.active !== false }))))
     .filter(Boolean)
@@ -575,9 +577,9 @@ app.post('/api/master-lists/suppliers', requireAdminAuth, async (req, res) => {
 
   broadcastLiveEvent('master-lists', { collection: 'suppliers', action: 'updated', count: saved.length, time: isoNow() });
   return res.json({ suppliers: saved.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })) });
-});
+}));
 
-app.post('/api/master-lists/ordered-by', requireAdminAuth, async (req, res) => {
+app.post('/api/master-lists/ordered-by', requireAdminAuth, asyncRoute(async (req, res) => {
   const items = Array.isArray(req.body.items) ? req.body.items : [];
   const saved = (await Promise.all(items.map((item) => upsertStaffMasterRowAsync({ id: item.id || '', name: item.name, active: item.active !== false }))))
     .filter(Boolean)
@@ -585,9 +587,9 @@ app.post('/api/master-lists/ordered-by', requireAdminAuth, async (req, res) => {
 
   broadcastLiveEvent('master-lists', { collection: 'ordered_by', action: 'updated', count: saved.length, time: isoNow() });
   return res.json({ staff_names: saved.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })) });
-});
+}));
 
-app.post('/api/orders/archive', requireStaffAuth, async (req, res) => {
+app.post('/api/orders/archive', requireStaffAuth, asyncRoute(async (req, res) => {
   const ids = Array.isArray(req.body.order_ids) ? req.body.order_ids : [];
   if (!ids.length) {
     return res.status(400).json({ error: 'At least one order must be selected to archive.' });
@@ -618,9 +620,9 @@ app.post('/api/orders/archive', requireStaffAuth, async (req, res) => {
 
   broadcastLiveEvent('orders', { action: 'archived', orderIds: archivedIds, time: isoNow() });
   return res.json({ archived: true, order_ids: archivedIds, source, reason });
-});
+}));
 
-app.post('/api/orders/:id/restore', requireStaffAuth, async (req, res) => {
+app.post('/api/orders/:id/restore', requireStaffAuth, asyncRoute(async (req, res) => {
   const order = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   if (!order) {
     return res.status(404).json({ error: 'Order not found.' });
@@ -638,9 +640,9 @@ app.post('/api/orders/:id/restore', requireStaffAuth, async (req, res) => {
 
   broadcastLiveEvent('orders', { action: 'restored', orderId: order.id, time: isoNow() });
   return res.json({ restored: restoredIds.length > 0, order_id: order.id });
-});
+}));
 
-app.get('/api/orders', async (req, res) => {
+app.get('/api/orders', asyncRoute(async (req, res) => {
   const rows = await dbAll('SELECT * FROM orders ORDER BY date_ordered DESC, created_at DESC');
 
   const statusFilter = (req.query.status || 'Outstanding').toString();
@@ -736,9 +738,9 @@ app.get('/api/orders', async (req, res) => {
   }));
 
   return res.json({ orders: normalized });
-});
+}));
 
-app.post('/api/orders', requireStaffAuth, async (req, res) => {
+app.post('/api/orders', requireStaffAuth, asyncRoute(async (req, res) => {
   try {
     const orderData = normalizeOrderInput(req.body);
     const draftId = normalizeText(req.body.job_draft_id || '');
@@ -825,9 +827,9 @@ app.post('/api/orders', requireStaffAuth, async (req, res) => {
   } catch (error) {
     return res.status(500).json({ error: 'Unable to save the order.', details: error.message });
   }
-});
+}));
 
-app.put('/api/orders/:id', requireStaffAuth, async (req, res) => {
+app.put('/api/orders/:id', requireStaffAuth, asyncRoute(async (req, res) => {
   try {
     const existing = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
     if (!existing) {
@@ -917,9 +919,9 @@ app.put('/api/orders/:id', requireStaffAuth, async (req, res) => {
   } catch (error) {
     return res.status(500).json({ error: 'Unable to update the order.', details: error.message });
   }
-});
+}));
 
-app.post('/api/orders/:id/mark-received', requireStaffAuth, async (req, res) => {
+app.post('/api/orders/:id/mark-received', requireStaffAuth, asyncRoute(async (req, res) => {
   const existing = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   if (!existing) {
     return res.status(404).json({ error: 'Order not found.' });
@@ -937,9 +939,9 @@ app.post('/api/orders/:id/mark-received', requireStaffAuth, async (req, res) => 
   const updated = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   broadcastLiveEvent('orders', { action: 'received', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
   return res.json({ order: { ...updated, status: statusFromOrder(updated) } });
-});
+}));
 
-app.post('/api/orders/:id/reopen', requireStaffAuth, async (req, res) => {
+app.post('/api/orders/:id/reopen', requireStaffAuth, asyncRoute(async (req, res) => {
   const existing = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   if (!existing) {
     return res.status(404).json({ error: 'Order not found.' });
@@ -956,6 +958,13 @@ app.post('/api/orders/:id/reopen', requireStaffAuth, async (req, res) => {
   const updated = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   broadcastLiveEvent('orders', { action: 'reopened', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
   return res.json({ order: { ...updated, status: statusFromOrder(updated) } });
+}));
+
+app.use((error, req, res, next) => {
+  // Log a code and route only: database errors can contain customer data or secrets.
+  console.error('Request failed', { method: req.method, route: req.route?.path || 'middleware', code: error.code || 'REQUEST_ERROR' });
+  if (res.headersSent) return next(error);
+  return res.status(500).json({ error: 'Unable to complete this request right now.' });
 });
 
 app.listen(port, () => {

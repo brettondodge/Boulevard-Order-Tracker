@@ -65,6 +65,31 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     assert.equal((await request('/api/admin/login', { username: 'office-admin', password: 'synthetic-admin-password' })).status, 200);
     const order = await request('/api/orders', { customer_name: 'Synthetic Test Job', supplier: 'Test Supplier', ordered_by: 'Test Staff', category: 'Windows', date_ordered: '2026-10-10' });
     assert.equal(order.status, 201);
+    // The page requests master lists immediately. DISTINCT + LOWER ordering
+    // must work in Postgres as well as SQLite, including historical staff names.
+    await pool.query("INSERT INTO orders (id, customer_name, supplier, date_ordered, ordered_by, created_at, updated_at) VALUES ('historical-1', 'Synthetic history', 'Test Supplier', '2026-10-10', 'alice', '2026-10-10', '2026-10-10'), ('historical-2', 'Synthetic history', 'Test Supplier', '2026-10-10', 'alice', '2026-10-10', '2026-10-10'), ('historical-3', 'Synthetic history', 'Test Supplier', '2026-10-10', 'Zoe', '2026-10-10', '2026-10-10')");
+    const lists = await request('/api/master-lists');
+    assert.equal(lists.status, 200);
+    assert.ok(lists.body.ordered_by_options.includes('Test Staff'));
+    assert.equal(lists.body.ordered_by_options.filter(name => name === 'alice').length, 1);
+    assert.ok(lists.body.ordered_by_options.indexOf('alice') < lists.body.ordered_by_options.indexOf('Zoe'));
+    await pool.query("DELETE FROM orders WHERE id IN ('historical-1', 'historical-2', 'historical-3')");
+    // A failed asynchronous database request returns a safe error, and the
+    // process remains alive instead of restarting and breaking live updates.
+    await pool.query('ALTER TABLE orders RENAME TO orders_unavailable');
+    try {
+      const failed = await request('/api/orders');
+      assert.equal(failed.status, 500);
+      assert.deepEqual(failed.body, { error: 'Unable to complete this request right now.' });
+      assert.equal((await fetch('http://127.0.0.1:4209/healthz')).status, 200);
+    } finally { await pool.query('ALTER TABLE orders_unavailable RENAME TO orders'); }
+    assert.equal((await request('/api/orders')).body.orders.length, 1);
+    const stream = await fetch('http://127.0.0.1:4209/api/events', { headers: { Host: 'tools.blvdglass.com', 'X-Forwarded-Host': 'tools.blvdglass.com', 'X-Forwarded-Proto': 'https', 'Cf-Access-Jwt-Assertion': token, Cookie: cookie }, signal: AbortSignal.timeout(5000) });
+    assert.equal(stream.status, 200);
+    assert.match(stream.headers.get('content-type'), /text\/event-stream/);
+    const reader = stream.body.getReader();
+    try { assert.match(new TextDecoder().decode((await reader.read()).value), /event: connected/); }
+    finally { await reader.cancel(); }
     assert.equal(Number((await pool.query('SELECT count(*) AS count FROM orders')).rows[0].count), 1);
     assert.equal(Number((await pool.query("SELECT count(*) AS count FROM users WHERE username='mary'")).rows[0].count), 0);
     const sessionsBefore = (await pool.query('SELECT sid FROM sessions')).rows.map(row => row.sid);
