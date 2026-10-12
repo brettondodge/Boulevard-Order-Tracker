@@ -100,9 +100,15 @@ Do not switch staff until the final import passes, the hosted app is Access-prot
 
 Housecall Pro integration and future tools are outside this hosting preparation.
 
-## Follow-up: Master Lists removal
+## Master Lists filtering and cleanup
 
-The supplier and staff **Remove** buttons currently remove rows only from the browser's editor. Saving upserts the remaining rows without deleting or deactivating omitted database records, so removed entries return after reload. Fix this behavior in a later task, with explicit handling for entries linked to historical orders and drafts. Until then, uncheck **Active** and save to hide an entry from new-order choices.
+Employee dropdowns use Master Lists rather than names collected from historical orders. New orders offer active employees and suppliers; filters also offer inactive master entries so old orders remain searchable. Filters use stable IDs and display current master names after renaming. ID-free historical supplier names remain available in filters until their orders are cleaned up. Existing order history retains its stored names; no historical employee is automatically added to Master Lists.
+
+Saved supplier/staff rows have a **Deactivate** action that persists when **Save lists** is clicked. **Remove** is used only for new, unsaved rows. Permanent staff deletion remains outside this cleanup.
+
+Under Suppliers, **Preview deletion of inactive suppliers** requires the separate admin session and lists each saved inactive supplier with its linked-order count, including archived orders. Unsaved edits must be saved first. The operator must type DELETE and confirm the preview to permanently delete those suppliers and orders; all drafts and other suppliers' orders remain. Linked supplier IDs take priority over historical names. ID-free historical names are matched only when they do not also identify an active supplier. Confirmation expires after 15 minutes and is rejected if the affected suppliers or orders change. The database checks and deletion run in one transaction; Postgres locks prevent concurrent writes from changing the confirmed set during deletion.
+
+The cleanup and renamed/inactive filters passed isolated SQLite and real Postgres tests, including admin protection, invalid/replayed confirmations, stale-preview rejection and preservation of drafts and other orders. No hosted records were deleted as part of development. Before an actual cleanup, trigger and verify a fresh backup, then review the live preview counts. A code deployment is required to make these controls available in the hosted app.
 
 ## Provider references
 

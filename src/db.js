@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import pg from 'pg';
 import { migratePostgres } from './postgres-migrations.js';
 import { postgresOptions } from './postgres-connection.js';
+import { supplierCleanupPlan, requireUnchangedCleanup } from './supplier-cleanup.js';
 import { isoNow, todayPhoenixString } from './utils.js';
 
 dotenv.config();
@@ -469,6 +470,37 @@ export async function upsertSupplierMasterRowAsync(record) {
   const id = record.id || cryptoRandomId('supplier');
   await dbRun('INSERT INTO suppliers (id, name, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?)', [id, trimmedName, record.active === false ? 0 : 1, now, now]);
   return await dbGet('SELECT * FROM suppliers WHERE id = ?', [id]);
+}
+
+export async function previewInactiveSupplierCleanup() {
+  return supplierCleanupPlan(await dbAll('SELECT * FROM suppliers ORDER BY id'), await dbAll('SELECT * FROM orders ORDER BY id'));
+}
+
+export async function deleteInactiveSupplierRecords(expectedFingerprint) {
+  if (!isProduction) {
+    // Keep SQLite's entire confirmation and deletion synchronous and atomic.
+    return db.transaction(() => {
+      const plan = supplierCleanupPlan(db.prepare('SELECT * FROM suppliers ORDER BY id').all(), db.prepare('SELECT * FROM orders ORDER BY id').all());
+      requireUnchangedCleanup(plan, expectedFingerprint);
+      for (const id of plan.order_ids) db.prepare('DELETE FROM orders WHERE id = ?').run(id);
+      for (const row of plan.suppliers) db.prepare('DELETE FROM suppliers WHERE id = ?').run(row.id);
+      return { deleted_suppliers: plan.supplier_count, deleted_orders: plan.order_count };
+    })();
+  }
+  const client = await (await getPool()).connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('LOCK TABLE suppliers, orders IN EXCLUSIVE MODE');
+    const plan = supplierCleanupPlan((await client.query('SELECT * FROM suppliers ORDER BY id')).rows, (await client.query('SELECT * FROM orders ORDER BY id')).rows);
+    requireUnchangedCleanup(plan, expectedFingerprint);
+    for (const id of plan.order_ids) await client.query('DELETE FROM orders WHERE id = $1', [id]);
+    for (const row of plan.suppliers) await client.query('DELETE FROM suppliers WHERE id = $1', [row.id]);
+    await client.query('COMMIT');
+    return { deleted_suppliers: plan.supplier_count, deleted_orders: plan.order_count };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally { client.release(); }
 }
 
 export function upsertSupplierMasterRow(record) {

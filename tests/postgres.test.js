@@ -65,14 +65,13 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     assert.equal((await request('/api/admin/login', { username: 'office-admin', password: 'synthetic-admin-password' })).status, 200);
     const order = await request('/api/orders', { customer_name: 'Synthetic Test Job', supplier: 'Test Supplier', ordered_by: 'Test Staff', category: 'Windows', date_ordered: '2026-10-10' });
     assert.equal(order.status, 201);
-    // The page requests master lists immediately. DISTINCT + LOWER ordering
-    // must work in Postgres as well as SQLite, including historical staff names.
+    // Legacy names remain searchable in orders but do not populate staff choices.
     await pool.query("INSERT INTO orders (id, customer_name, supplier, date_ordered, ordered_by, created_at, updated_at) VALUES ('historical-1', 'Synthetic history', 'Test Supplier', '2026-10-10', 'alice', '2026-10-10', '2026-10-10'), ('historical-2', 'Synthetic history', 'Test Supplier', '2026-10-10', 'alice', '2026-10-10', '2026-10-10'), ('historical-3', 'Synthetic history', 'Test Supplier', '2026-10-10', 'Zoe', '2026-10-10', '2026-10-10')");
     const lists = await request('/api/master-lists');
     assert.equal(lists.status, 200);
-    assert.ok(lists.body.ordered_by_options.includes('Test Staff'));
-    assert.equal(lists.body.ordered_by_options.filter(name => name === 'alice').length, 1);
-    assert.ok(lists.body.ordered_by_options.indexOf('alice') < lists.body.ordered_by_options.indexOf('Zoe'));
+    assert.deepEqual(lists.body.ordered_by_options, lists.body.staff_names.map(item => item.name));
+    assert.equal(lists.body.ordered_by_options.includes('alice'), false);
+    assert.equal(lists.body.ordered_by_options.includes('Zoe'), false);
     await pool.query("DELETE FROM orders WHERE id IN ('historical-1', 'historical-2', 'historical-3')");
     // A failed asynchronous database request returns a safe error, and the
     // process remains alive instead of restarting and breaking live updates.
@@ -99,6 +98,37 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     assert.equal((await request('/api/admin/me')).status, 200);
     const sessionsAfter = (await pool.query('SELECT sid FROM sessions')).rows.map(row => row.sid);
     assert.deepEqual(sessionsAfter, sessionsBefore);
+    // Rename/deactivate a linked supplier and staff member: filters use stable IDs.
+    const savedSupplier = order.body.order.supplier_id;
+    const staff = await request('/api/master-lists/ordered-by', { items: [{ name: 'Original Staff', active: true }] });
+    const staffId = staff.body.staff_names[0].id;
+    await pool.query('UPDATE orders SET ordered_by_id=$1, ordered_by=$2 WHERE id=$3', [staffId, 'Original Staff', order.body.order.id]);
+    await request('/api/master-lists/ordered-by', { items: [{ id: staffId, name: 'Renamed Staff', active: true }] });
+    await request('/api/master-lists/suppliers', { items: [{ id: savedSupplier, name: 'Renamed Supplier', active: false }] });
+    const filtered = await request(`/api/orders?supplier=${savedSupplier}&ordered_by=${staffId}`);
+    assert.equal(filtered.body.orders.length, 1);
+    assert.equal(filtered.body.orders[0].supplier, 'Renamed Supplier');
+    assert.equal(filtered.body.orders[0].ordered_by, 'Renamed Staff');
+    assert.ok((await request('/api/master-lists')).body.supplier_filter_options.some(item => item.id === savedSupplier && item.active === false));
+    assert.equal((await request('/api/suppliers')).body.suppliers.includes('Renamed Supplier'), false);
+    // Cleanup does not cascade to drafts or orders linked to an active supplier.
+    await pool.query("INSERT INTO job_drafts (id, customer_name, created_at, updated_at) VALUES ('cleanup-draft', 'Synthetic Draft', '2026-10-10', '2026-10-10')");
+    await pool.query('UPDATE orders SET job_draft_id=$1 WHERE id=$2', ['cleanup-draft', order.body.order.id]);
+    const other = await request('/api/orders', { customer_name: 'Other synthetic job', supplier: 'Active Supplier', ordered_by: 'Renamed Staff', category: 'Windows', date_ordered: '2026-10-10' });
+    assert.equal(other.status, 201);
+    let preview = await request('/api/admin/inactive-suppliers/preview');
+    assert.equal(preview.body.supplier_count, 1); assert.equal(preview.body.order_count, 1);
+    assert.equal((await request('/api/admin/inactive-suppliers/delete', {confirmation_token: preview.body.confirmation_token, confirmation:'wrong'})).status, 409);
+    await pool.query('UPDATE orders SET notes=$1 WHERE id=$2', ['Changed since preview', order.body.order.id]);
+    assert.equal((await request('/api/admin/inactive-suppliers/delete', {confirmation_token: preview.body.confirmation_token, confirmation:'DELETE'})).status, 409);
+    assert.equal(Number((await pool.query('SELECT count(*) FROM orders')).rows[0].count),2);
+    preview = await request('/api/admin/inactive-suppliers/preview');
+    const removed = await request('/api/admin/inactive-suppliers/delete', {confirmation_token: preview.body.confirmation_token, confirmation:'DELETE'});
+    assert.equal(removed.status,200); assert.deepEqual(removed.body,{deleted_suppliers:1,deleted_orders:1});
+    assert.equal((await pool.query('SELECT id FROM orders')).rows[0].id,other.body.order.id);
+    assert.equal(Number((await pool.query('SELECT count(*) FROM job_drafts WHERE id=$1',['cleanup-draft'])).rows[0].count),1);
+    assert.equal(Number((await pool.query('SELECT count(*) FROM suppliers WHERE id=$1',[savedSupplier])).rows[0].count),0);
+    assert.equal((await request('/api/admin/inactive-suppliers/delete', {confirmation_token: preview.body.confirmation_token, confirmation:'DELETE'})).status,409);
     await stop();
     await cluster.createDatabase('import_test');
     const sqliteFile = path.join(directory, 'synthetic.db');

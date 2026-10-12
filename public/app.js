@@ -12,6 +12,9 @@ const state = {
   staffNames: [],
   masterSuppliers: [],
   masterStaffNames: [],
+  supplierFilterOptions: [],
+  masterListsDirty: false,
+  supplierCleanupPreview: null,
   adminLoggedIn: false,
   connectionState: 'live',
   requestCounter: 0,
@@ -82,7 +85,13 @@ const elements = {
   addSupplierEntry: document.getElementById('addSupplierEntry'),
   addStaffEntry: document.getElementById('addStaffEntry'),
   saveMasterListsButton: document.getElementById('saveMasterListsButton'),
-  adminLogoutButton: document.getElementById('adminLogoutButton')
+  adminLogoutButton: document.getElementById('adminLogoutButton'),
+  supplierCleanupDialog: document.getElementById('supplierCleanupDialog'),
+  supplierCleanupSummary: document.getElementById('supplierCleanupSummary'),
+  supplierCleanupList: document.getElementById('supplierCleanupList'),
+  supplierCleanupConfirmation: document.getElementById('supplierCleanupConfirmation'),
+  supplierCleanupError: document.getElementById('supplierCleanupError'),
+  deleteInactiveSuppliersButton: document.getElementById('deleteInactiveSuppliersButton')
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -224,6 +233,22 @@ function renderQueueVisibility() {
 }
 
 function bindEvents() {
+  elements.masterListsDialog.addEventListener('close', () => {
+    state.masterListsDirty = false;
+    loadMasterLists().catch(() => {});
+  });
+  document.getElementById('previewSupplierCleanupButton').addEventListener('click', previewSupplierCleanup);
+  for (const id of ['closeSupplierCleanupButton', 'cancelSupplierCleanupButton']) document.getElementById(id).addEventListener('click', () => elements.supplierCleanupDialog.close());
+  elements.supplierCleanupDialog.addEventListener('close', () => { state.supplierCleanupPreview = null; });
+  elements.supplierCleanupConfirmation.addEventListener('input', () => {
+    elements.deleteInactiveSuppliersButton.disabled = !state.supplierCleanupPreview?.supplier_count || elements.supplierCleanupConfirmation.value !== 'DELETE';
+  });
+  elements.deleteInactiveSuppliersButton.addEventListener('click', deleteInactiveSuppliers);
+  for (const list of [elements.supplierMasterList, elements.orderedByMasterList]) {
+    list.addEventListener('input', () => { state.masterListsDirty = true; });
+    list.addEventListener('change', () => { state.masterListsDirty = true; });
+  }
+  for (const button of [elements.addSupplierEntry, elements.addStaffEntry]) button.addEventListener('click', () => { state.masterListsDirty = true; });
   elements.searchInput.addEventListener('input', (event) => {
     state.search = event.target.value.trim();
     loadOrders();
@@ -252,19 +277,8 @@ function bindEvents() {
     loadOrders();
   });
 
-  elements.supplierFilter.addEventListener('click', (event) => {
-    const option = event.target.closest('option');
-    if (!option) return;
-
-    const value = option.value;
-    const nextValues = new Set(state.supplier);
-    if (nextValues.has(value)) {
-      nextValues.delete(value);
-    } else {
-      nextValues.add(value);
-    }
-
-    state.supplier = Array.from(nextValues);
+  elements.supplierFilter.addEventListener('change', () => {
+    state.supplier = Array.from(elements.supplierFilter.selectedOptions, option => option.value);
     renderSupplierSelection();
     loadOrders();
   });
@@ -275,19 +289,8 @@ function bindEvents() {
     await loadOrders();
   });
 
-  elements.orderedByFilter.addEventListener('click', (event) => {
-    const option = event.target.closest('option');
-    if (!option) return;
-
-    const value = option.value;
-    const nextValues = new Set(state.orderedBy);
-    if (nextValues.has(value)) {
-      nextValues.delete(value);
-    } else {
-      nextValues.add(value);
-    }
-
-    state.orderedBy = Array.from(nextValues);
+  elements.orderedByFilter.addEventListener('change', () => {
+    state.orderedBy = Array.from(elements.orderedByFilter.selectedOptions, option => option.value);
     renderOrderedBySelection();
     loadOrders();
   });
@@ -392,7 +395,9 @@ function bindEvents() {
     const list = kind === 'supplier' ? state.masterSuppliers : state.masterStaffNames;
     const index = Number(button.dataset.index ?? -1);
     if (index >= 0) {
-      list.splice(index, 1);
+      if (list[index]?.id) list[index].active = false;
+      else list.splice(index, 1);
+      state.masterListsDirty = true;
       renderMasterListsEditor();
     }
   });
@@ -404,7 +409,9 @@ function bindEvents() {
     const list = kind === 'staff' ? state.masterStaffNames : state.masterSuppliers;
     const index = Number(button.dataset.index ?? -1);
     if (index >= 0) {
-      list.splice(index, 1);
+      if (list[index]?.id) list[index].active = false;
+      else list.splice(index, 1);
+      state.masterListsDirty = true;
       renderMasterListsEditor();
     }
   });
@@ -575,6 +582,7 @@ async function loadMasterLists() {
 
   const data = await response.json();
   if (requestId !== state.masterRequestCounter) return;
+  if (state.masterListsDirty && elements.masterListsDialog.open) return;
 
   state.masterSuppliers = (data.suppliers || []).map((item) => ({
     id: item.id || '',
@@ -587,61 +595,61 @@ async function loadMasterLists() {
     active: item.active !== false
   }));
 
-  const historicalStaff = Array.isArray(data.ordered_by_options) ? data.ordered_by_options : [];
-  const uniqueStaff = [...new Set([
-    ...state.masterStaffNames.map((item) => item.name),
-    ...historicalStaff
-  ].filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-
-  state.staffNames = uniqueStaff;
+  state.staffNames = state.masterStaffNames.map(item => item.name);
+  state.supplierFilterOptions = data.supplier_filter_options || state.masterSuppliers;
+  const supplierSelections = state.supplier.length;
+  const staffSelections = state.orderedBy.length;
+  state.supplier = state.supplier.filter(value => state.supplierFilterOptions.some(item => (item.id || item.name) === value));
+  state.orderedBy = state.orderedBy.filter(value => state.masterStaffNames.some(item => (item.id || item.name) === value));
   state.suppliers = state.masterSuppliers.filter((item) => item.active !== false).map((item) => item.name);
   renderSupplierFilterOptions();
   renderOrderedByOptions();
   renderOrderedByFilterOptions();
   renderMasterListsEditor();
+  if (supplierSelections !== state.supplier.length || staffSelections !== state.orderedBy.length) await loadOrders();
 }
 
 function renderSupplierFilterOptions() {
   const selected = new Set(state.supplier);
-  const options = state.suppliers.map((supplier) => `<option value="${escapeHtml(supplier)}" ${selected.has(supplier) ? 'selected' : ''}>${escapeHtml(supplier)}</option>`).join('');
+  const options = [...state.supplierFilterOptions].sort((a, b) => a.name.localeCompare(b.name)).map((supplier) => `<option value="${escapeHtml(supplier.id || supplier.name)}" ${selected.has(supplier.id || supplier.name) ? 'selected' : ''}>${escapeHtml(supplier.name)}${supplier.active === false ? ' (inactive)' : ''}</option>`).join('');
   elements.supplierFilter.innerHTML = options;
   renderSupplierSelection();
 }
 
 function renderSupplierSelection() {
   const selected = state.supplier.filter(Boolean);
-  elements.supplierSelectionSummary.textContent = selected.length ? selected.join(', ') : 'All Suppliers';
+  elements.supplierSelectionSummary.textContent = selected.length ? selected.map(value => state.supplierFilterOptions.find(item => (item.id || item.name) === value)?.name || value).join(', ') : 'All Suppliers';
   Array.from(elements.supplierFilter.options).forEach((option) => {
     option.selected = selected.includes(option.value);
   });
 }
 
 function renderOrderedByOptions() {
-  const optionNames = [...new Set([
-    ...state.masterStaffNames.filter((item) => item.active !== false && item.name.trim()).map((item) => item.name),
-    ...state.staffNames.filter(Boolean)
-  ])].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-
-  elements.orderedBySelect.innerHTML = '<option value="">Select staff name</option>' + optionNames
-    .map((person) => `<option value="${escapeHtml(person)}">${escapeHtml(person)}</option>`)
-    .join('');
-
   const selectedValue = elements.orderedBySelect.value;
+  const selectedName = elements.orderedBySelect.selectedOptions[0]?.textContent;
+  const people = state.masterStaffNames.filter(item => item.active !== false && item.name.trim());
+  elements.orderedBySelect.innerHTML = '<option value="">Select staff name</option>' + people
+    .map((person) => `<option value="${escapeHtml(person.id || person.name)}">${escapeHtml(person.name)}</option>`)
+    .join('');
   if (selectedValue) {
+    if (!people.some(item => (item.id || item.name) === selectedValue)) {
+      const option = new Option(selectedName || selectedValue, selectedValue);
+      elements.orderedBySelect.add(option);
+    }
     elements.orderedBySelect.value = selectedValue;
   }
 }
 
 function renderOrderedByFilterOptions() {
   const selected = new Set(state.orderedBy);
-  const options = state.staffNames.map((person) => `<option value="${escapeHtml(person)}" ${selected.has(person) ? 'selected' : ''}>${escapeHtml(person)}</option>`).join('');
+  const options = state.masterStaffNames.map((person) => `<option value="${escapeHtml(person.id || person.name)}" ${selected.has(person.id || person.name) ? 'selected' : ''}>${escapeHtml(person.name)}${person.active === false ? ' (inactive)' : ''}</option>`).join('');
   elements.orderedByFilter.innerHTML = options;
   renderOrderedBySelection();
 }
 
 function renderOrderedBySelection() {
   const selected = state.orderedBy.filter(Boolean);
-  elements.orderedBySelectionSummary.textContent = selected.length ? selected.join(', ') : 'Everyone';
+  elements.orderedBySelectionSummary.textContent = selected.length ? selected.map(value => state.masterStaffNames.find(item => (item.id || item.name) === value)?.name || value).join(', ') : 'Everyone';
   Array.from(elements.orderedByFilter.options).forEach((option) => {
     option.selected = selected.includes(option.value);
   });
@@ -667,7 +675,7 @@ function renderMasterListRow(kind, item, index) {
         <input type="checkbox" data-kind="${kindName}" data-field="active" data-index="${index}" data-id="${escapeHtml(item.id || '')}" ${active ? 'checked' : ''} />
         Active
       </label>
-      <button type="button" class="secondary-button small-button" data-kind="${kindName}" data-action="remove" data-index="${index}">Remove</button>
+      <button type="button" class="secondary-button small-button" data-kind="${kindName}" data-action="remove" data-index="${index}" ${item.id && !active ? 'disabled' : ''}>${item.id ? 'Deactivate' : 'Remove'}</button>
     </div>
   `;
 }
@@ -699,11 +707,56 @@ async function saveMasterLists() {
       throw new Error('Unable to save one or more lists.');
     }
 
-    await Promise.all([loadSuppliers(), loadMasterLists(), loadOrders()]);
+    state.masterListsDirty = false;
+    await Promise.all([loadSuppliers(), loadMasterLists()]);
+    await loadOrders();
     elements.masterListsDialog.close();
     showStatus('Master lists saved.', 'success');
   } catch (error) {
     showStatus(error.message, 'error');
+  }
+}
+
+async function previewSupplierCleanup() {
+  if (state.masterListsDirty) {
+    window.alert('Save lists before previewing deletion. Only saved inactive suppliers are included.');
+    return;
+  }
+  try {
+    const response = await fetch('/api/admin/inactive-suppliers/preview');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to preview cleanup.');
+    state.supplierCleanupPreview = data;
+    elements.supplierCleanupSummary.textContent = `${data.supplier_count} inactive suppliers and ${data.order_count} linked orders (including archived orders) will be deleted.`;
+    elements.supplierCleanupList.innerHTML = data.suppliers.map(item => `<li>${escapeHtml(item.name)} — ${item.order_count} orders</li>`).join('');
+    elements.supplierCleanupConfirmation.value = '';
+    elements.supplierCleanupError.textContent = '';
+    elements.deleteInactiveSuppliersButton.disabled = true;
+    elements.supplierCleanupDialog.showModal();
+  } catch (error) { window.alert(error.message); }
+}
+
+async function deleteInactiveSuppliers() {
+  if (!state.supplierCleanupPreview || elements.supplierCleanupConfirmation.value !== 'DELETE') return;
+  elements.deleteInactiveSuppliersButton.disabled = true;
+  try {
+    const response = await fetch('/api/admin/inactive-suppliers/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmation_token: state.supplierCleanupPreview.confirmation_token, confirmation: 'DELETE' })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to delete suppliers.');
+    elements.supplierCleanupDialog.close();
+    elements.masterListsDialog.close();
+    state.masterListsDirty = false;
+    await Promise.all([loadSuppliers(), loadMasterLists()]);
+    await Promise.all([loadOrders(), loadJobDrafts()]);
+    showStatus(`Deleted ${data.deleted_suppliers} inactive suppliers and ${data.deleted_orders} linked orders. All drafts were kept.`, 'success');
+  } catch (error) {
+    // Require a fresh preview after a failed/stale confirmation.
+    state.supplierCleanupPreview = null;
+    elements.supplierCleanupError.textContent = error.message;
+    elements.supplierCleanupError.className = 'message-box error';
   }
 }
 
@@ -1130,6 +1183,7 @@ function openOrderDialog(order = null, draft = null) {
   document.getElementById('supplierInput').value = order.supplier || '';
   const orderedByMatch = state.masterStaffNames.find((person) => person.id === order.ordered_by_id || person.name === order.ordered_by);
   const orderedByValue = orderedByMatch ? (orderedByMatch.id || orderedByMatch.name) : (order.ordered_by_id || order.ordered_by || '');
+  if (orderedByValue && !Array.from(elements.orderedBySelect.options).some(option => option.value === orderedByValue)) elements.orderedBySelect.add(new Option(order.ordered_by, orderedByValue));
   elements.orderedBySelect.value = orderedByValue;
   document.getElementById('poNumber').value = order.po_number || '';
   document.getElementById('dateOrdered').value = order.date_ordered || today;

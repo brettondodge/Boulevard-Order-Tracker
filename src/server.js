@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
+import { randomUUID } from 'node:crypto';
 import {
   ensureSupplierExistsAsync,
   getActiveSuppliersAsync,
@@ -15,6 +16,8 @@ import {
   upsertStaffMasterRowAsync,
   validateRuntimeDatabaseConfig,
   getPool,
+  previewInactiveSupplierCleanup,
+  deleteInactiveSupplierRecords,
   dbAll,
   dbGet,
   dbRun
@@ -315,14 +318,17 @@ app.get('/api/suppliers', asyncRoute(async (req, res) => {
 app.get('/api/master-lists', asyncRoute(async (req, res) => {
   const suppliers = await getAllSuppliersAsync();
   const staffNames = await getAllStaffNamesAsync();
-  const historicalOrderedBy = (await dbAll("SELECT ordered_by FROM (SELECT DISTINCT ordered_by FROM orders WHERE ordered_by IS NOT NULL AND ordered_by <> '') AS historical_names ORDER BY LOWER(ordered_by) ASC, ordered_by ASC"))
-    .map((row) => row.ordered_by);
-  const mergedStaffNames = [...new Set([ ...staffNames.map((item) => item.name), ...historicalOrderedBy ].filter(Boolean))];
+  const historicalSuppliers = await dbAll("SELECT DISTINCT supplier FROM orders WHERE (supplier_id IS NULL OR supplier_id = '') AND supplier IS NOT NULL AND supplier <> '' ORDER BY supplier");
+  const knownSupplierNames = new Set(suppliers.map(item => item.name.trim().toLowerCase()));
 
   return res.json({
     suppliers: suppliers.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })),
     staff_names: staffNames.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })),
-    ordered_by_options: mergedStaffNames
+    ordered_by_options: staffNames.map(item => item.name),
+    supplier_filter_options: [
+      ...suppliers.map(item => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })),
+      ...historicalSuppliers.filter(item => !knownSupplierNames.has(item.supplier.trim().toLowerCase())).map(item => ({ id: '', name: item.supplier, active: false }))
+    ]
   });
 }));
 
@@ -569,6 +575,33 @@ app.post('/api/admin/logout', (req, res) => {
   return res.json({ success: true });
 });
 
+app.get('/api/admin/inactive-suppliers/preview', requireAdminAuth, asyncRoute(async (req, res) => {
+  const plan = await previewInactiveSupplierCleanup();
+  const confirmationToken = randomUUID();
+  req.session.supplierCleanupPreview = { fingerprint: plan.fingerprint, token: confirmationToken, expires: Date.now() + 15 * 60 * 1000 };
+  return res.json({ suppliers: plan.suppliers, supplier_count: plan.supplier_count, order_count: plan.order_count, confirmation_token: confirmationToken });
+}));
+
+app.post('/api/admin/inactive-suppliers/delete', requireAdminAuth, asyncRoute(async (req, res) => {
+  const preview = req.session.supplierCleanupPreview;
+  if (!preview || preview.expires < Date.now() || req.body.confirmation_token !== preview.token || req.body.confirmation !== 'DELETE') {
+    return res.status(409).json({ error: 'Preview the cleanup and type DELETE to confirm.' });
+  }
+  try {
+    const result = await deleteInactiveSupplierRecords(preview.fingerprint);
+    delete req.session.supplierCleanupPreview;
+    broadcastLiveEvent('master-lists', { collection: 'suppliers', action: 'deleted' });
+    broadcastLiveEvent('orders', { action: 'deleted' });
+    return res.json(result);
+  } catch (error) {
+    if (error.code === 'CLEANUP_CHANGED') {
+      delete req.session.supplierCleanupPreview;
+      return res.status(409).json({ error: error.message });
+    }
+    throw error;
+  }
+}));
+
 app.post('/api/master-lists/suppliers', requireAdminAuth, asyncRoute(async (req, res) => {
   const items = Array.isArray(req.body.items) ? req.body.items : [];
   const saved = (await Promise.all(items.map((item) => upsertSupplierMasterRowAsync({ id: item.id || '', name: item.name, active: item.active !== false }))))
@@ -643,7 +676,23 @@ app.post('/api/orders/:id/restore', requireStaffAuth, asyncRoute(async (req, res
 }));
 
 app.get('/api/orders', asyncRoute(async (req, res) => {
-  const rows = await dbAll('SELECT * FROM orders ORDER BY date_ordered DESC, created_at DESC');
+  const [storedRows, suppliers, staffNames] = await Promise.all([
+    dbAll('SELECT * FROM orders ORDER BY date_ordered DESC, created_at DESC'),
+    getAllSuppliersAsync(), getAllStaffNamesAsync()
+  ]);
+  const supplierById = new Map(suppliers.map(item => [item.id, item]));
+  const staffById = new Map(staffNames.map(item => [item.id, item]));
+  const normalizeFilter = value => String(value || '').trim().toLowerCase();
+  const matchesFilter = (order, values, idField, nameField, masterRows, byId) => !values.length || values.some(value => {
+    const master = byId.get(value) || masterRows.find(item => normalizeFilter(item.name) === normalizeFilter(value));
+    if (master && order[idField]) return order[idField] === master.id;
+    return normalizeFilter(order[nameField]) === normalizeFilter(master?.name || value);
+  });
+  const rows = storedRows.map(order => ({
+    ...order,
+    supplier: supplierById.get(order.supplier_id)?.name || order.supplier,
+    ordered_by: staffById.get(order.ordered_by_id)?.name || order.ordered_by
+  }));
 
   const statusFilter = (req.query.status || 'Outstanding').toString();
   const viewFilter = (req.query.view || 'All Orders').toString();
@@ -682,17 +731,11 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
       return false;
     }
 
-    if (supplierFilters.length && !supplierFilters.includes(order.supplier)) {
+    if (!matchesFilter(order, supplierFilters, 'supplier_id', 'supplier', suppliers, supplierById)) {
       return false;
     }
 
-    if (orderedByFilters.length) {
-      const selectedNames = orderedByFilters.map((name) => name.toLowerCase());
-      const orderName = (order.ordered_by || '').trim().toLowerCase();
-      if (!selectedNames.includes(orderName)) {
-        return false;
-      }
-    }
+    if (!matchesFilter(order, orderedByFilters, 'ordered_by_id', 'ordered_by', staffNames, staffById)) return false;
 
     if (searchTerm) {
       const haystack = [order.customer_name, order.housecall_job_number, order.supplier, order.po_number, order.category || '', resolvedGroup].join(' ').toLowerCase();

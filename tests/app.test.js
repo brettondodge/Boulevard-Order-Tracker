@@ -800,3 +800,63 @@ test('archive and restore keep linked supplier orders and other jobs separate', 
 
   child.kill('SIGTERM');
 });
+
+test('master-list IDs survive renaming and deactivation; confirmed cleanup preserves drafts and other suppliers', async () => {
+  const child = startServer();
+  const cookieJar = createCookieJar();
+  const base = 'http://127.0.0.1:4100';
+  const api = (route, body, method = body ? 'POST' : 'GET', authorized = true) => requestJson(base + route, {
+    method, headers: { 'Content-Type': 'application/json' },
+    ...(body ? { body: JSON.stringify(body) } : {}), ...(authorized ? { cookieJar } : {})
+  });
+  try {
+    await delay(1500);
+    assert.equal((await api('/api/admin/inactive-suppliers/preview', null, 'GET', false)).status, 401);
+    assert.equal((await api('/api/admin/inactive-suppliers/delete', {}, 'POST', false)).status, 401);
+    assert.equal((await api('/api/admin/login', { username: 'admin', password: 'admin123' })).status, 200);
+    const staff = await api('/api/master-lists/ordered-by', { items: [{ name: 'Original Staff', active: true }] });
+    const staffId = staff.body.staff_names.find(row => row.name === 'Original Staff').id;
+    const suppliers = await api('/api/master-lists/suppliers', { items: [{ name: 'Original Supplier', active: true }, { name: 'Keep Supplier', active: true }] });
+    const removeId = suppliers.body.suppliers.find(row => row.name === 'Original Supplier').id;
+    const keepId = suppliers.body.suppliers.find(row => row.name === 'Keep Supplier').id;
+    const draft = await api('/api/job-drafts', { customer_name: 'Cleanup shared draft', deposit_status: 'Deposit waived / not required' });
+    assert.equal(draft.status, 201);
+    const create = supplier => api('/api/orders', { customer_name: 'Cleanup test', supplier, ordered_by: 'Original Staff', ordered_by_id: staffId, category: 'Windows', date_ordered: '2026-10-11', date_received: '2026-10-11', job_draft_id: draft.body.draft.id });
+    const removedOrder = await create('Original Supplier');
+    const keptOrder = await create('Keep Supplier');
+    assert.equal(removedOrder.status, 201); assert.equal(keptOrder.status, 201);
+    await api('/api/master-lists/suppliers', { items: [{ id: removeId, name: 'Renamed Supplier', active: false }] });
+    await api('/api/master-lists/ordered-by', { items: [{ id: staffId, name: 'Renamed Staff', active: false }] });
+    let filtered = await api(`/api/orders?status=All&supplier=${removeId}&ordered_by=${staffId}`);
+    assert.equal(filtered.body.orders.length, 1);
+    assert.equal(filtered.body.orders[0].supplier, 'Renamed Supplier');
+    assert.equal(filtered.body.orders[0].ordered_by, 'Renamed Staff');
+    assert.equal((await api('/api/orders?status=All&supplier=renamed%20supplier&ordered_by=renamed%20staff')).body.orders.length, 1);
+    const lists = await api('/api/master-lists');
+    assert.deepEqual(lists.body.ordered_by_options, lists.body.staff_names.map(row => row.name));
+    assert.ok(lists.body.supplier_filter_options.some(row => row.id === removeId && row.active === false));
+    assert.equal((await api('/api/suppliers')).body.suppliers.includes('Renamed Supplier'), false);
+    assert.equal((await api('/api/orders/archive', { order_ids: [removedOrder.body.order.id] })).status, 200);
+    filtered = await api(`/api/orders?status=Archived&supplier=${removeId}&ordered_by=${staffId}`);
+    assert.equal(filtered.body.orders.length, 1);
+    let preview = await api('/api/admin/inactive-suppliers/preview');
+    assert.equal(preview.body.supplier_count, 1); assert.equal(preview.body.order_count, 1);
+    const confirm = data => api('/api/admin/inactive-suppliers/delete', { confirmation_token: data.confirmation_token, confirmation: 'DELETE' });
+    assert.equal((await api('/api/admin/inactive-suppliers/delete', { confirmation_token: 'forged', confirmation: 'DELETE' })).status, 409);
+    await api('/api/master-lists/suppliers', { items: [{ id: removeId, name: 'Renamed Supplier', active: true }] });
+    assert.equal((await confirm(preview.body)).status, 409);
+    assert.equal((await api(`/api/orders?status=Archived&supplier=${removeId}`)).body.orders.length, 1);
+    await api('/api/master-lists/suppliers', { items: [{ id: removeId, name: 'Renamed Supplier', active: false }] });
+    preview = await api('/api/admin/inactive-suppliers/preview');
+    const result = await confirm(preview.body);
+    assert.equal(result.status, 200); assert.deepEqual(result.body, { deleted_suppliers: 1, deleted_orders: 1 });
+    assert.equal((await confirm(preview.body)).status, 409);
+    const finalLists = await api('/api/master-lists');
+    assert.equal(finalLists.body.suppliers.some(row => row.id === removeId), false);
+    assert.ok(finalLists.body.suppliers.some(row => row.id === keepId));
+    const remaining = await api(`/api/orders?status=All&supplier=${keepId}`);
+    assert.equal(remaining.body.orders.length, 1); assert.equal(remaining.body.orders[0].id, keptOrder.body.order.id);
+    const allDrafts = [...(await api('/api/job-drafts')).body.drafts, ...(await api('/api/job-drafts?status=Archived')).body.drafts];
+    assert.ok(allDrafts.some(row => row.id === draft.body.draft.id));
+  } finally { child.kill('SIGTERM'); }
+});

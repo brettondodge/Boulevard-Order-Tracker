@@ -71,6 +71,7 @@
             </span>
             <p id="supplierSelectionSummary" class="filter-summary">All Suppliers</p>
             <select id="supplierFilter" multiple size="4"></select>
+            <small>On desktop, hold ⌘ or Ctrl to select several.</small>
           </label>
 
           <label class="supplier-filter-wrap">
@@ -80,6 +81,7 @@
             </span>
             <p id="orderedBySelectionSummary" class="filter-summary">Everyone</p>
             <select id="orderedByFilter" multiple size="4"></select>
+            <small>On desktop, hold ⌘ or Ctrl to select several.</small>
           </label>
 
           <label>
@@ -313,6 +315,8 @@
               <button type="button" id="addSupplierEntry" class="secondary-button">Add supplier</button>
             </div>
             <div id="supplierMasterList" class="master-list-editor"></div>
+            <button type="button" id="previewSupplierCleanupButton" class="secondary-button">Preview deletion of inactive suppliers</button>
+            <p>Save your list changes first. Cleanup deletes inactive suppliers and their linked orders after review; drafts stay.</p>
           </div>
 
           <div class="master-list-section">
@@ -331,6 +335,21 @@
       </form>
     </dialog>
 
+    <dialog id="supplierCleanupDialog">
+      <div class="dialog-header">
+        <h2>Delete inactive suppliers</h2>
+        <button type="button" id="closeSupplierCleanupButton" class="close-button" aria-label="Close">×</button>
+      </div>
+      <p id="supplierCleanupSummary"></p>
+      <ul id="supplierCleanupList" class="cleanup-list"></ul>
+      <p>Deletion is permanent. All drafts and other suppliers’ orders will stay.</p>
+      <label>Type DELETE to confirm <input id="supplierCleanupConfirmation" type="text" autocomplete="off" /></label>
+      <p id="supplierCleanupError" class="message-box" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancelSupplierCleanupButton" class="secondary-button">Cancel</button>
+        <button type="button" id="deleteInactiveSuppliersButton" class="primary-button" disabled>Delete listed suppliers and orders</button>
+      </div>
+    </dialog>
     <script src="/app.js"></script>
   </body>
 </html>
