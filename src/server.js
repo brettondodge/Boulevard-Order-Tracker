@@ -7,7 +7,7 @@ import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
 import { randomUUID } from 'node:crypto';
 import {
-  ensureSupplierExistsAsync,
+  resolveOrderSupplierAsync,
   getActiveSuppliersAsync,
   getAllSuppliersAsync,
   getAllStaffNamesAsync,
@@ -806,13 +806,13 @@ app.post('/api/orders', requireStaffAuth, asyncRoute(async (req, res) => {
     }
 
     if (!orderData.customer_name) return res.status(400).json({ error: 'Customer name is required.' });
-    if (!orderData.supplier) return res.status(400).json({ error: 'Supplier is required.' });
+    if (!orderData.supplier && !orderData.supplier_id) return res.status(400).json({ error: 'Supplier is required.' });
     if (!orderData.category) return res.status(400).json({ error: 'Category is required.' });
     if (!orderData.ordered_by) return res.status(400).json({ error: 'Ordered by is required.' });
 
-    const supplierRecord = await ensureSupplierExistsAsync(orderData.supplier);
+    const supplierRecord = await resolveOrderSupplierAsync(orderData);
     if (!supplierRecord) {
-      return res.status(400).json({ error: 'Supplier is required.' });
+      return res.status(400).json({ error: 'Select an active supplier from Master Lists.' });
     }
 
     orderData.supplier = supplierRecord.name;
@@ -886,13 +886,13 @@ app.put('/api/orders/:id', requireStaffAuth, asyncRoute(async (req, res) => {
 
     const orderData = normalizeOrderInput(req.body);
     if (!orderData.customer_name) return res.status(400).json({ error: 'Customer name is required.' });
-    if (!orderData.supplier) return res.status(400).json({ error: 'Supplier is required.' });
+    if (!orderData.supplier && !orderData.supplier_id) return res.status(400).json({ error: 'Supplier is required.' });
     if (!orderData.category) return res.status(400).json({ error: 'Category is required.' });
     if (!orderData.ordered_by) return res.status(400).json({ error: 'Ordered by is required.' });
 
-    const supplierRecord = await ensureSupplierExistsAsync(orderData.supplier);
+    const supplierRecord = await resolveOrderSupplierAsync(orderData, existing);
     if (!supplierRecord) {
-      return res.status(400).json({ error: 'Supplier is required.' });
+      return res.status(400).json({ error: 'Select an active supplier from Master Lists.' });
     }
 
     orderData.supplier = supplierRecord.name;

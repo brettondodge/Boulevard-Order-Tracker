@@ -320,27 +320,23 @@ export function ensureSupplierExists(name) {
   return { id, name: trimmed };
 }
 
-export async function ensureSupplierExistsAsync(name) {
-  const trimmed = (name || '').trim();
-  if (!trimmed) {
-    return null;
+export async function resolveOrderSupplierAsync(selection, existingOrder = null) {
+  const name = (selection.supplier || '').trim();
+  const id = (selection.supplier_id || '').trim();
+  const supplier = id
+    ? await dbGet('SELECT id, name, active FROM suppliers WHERE id = ?', [id])
+    : name ? await dbGet('SELECT id, name, active FROM suppliers WHERE lower(name) = lower(?)', [name]) : null;
+  if (supplier && Number(supplier.active) !== 0) return supplier;
+  // Editing history may keep its original inactive supplier, but must not
+  // reactivate it or assign an inactive supplier to a different order.
+  if (supplier && existingOrder && (
+    existingOrder.supplier_id === supplier.id ||
+    (!existingOrder.supplier_id && String(existingOrder.supplier || '').trim().toLowerCase() === supplier.name.toLowerCase())
+  )) return supplier;
+  if (!supplier && !id && existingOrder && !existingOrder.supplier_id && name && name.toLowerCase() === String(existingOrder.supplier || '').trim().toLowerCase()) {
+    return { id: null, name: existingOrder.supplier };
   }
-
-  if (!isProduction) {
-    return ensureSupplierExists(trimmed);
-  }
-
-  const existing = await dbGet('SELECT id, name, active FROM suppliers WHERE lower(name) = lower(?)', [trimmed]);
-  if (existing) {
-    if (Number(existing.active) === 0) {
-      await dbRun('UPDATE suppliers SET active = 1, updated_at = ? WHERE id = ?', [isoNow(), existing.id]);
-    }
-    return { id: existing.id, name: existing.name };
-  }
-
-  const id = cryptoRandomId('supplier');
-  await dbRun('INSERT INTO suppliers (id, name, active, created_at, updated_at) VALUES (?, ?, 1, ?, ?)', [id, trimmed, isoNow(), isoNow()]);
-  return { id, name: trimmed };
+  return null;
 }
 
 export function seedUsers() {

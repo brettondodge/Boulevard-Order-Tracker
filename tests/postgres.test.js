@@ -41,8 +41,8 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     async function stop() { if (server && server.exitCode === null && server.signalCode === null) { const done = once(server, 'exit'); server.kill(); await done; } }
     const token = await new SignJWT({ email: 'staff@example.test' }).setProtectedHeader({ alg: 'RS256', kid: 'test-key' }).setIssuer('https://test-team.cloudflareaccess.com').setAudience('test-audience').setSubject('staff-id').setIssuedAt().setExpirationTime('1h').sign(privateKey);
     let cookie = '';
-    async function request(route, body, tokenValue = token, host = 'tools.blvdglass.com') {
-      const response = await fetch(`http://127.0.0.1:4209${route}`, { method: body ? 'POST' : 'GET', headers: { Host: host, 'X-Forwarded-Host': host, 'X-Forwarded-Proto': 'https', 'Cf-Access-Jwt-Assertion': tokenValue, 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    async function request(route, body, tokenValue = token, host = 'tools.blvdglass.com', methodOverride) {
+      const response = await fetch(`http://127.0.0.1:4209${route}`, { method: methodOverride || (body ? 'POST' : 'GET'), headers: { Host: host, 'X-Forwarded-Host': host, 'X-Forwarded-Proto': 'https', 'Cf-Access-Jwt-Assertion': tokenValue, 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
       const setCookie = response.headers.get('set-cookie');
       if (setCookie) { assert.match(setCookie, /Secure/); cookie = setCookie.split(';')[0]; }
       return { status: response.status, body: await response.json() };
@@ -63,6 +63,7 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     assert.equal(identity.body.user.username, 'staff@example.test');
     assert.equal((await request('/api/master-lists/suppliers', { name: 'Blocked Supplier' })).status, 401);
     assert.equal((await request('/api/admin/login', { username: 'office-admin', password: 'synthetic-admin-password' })).status, 200);
+    await request('/api/master-lists/suppliers', { items: [{ name: 'Test Supplier', active: true }] });
     const order = await request('/api/orders', { customer_name: 'Synthetic Test Job', supplier: 'Test Supplier', ordered_by: 'Test Staff', category: 'Windows', date_ordered: '2026-10-10' });
     assert.equal(order.status, 201);
     // Legacy names remain searchable in orders but do not populate staff choices.
@@ -114,6 +115,16 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     // Cleanup does not cascade to drafts or orders linked to an active supplier.
     await pool.query("INSERT INTO job_drafts (id, customer_name, created_at, updated_at) VALUES ('cleanup-draft', 'Synthetic Draft', '2026-10-10', '2026-10-10')");
     await pool.query('UPDATE orders SET job_draft_id=$1 WHERE id=$2', ['cleanup-draft', order.body.order.id]);
+    await request('/api/master-lists/suppliers', { items: [{ name: 'Active Supplier', active: true }] });
+    const supplierCount = Number((await pool.query('SELECT count(*) FROM suppliers')).rows[0].count);
+    assert.equal((await request('/api/orders', { customer_name: 'Unknown supplier', supplier: 'Never Added', ordered_by: 'Renamed Staff', category: 'Windows', date_ordered: '2026-10-10' })).status, 400);
+    assert.equal((await request('/api/orders', { customer_name: 'Inactive supplier', supplier: 'Renamed Supplier', supplier_id: savedSupplier, ordered_by: 'Renamed Staff', category: 'Windows', date_ordered: '2026-10-10' })).status, 400);
+    assert.equal(Number((await pool.query('SELECT count(*) FROM suppliers')).rows[0].count), supplierCount);
+    assert.equal((await pool.query('SELECT active FROM suppliers WHERE id=$1', [savedSupplier])).rows[0].active, 0);
+    const editInactive = await request(`/api/orders/${order.body.order.id}`, { ...filtered.body.orders[0], notes: 'Edit inactive history' }, token, 'tools.blvdglass.com', 'PUT');
+    assert.equal(editInactive.status, 200);
+    assert.equal((await pool.query('SELECT active FROM suppliers WHERE id=$1', [savedSupplier])).rows[0].active, 0);
+    assert.equal((await request(`/api/orders/${order.body.order.id}`, { ...editInactive.body.order, supplier: 'Never Added', supplier_id: '' }, token, 'tools.blvdglass.com', 'PUT')).status, 400);
     const other = await request('/api/orders', { customer_name: 'Other synthetic job', supplier: 'Active Supplier', ordered_by: 'Renamed Staff', category: 'Windows', date_ordered: '2026-10-10' });
     assert.equal(other.status, 201);
     let preview = await request('/api/admin/inactive-suppliers/preview');

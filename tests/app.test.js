@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import express from 'express';
 import session from 'express-session';
 import bcrypt from 'bcryptjs';
+import Database from 'better-sqlite3';
 import {
   createPostgresSessionStore,
   configureSessionMiddleware
@@ -46,6 +47,14 @@ function startServer() {
     RENDER: 'false',
     SQLITE_DATA_DIR: mkdtempSync(path.join(tmpdir(), 'boulevard-test-'))
   };
+  // Explicit master-list fixtures for order tests. Runtime order creation must
+  // never provision suppliers implicitly.
+  const fixture = new Database(path.join(env.SQLITE_DATA_DIR, 'boulevard_orders.db'));
+  fixture.exec('CREATE TABLE suppliers (id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)');
+  for (const name of ['Northline Glass', 'Oldcastle', 'Arrow Shower Door', 'Bayside Supply']) {
+    fixture.prepare('INSERT INTO suppliers (id, name, active, created_at, updated_at) VALUES (?, ?, 1, ?, ?)').run(`fixture-${name}`, name, '2026-10-11', '2026-10-11');
+  }
+  fixture.close();
 
   const child = spawn(process.execPath, ['src/server.js'], {
     cwd: root,
@@ -359,6 +368,10 @@ test('ordered-by multi-select filter supports any-of matching and historical nam
 
   assert.equal(login.status, 200);
 
+  await requestJson('http://127.0.0.1:4100/api/master-lists/suppliers', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items: [supplierA, supplierB, supplierC].map(name => ({ name, active: true })) }), cookieJar
+  });
   const alex = await requestJson('http://127.0.0.1:4100/api/orders', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -858,5 +871,30 @@ test('master-list IDs survive renaming and deactivation; confirmed cleanup prese
     assert.equal(remaining.body.orders.length, 1); assert.equal(remaining.body.orders[0].id, keptOrder.body.order.id);
     const allDrafts = [...(await api('/api/job-drafts')).body.drafts, ...(await api('/api/job-drafts?status=Archived')).body.drafts];
     assert.ok(allDrafts.some(row => row.id === draft.body.draft.id));
+  } finally { child.kill('SIGTERM'); }
+});
+
+test('order saves require existing active suppliers and never create or reactivate master entries', async () => {
+  const child = startServer();
+  const cookieJar = createCookieJar();
+  const api = (route, body, method = body ? 'POST' : 'GET') => requestJson('http://127.0.0.1:4100' + route, { method, headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), cookieJar });
+  try {
+    await delay(1500);
+    await api('/api/admin/login', { username: 'admin', password: 'admin123' });
+    const lists = await api('/api/master-lists');
+    const supplier = lists.body.suppliers.find(row => row.name === 'Northline Glass');
+    const payload = { customer_name: 'Supplier validation test', supplier: 'Unknown Supplier', ordered_by: 'Test Staff', category: 'Windows', date_ordered: '2026-10-11' };
+    assert.equal((await api('/api/orders', payload)).status, 400);
+    assert.equal((await api('/api/master-lists')).body.suppliers.length, lists.body.suppliers.length);
+    assert.equal((await api('/api/orders', { ...payload, supplier_id: 'unknown-id', supplier: supplier.name })).status, 400);
+    const created = await api('/api/orders', { ...payload, supplier_id: supplier.id, supplier: 'Spoofed label' });
+    assert.equal(created.status, 201); assert.equal(created.body.order.supplier, supplier.name);
+    await api('/api/master-lists/suppliers', { items: [{ id: supplier.id, name: supplier.name, active: false }] });
+    assert.equal((await api('/api/orders', { ...payload, supplier: supplier.name, supplier_id: supplier.id })).status, 400);
+    const edited = await api(`/api/orders/${created.body.order.id}`, { ...created.body.order, notes: 'Historical edit' }, 'PUT');
+    assert.equal(edited.status, 200);
+    assert.equal((await api('/api/master-lists')).body.suppliers.find(row => row.id === supplier.id).active, false);
+    assert.equal((await api(`/api/orders/${created.body.order.id}`, { ...edited.body.order, supplier: 'Unknown Supplier', supplier_id: '' }, 'PUT')).status, 400);
+    assert.equal((await api('/api/master-lists')).body.suppliers.length, lists.body.suppliers.length);
   } finally { child.kill('SIGTERM'); }
 });

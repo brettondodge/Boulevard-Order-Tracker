@@ -569,10 +569,6 @@ async function loadSuppliers() {
   state.suppliers = Array.isArray(data.suppliers) ? data.suppliers : [];
   renderSupplierFilterOptions();
 
-  const datalist = document.getElementById('supplierList');
-  datalist.innerHTML = state.suppliers
-    .map((supplier) => `<option value="${escapeHtml(supplier)}"></option>`)
-    .join('');
 }
 
 async function loadMasterLists() {
@@ -603,6 +599,7 @@ async function loadMasterLists() {
   state.orderedBy = state.orderedBy.filter(value => state.masterStaffNames.some(item => (item.id || item.name) === value));
   state.suppliers = state.masterSuppliers.filter((item) => item.active !== false).map((item) => item.name);
   renderSupplierFilterOptions();
+  renderSupplierOptions();
   renderOrderedByOptions();
   renderOrderedByFilterOptions();
   renderMasterListsEditor();
@@ -622,6 +619,17 @@ function renderSupplierSelection() {
   Array.from(elements.supplierFilter.options).forEach((option) => {
     option.selected = selected.includes(option.value);
   });
+}
+
+function renderSupplierOptions() {
+  const select = document.getElementById('supplierInput');
+  const value = select.value;
+  const name = select.selectedOptions[0]?.textContent;
+  const suppliers = state.masterSuppliers.filter(item => item.active !== false);
+  select.innerHTML = '<option value="">Select supplier</option>' + suppliers
+    .map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join('');
+  if (value && elements.orderId.value && !suppliers.some(item => item.id === value)) select.add(new Option(name || value, value));
+  select.value = value;
 }
 
 function renderOrderedByOptions() {
@@ -1152,6 +1160,8 @@ function openOrderDialog(order = null, draft = null) {
   elements.jobDraftId.value = '';
   elements.categorySelect.value = '';
   elements.orderedBySelect.value = '';
+  document.getElementById('supplierInput').value = '';
+  renderSupplierOptions();
 
   const today = new Date().toISOString().slice(0, 10);
   document.getElementById('dateOrdered').value = today;
@@ -1180,7 +1190,10 @@ function openOrderDialog(order = null, draft = null) {
   elements.categorySelect.value = order.category || '';
   document.getElementById('housecallJobNumber').value = order.housecall_job_number || '';
   document.getElementById('housecallJobLink').value = order.housecall_job_link || '';
-  document.getElementById('supplierInput').value = order.supplier || '';
+  const supplierSelect = document.getElementById('supplierInput');
+  const supplierValue = order.supplier_id || order.supplier || '';
+  if (supplierValue && !Array.from(supplierSelect.options).some(option => option.value === supplierValue)) supplierSelect.add(new Option(order.supplier, supplierValue));
+  supplierSelect.value = supplierValue;
   const orderedByMatch = state.masterStaffNames.find((person) => person.id === order.ordered_by_id || person.name === order.ordered_by);
   const orderedByValue = orderedByMatch ? (orderedByMatch.id || orderedByMatch.name) : (order.ordered_by_id || order.ordered_by || '');
   if (orderedByValue && !Array.from(elements.orderedBySelect.options).some(option => option.value === orderedByValue)) elements.orderedBySelect.add(new Option(order.ordered_by, orderedByValue));
@@ -1310,13 +1323,15 @@ function readSelectedOrderedBy() {
 
 async function saveOrder() {
   const orderedBy = readSelectedOrderedBy();
+  const supplierSelect = document.getElementById('supplierInput');
+  const supplier = state.masterSuppliers.find(item => item.id === supplierSelect.value);
   const payload = {
     customer_name: document.getElementById('customerName').value,
     category: elements.categorySelect.value,
     housecall_job_number: document.getElementById('housecallJobNumber').value,
     housecall_job_link: document.getElementById('housecallJobLink').value,
-    supplier: document.getElementById('supplierInput').value,
-    supplier_id: '',
+    supplier: supplierSelect.value ? (supplier?.name || supplierSelect.selectedOptions[0]?.textContent || '') : '',
+    supplier_id: supplier?.id || '',
     po_number: document.getElementById('poNumber').value,
     date_ordered: document.getElementById('dateOrdered').value,
     expected_delivery_date: document.getElementById('expectedDeliveryDate').value,
@@ -1351,11 +1366,6 @@ async function saveOrder() {
   if (!payload.date_ordered) {
     elements.formError.textContent = 'Date ordered is required.';
     return;
-  }
-
-  if (payload.supplier) {
-    const supplierMatch = state.masterSuppliers.find((supplier) => supplier.name.toLowerCase() === payload.supplier.toLowerCase() && supplier.active !== false);
-    payload.supplier_id = supplierMatch ? supplierMatch.id : '';
   }
 
   const id = elements.orderId.value;
