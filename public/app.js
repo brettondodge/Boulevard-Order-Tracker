@@ -19,6 +19,7 @@ const state = {
   connectionState: 'live',
   requestCounter: 0,
   orderRequestCounter: 0,
+  orderRequestController: null,
   masterRequestCounter: 0,
   supplierRequestCounter: 0,
   eventSource: null
@@ -429,7 +430,7 @@ function bindEvents() {
     await saveOrder();
   });
 
-  elements.tableBody.addEventListener('click', async (event) => {
+  const handleOrderAction = async (event) => {
     const button = event.target.closest('button[data-action]');
     if (!button) return;
 
@@ -459,7 +460,9 @@ function bindEvents() {
       await reopenOrder(id);
       return;
     }
-  });
+  };
+  elements.tableBody.addEventListener('click', handleOrderAction);
+  elements.mobileOrderCards.addEventListener('click', handleOrderAction);
 
   elements.draftForm.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -816,12 +819,16 @@ async function loadJobDrafts() {
 }
 
 async function loadOrders() {
+  const requestId = ++state.orderRequestCounter;
+  state.orderRequestController?.abort();
+  state.orderRequestController = null;
   if (state.status === 'Approved – Need to Order') {
     renderQueueVisibility();
     return;
   }
 
-  const requestId = ++state.orderRequestCounter;
+  const controller = new AbortController();
+  state.orderRequestController = controller;
   const params = new URLSearchParams({
     status: state.status,
     view: state.groupView,
@@ -842,17 +849,19 @@ async function loadOrders() {
     params.set('status', 'Archived');
   }
 
-  const response = await fetch(`/api/orders?${params.toString()}`);
-  if (!response.ok) {
-    showStatus('Unable to load orders right now.', 'error');
-    return;
+  try {
+    const response = await fetch(`/api/orders?${params.toString()}`, { signal: controller.signal });
+    if (requestId !== state.orderRequestCounter) return;
+    if (!response.ok) throw new Error('Unable to load orders right now.');
+    const data = await response.json();
+    if (requestId !== state.orderRequestCounter) return;
+    state.orders = data.orders || [];
+    renderOrders();
+  } catch (error) {
+    if (error.name !== 'AbortError' && requestId === state.orderRequestCounter) showStatus('Unable to load orders right now.', 'error');
+  } finally {
+    if (state.orderRequestController === controller) state.orderRequestController = null;
   }
-
-  const data = await response.json();
-  if (requestId !== state.orderRequestCounter) return;
-
-  state.orders = data.orders || [];
-  renderOrders();
 }
 
 function renderJobDrafts() {

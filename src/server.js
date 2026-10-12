@@ -146,10 +146,10 @@ function isDraftReadyForOrdering(draft) {
   return draft.status !== 'Completed' && draft.deposit_status !== 'Awaiting deposit';
 }
 
-async function serializeJobDraft(draft) {
+async function serializeJobDraft(draft, knownOrderCount) {
   if (!draft) return null;
 
-  const supplierOrderCount = Number((await dbGet('SELECT COUNT(*) as count FROM orders WHERE job_draft_id = ? AND is_archived = 0', [draft.id]))?.count || 0);
+  const supplierOrderCount = knownOrderCount ?? Number((await dbGet('SELECT COUNT(*) as count FROM orders WHERE job_draft_id = ? AND is_archived = 0', [draft.id]))?.count || 0);
 
   return {
     ...draft,
@@ -367,7 +367,9 @@ app.get('/api/job-drafts', asyncRoute(async (req, res) => {
       ? await dbAll('SELECT * FROM job_drafts WHERE status = ? AND is_archived = ? ORDER BY updated_at DESC, created_at DESC', [statusFilter, archivedOnly ? 1 : 0])
       : await dbAll('SELECT * FROM job_drafts WHERE is_archived = ? ORDER BY updated_at DESC, created_at DESC', [archivedOnly ? 1 : 0]);
 
-  return res.json({ drafts: await Promise.all(rows.map((row) => serializeJobDraft(row))) });
+  const counts = await dbAll('SELECT job_draft_id, COUNT(*) AS count FROM orders WHERE is_archived = 0 AND job_draft_id IS NOT NULL GROUP BY job_draft_id');
+  const countByDraft = new Map(counts.map(row => [row.job_draft_id, Number(row.count)]));
+  return res.json({ drafts: await Promise.all(rows.map(row => serializeJobDraft(row, countByDraft.get(row.id) || 0))) });
 }));
 
 app.post('/api/job-drafts', requireStaffAuth, asyncRoute(async (req, res) => {
