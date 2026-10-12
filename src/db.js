@@ -468,15 +468,15 @@ export async function upsertSupplierMasterRowAsync(record) {
   return await dbGet('SELECT * FROM suppliers WHERE id = ?', [id]);
 }
 
-export async function previewInactiveSupplierCleanup() {
-  return supplierCleanupPlan(await dbAll('SELECT * FROM suppliers ORDER BY id'), await dbAll('SELECT * FROM orders ORDER BY id'));
+export async function previewInactiveSupplierCleanup(includeHistorical = false) {
+  return supplierCleanupPlan(await dbAll('SELECT * FROM suppliers ORDER BY id'), await dbAll('SELECT * FROM orders ORDER BY id'), includeHistorical);
 }
 
-export async function deleteInactiveSupplierRecords(expectedFingerprint) {
+export async function deleteInactiveSupplierRecords(expectedFingerprint, includeHistorical = false) {
   if (!isProduction) {
     // Keep SQLite's entire confirmation and deletion synchronous and atomic.
     return db.transaction(() => {
-      const plan = supplierCleanupPlan(db.prepare('SELECT * FROM suppliers ORDER BY id').all(), db.prepare('SELECT * FROM orders ORDER BY id').all());
+      const plan = supplierCleanupPlan(db.prepare('SELECT * FROM suppliers ORDER BY id').all(), db.prepare('SELECT * FROM orders ORDER BY id').all(), includeHistorical);
       requireUnchangedCleanup(plan, expectedFingerprint);
       for (const id of plan.order_ids) db.prepare('DELETE FROM orders WHERE id = ?').run(id);
       for (const row of plan.suppliers) db.prepare('DELETE FROM suppliers WHERE id = ?').run(row.id);
@@ -487,7 +487,7 @@ export async function deleteInactiveSupplierRecords(expectedFingerprint) {
   try {
     await client.query('BEGIN');
     await client.query('LOCK TABLE suppliers, orders IN EXCLUSIVE MODE');
-    const plan = supplierCleanupPlan((await client.query('SELECT * FROM suppliers ORDER BY id')).rows, (await client.query('SELECT * FROM orders ORDER BY id')).rows);
+    const plan = supplierCleanupPlan((await client.query('SELECT * FROM suppliers ORDER BY id')).rows, (await client.query('SELECT * FROM orders ORDER BY id')).rows, includeHistorical);
     requireUnchangedCleanup(plan, expectedFingerprint);
     for (const id of plan.order_ids) await client.query('DELETE FROM orders WHERE id = $1', [id]);
     for (const row of plan.suppliers) await client.query('DELETE FROM suppliers WHERE id = $1', [row.id]);

@@ -241,7 +241,7 @@ function bindEvents() {
   for (const id of ['closeSupplierCleanupButton', 'cancelSupplierCleanupButton']) document.getElementById(id).addEventListener('click', () => elements.supplierCleanupDialog.close());
   elements.supplierCleanupDialog.addEventListener('close', () => { state.supplierCleanupPreview = null; });
   elements.supplierCleanupConfirmation.addEventListener('input', () => {
-    elements.deleteInactiveSuppliersButton.disabled = !state.supplierCleanupPreview?.supplier_count || elements.supplierCleanupConfirmation.value !== 'DELETE';
+    elements.deleteInactiveSuppliersButton.disabled = !(state.supplierCleanupPreview?.supplier_count || state.supplierCleanupPreview?.order_count) || elements.supplierCleanupConfirmation.value !== 'DELETE';
   });
   elements.deleteInactiveSuppliersButton.addEventListener('click', deleteInactiveSuppliers);
   for (const list of [elements.supplierMasterList, elements.orderedByMasterList]) {
@@ -604,11 +604,14 @@ async function loadMasterLists() {
   renderOrderedByFilterOptions();
   renderMasterListsEditor();
   if (supplierSelections !== state.supplier.length || staffSelections !== state.orderedBy.length) await loadOrders();
+  const historical = data.historical_suppliers || [];
+  document.getElementById('historicalSupplierSection').hidden = historical.length === 0;
+  document.getElementById('historicalSupplierList').innerHTML = historical.map(item => `<li>${escapeHtml(item.name)} — ${item.order_count} orders</li>`).join('');
 }
 
 function renderSupplierFilterOptions() {
   const selected = new Set(state.supplier);
-  const options = [...state.supplierFilterOptions].sort((a, b) => a.name.localeCompare(b.name)).map((supplier) => `<option value="${escapeHtml(supplier.id || supplier.name)}" ${selected.has(supplier.id || supplier.name) ? 'selected' : ''}>${escapeHtml(supplier.name)}${supplier.active === false ? ' (inactive)' : ''}</option>`).join('');
+  const options = [...state.supplierFilterOptions].sort((a, b) => a.name.localeCompare(b.name)).map((supplier) => `<option value="${escapeHtml(supplier.id || supplier.name)}" ${selected.has(supplier.id || supplier.name) ? 'selected' : ''}>${escapeHtml(supplier.name)}${supplier.historical ? ' (historical)' : supplier.active === false ? ' (inactive)' : ''}</option>`).join('');
   elements.supplierFilter.innerHTML = options;
   renderSupplierSelection();
 }
@@ -731,12 +734,13 @@ async function previewSupplierCleanup() {
     return;
   }
   try {
-    const response = await fetch('/api/admin/inactive-suppliers/preview');
+    const includeHistorical = document.getElementById('includeHistoricalSupplierCleanup').checked;
+    const response = await fetch(`/api/admin/inactive-suppliers/preview?include_historical=${includeHistorical}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Unable to preview cleanup.');
     state.supplierCleanupPreview = data;
-    elements.supplierCleanupSummary.textContent = `${data.supplier_count} inactive suppliers and ${data.order_count} linked orders (including archived orders) will be deleted.`;
-    elements.supplierCleanupList.innerHTML = data.suppliers.map(item => `<li>${escapeHtml(item.name)} — ${item.order_count} orders</li>`).join('');
+    elements.supplierCleanupSummary.textContent = `${data.supplier_count} inactive suppliers, ${data.historical_supplier_count} historical supplier names, and ${data.order_count} orders (including archived orders) will be deleted.`;
+    elements.supplierCleanupList.innerHTML = [...data.suppliers, ...data.historical_suppliers.map(item => ({ ...item, historical: true }))].map(item => `<li>${escapeHtml(item.name)} — ${item.order_count} orders${item.historical ? ' (historical)' : ''}</li>`).join('');
     elements.supplierCleanupConfirmation.value = '';
     elements.supplierCleanupError.textContent = '';
     elements.deleteInactiveSuppliersButton.disabled = true;

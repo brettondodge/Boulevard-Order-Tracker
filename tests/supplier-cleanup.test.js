@@ -23,3 +23,20 @@ test('ambiguous historical names cannot delete orders belonging to an active sup
   const plan = supplierCleanupPlan([{id:'a',name:'Same',active:0},{id:'b',name:'same',active:1}], [{id:'old',supplier_id:null,supplier:'Same'}]);
   assert.equal(plan.supplier_count,1); assert.equal(plan.order_count,0);
 });
+
+test('unlisted historical cleanup is opt-in and protects authoritative IDs and known active names', () => {
+  const suppliers = [{ id: 'keep', name: 'Keep Supplier', active: 1 }];
+  const orders = [
+    { id: 'history', supplier: 'North Valley Glass', supplier_id: null },
+    { id: 'archived', supplier: ' north valley glass ', supplier_id: '', archived_at: '2026-10-11' },
+    { id: 'keep', supplier: 'Keep Supplier', supplier_id: null },
+    { id: 'reassigned', supplier: 'North Valley Glass', supplier_id: 'keep' },
+    { id: 'unknown-id', supplier: 'Pacific Hardware', supplier_id: 'unknown' }
+  ];
+  assert.equal(supplierCleanupPlan(suppliers, orders).order_count, 0);
+  const plan = supplierCleanupPlan(suppliers, orders, true);
+  assert.deepEqual(plan.order_ids, ['archived', 'history']);
+  assert.equal(plan.supplier_count, 0);
+  assert.deepEqual(plan.historical_suppliers, [{ name: 'North Valley Glass', order_count: 2 }]);
+  assert.throws(() => requireUnchangedCleanup(supplierCleanupPlan([...suppliers, { id: 'new', name: 'North Valley Glass', active: 1 }], orders, true), plan.fingerprint), { code: 'CLEANUP_CHANGED' });
+});

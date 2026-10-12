@@ -318,16 +318,17 @@ app.get('/api/suppliers', asyncRoute(async (req, res) => {
 app.get('/api/master-lists', asyncRoute(async (req, res) => {
   const suppliers = await getAllSuppliersAsync();
   const staffNames = await getAllStaffNamesAsync();
-  const historicalSuppliers = await dbAll("SELECT DISTINCT supplier FROM orders WHERE (supplier_id IS NULL OR supplier_id = '') AND supplier IS NOT NULL AND supplier <> '' ORDER BY supplier");
+  const historicalSuppliers = await dbAll("SELECT supplier, COUNT(*) AS order_count FROM orders WHERE (supplier_id IS NULL OR supplier_id = '') AND supplier IS NOT NULL AND supplier <> '' GROUP BY supplier ORDER BY supplier");
   const knownSupplierNames = new Set(suppliers.map(item => item.name.trim().toLowerCase()));
 
   return res.json({
     suppliers: suppliers.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })),
     staff_names: staffNames.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })),
     ordered_by_options: staffNames.map(item => item.name),
+    historical_suppliers: historicalSuppliers.filter(item => !knownSupplierNames.has(item.supplier.trim().toLowerCase())).map(item => ({ name: item.supplier, order_count: Number(item.order_count) })),
     supplier_filter_options: [
       ...suppliers.map(item => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })),
-      ...historicalSuppliers.filter(item => !knownSupplierNames.has(item.supplier.trim().toLowerCase())).map(item => ({ id: '', name: item.supplier, active: false }))
+      ...historicalSuppliers.filter(item => !knownSupplierNames.has(item.supplier.trim().toLowerCase())).map(item => ({ id: '', name: item.supplier, historical: true }))
     ]
   });
 }));
@@ -576,10 +577,11 @@ app.post('/api/admin/logout', (req, res) => {
 });
 
 app.get('/api/admin/inactive-suppliers/preview', requireAdminAuth, asyncRoute(async (req, res) => {
-  const plan = await previewInactiveSupplierCleanup();
+  const includeHistorical = req.query.include_historical === 'true';
+  const plan = await previewInactiveSupplierCleanup(includeHistorical);
   const confirmationToken = randomUUID();
-  req.session.supplierCleanupPreview = { fingerprint: plan.fingerprint, token: confirmationToken, expires: Date.now() + 15 * 60 * 1000 };
-  return res.json({ suppliers: plan.suppliers, supplier_count: plan.supplier_count, order_count: plan.order_count, confirmation_token: confirmationToken });
+  req.session.supplierCleanupPreview = { fingerprint: plan.fingerprint, includeHistorical, token: confirmationToken, expires: Date.now() + 15 * 60 * 1000 };
+  return res.json({ suppliers: plan.suppliers, supplier_count: plan.supplier_count, historical_suppliers: plan.historical_suppliers, historical_supplier_count: plan.historical_supplier_count, order_count: plan.order_count, confirmation_token: confirmationToken });
 }));
 
 app.post('/api/admin/inactive-suppliers/delete', requireAdminAuth, asyncRoute(async (req, res) => {
@@ -588,7 +590,7 @@ app.post('/api/admin/inactive-suppliers/delete', requireAdminAuth, asyncRoute(as
     return res.status(409).json({ error: 'Preview the cleanup and type DELETE to confirm.' });
   }
   try {
-    const result = await deleteInactiveSupplierRecords(preview.fingerprint);
+    const result = await deleteInactiveSupplierRecords(preview.fingerprint, preview.includeHistorical === true);
     delete req.session.supplierCleanupPreview;
     broadcastLiveEvent('master-lists', { collection: 'suppliers', action: 'deleted' });
     broadcastLiveEvent('orders', { action: 'deleted' });

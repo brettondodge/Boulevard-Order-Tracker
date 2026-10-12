@@ -619,6 +619,11 @@ button:disabled {
   font-size: 0.9rem;
 }
 
+#includeHistoricalSupplierCleanup {
+  width: auto;
+  flex-shrink: 0;
+}
+
 .small-button {
   padding: 0.5rem 0.7rem;
   font-size: 0.8rem;

@@ -140,6 +140,25 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     assert.equal(Number((await pool.query('SELECT count(*) FROM job_drafts WHERE id=$1',['cleanup-draft'])).rows[0].count),1);
     assert.equal(Number((await pool.query('SELECT count(*) FROM suppliers WHERE id=$1',[savedSupplier])).rows[0].count),0);
     assert.equal((await request('/api/admin/inactive-suppliers/delete', {confirmation_token: preview.body.confirmation_token, confirmation:'DELETE'})).status,409);
+    for (const name of ['North Valley Glass', 'Pacific Hardware']) {
+      await pool.query('INSERT INTO orders (id, customer_name, supplier, date_ordered, job_draft_id, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7)', [`history-${name}`, 'Synthetic history', name, '2026-10-11', 'cleanup-draft', '2026-10-11', '2026-10-11']);
+    }
+    const historicalLists = (await request('/api/master-lists')).body;
+    assert.ok(historicalLists.historical_suppliers.some(row => row.name === 'North Valley Glass' && row.order_count === 1));
+    assert.ok(historicalLists.supplier_filter_options.some(row => row.name === 'Pacific Hardware' && row.historical === true && row.active !== false));
+    preview = await request('/api/admin/inactive-suppliers/preview');
+    assert.equal(preview.body.order_count, 0);
+    // The delete request cannot broaden the scope stored with the preview.
+    assert.deepEqual((await request('/api/admin/inactive-suppliers/delete', {confirmation_token: preview.body.confirmation_token, confirmation:'DELETE', include_historical: true})).body, { deleted_suppliers: 0, deleted_orders: 0 });
+    preview = await request('/api/admin/inactive-suppliers/preview?include_historical=true');
+    assert.equal(preview.body.historical_supplier_count, 2); assert.equal(preview.body.order_count, 2);
+    await pool.query('UPDATE orders SET notes=$1 WHERE id=$2', ['Changed history', 'history-Pacific Hardware']);
+    assert.equal((await request('/api/admin/inactive-suppliers/delete', {confirmation_token: preview.body.confirmation_token, confirmation:'DELETE'})).status, 409);
+    assert.equal(Number((await pool.query('SELECT count(*) FROM orders')).rows[0].count), 3);
+    preview = await request('/api/admin/inactive-suppliers/preview?include_historical=true');
+    assert.deepEqual((await request('/api/admin/inactive-suppliers/delete', {confirmation_token: preview.body.confirmation_token, confirmation:'DELETE'})).body, { deleted_suppliers: 0, deleted_orders: 2 });
+    assert.equal((await pool.query('SELECT id FROM orders')).rows[0].id, other.body.order.id);
+    assert.equal(Number((await pool.query('SELECT count(*) FROM job_drafts WHERE id=$1', ['cleanup-draft'])).rows[0].count), 1);
     await stop();
     await cluster.createDatabase('import_test');
     const sqliteFile = path.join(directory, 'synthetic.db');

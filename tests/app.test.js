@@ -62,6 +62,7 @@ function startServer() {
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
+  child.testDataDir = env.SQLITE_DATA_DIR;
   return child;
 }
 
@@ -871,6 +872,23 @@ test('master-list IDs survive renaming and deactivation; confirmed cleanup prese
     assert.equal(remaining.body.orders.length, 1); assert.equal(remaining.body.orders[0].id, keptOrder.body.order.id);
     const allDrafts = [...(await api('/api/job-drafts')).body.drafts, ...(await api('/api/job-drafts?status=Archived')).body.drafts];
     assert.ok(allDrafts.some(row => row.id === draft.body.draft.id));
+    const fixture = new Database(path.join(child.testDataDir, 'boulevard_orders.db'));
+    try {
+      for (const name of ['North Valley Glass', 'Synthetic Pacific Hardware']) {
+        fixture.prepare('INSERT INTO orders (id, customer_name, supplier, date_ordered, job_draft_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(`history-${name}`, 'Synthetic history', name, '2026-10-11', draft.body.draft.id, '2026-10-11', '2026-10-11');
+      }
+    } finally { fixture.close(); }
+    const historicalLists = (await api('/api/master-lists')).body;
+    assert.ok(historicalLists.historical_suppliers.some(row => row.name === 'North Valley Glass' && row.order_count === 1));
+    assert.ok(historicalLists.supplier_filter_options.some(row => row.name === 'Synthetic Pacific Hardware' && row.historical === true && row.active !== false));
+    assert.equal((await api('/api/admin/inactive-suppliers/preview')).body.order_count, 0);
+    preview = await api('/api/admin/inactive-suppliers/preview?include_historical=true');
+    assert.equal(preview.body.historical_supplier_count, 2);
+    assert.equal(preview.body.order_count, 2);
+    assert.deepEqual((await confirm(preview.body)).body, { deleted_suppliers: 0, deleted_orders: 2 });
+    assert.equal((await api(`/api/orders?status=All&supplier=${keepId}`)).body.orders.length, 1);
+    const preservedDrafts = [...(await api('/api/job-drafts')).body.drafts, ...(await api('/api/job-drafts?status=Archived')).body.drafts];
+    assert.ok(preservedDrafts.some(row => row.id === draft.body.draft.id));
   } finally { child.kill('SIGTERM'); }
 });
 

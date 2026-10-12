@@ -316,6 +316,12 @@
               <button type="button" id="addSupplierEntry" class="secondary-button">Add supplier</button>
             </div>
             <div id="supplierMasterList" class="master-list-editor"></div>
+            <section id="historicalSupplierSection" hidden>
+              <h4>Historical supplier names</h4>
+              <p>These names are stored on older orders and have no Master List entry.</p>
+              <ul id="historicalSupplierList" class="cleanup-list"></ul>
+            </section>
+            <label class="checkbox-inline"><input type="checkbox" id="includeHistoricalSupplierCleanup" /> Include orders with historical supplier names missing from Master Lists in cleanup</label>
             <button type="button" id="previewSupplierCleanupButton" class="secondary-button">Preview deletion of inactive suppliers</button>
             <p>Save your list changes first. Cleanup deletes inactive suppliers and their linked orders after review; drafts stay.</p>
           </div>
@@ -343,7 +349,7 @@
       </div>
       <p id="supplierCleanupSummary"></p>
       <ul id="supplierCleanupList" class="cleanup-list"></ul>
-      <p>Deletion is permanent. All drafts and other suppliers’ orders will stay.</p>
+      <p>Deletion is permanent. All drafts and orders assigned to active suppliers will stay.</p>
       <label>Type DELETE to confirm <input id="supplierCleanupConfirmation" type="text" autocomplete="off" /></label>
       <p id="supplierCleanupError" class="message-box" aria-live="polite"></p>
       <div class="dialog-actions">
