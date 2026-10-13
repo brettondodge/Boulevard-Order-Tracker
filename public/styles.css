@@ -385,18 +385,24 @@ input:focus, select:focus, textarea:focus {
   box-shadow: var(--shadow);
 }
 
+.table-wrap th,
+.table-wrap td {
+  padding: 0.55rem 0.6rem;
+  font-size: 0.9rem;
+}
+
 .mobile-order-list {
   display: grid;
-  gap: 0.9rem;
+  gap: 0.55rem;
 }
 
 .order-card {
   display: grid;
-  gap: 0.9rem;
+  gap: 0.55rem;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 0.9rem;
+  border-radius: 10px;
+  padding: 0.65rem;
   box-shadow: var(--shadow);
 }
 
@@ -408,7 +414,20 @@ input:focus, select:focus, textarea:focus {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 0.75rem;
+  gap: 0.5rem;
+}
+
+.order-card-header > div {
+  min-width: 0;
+}
+
+.order-card-header .order-card-label {
+  display: none;
+}
+
+.order-card-header .status-badge {
+  flex-shrink: 0;
+  padding: 0.25rem 0.5rem;
 }
 
 .order-card-label {
@@ -421,13 +440,15 @@ input:focus, select:focus, textarea:focus {
 
 .order-card h3 {
   margin: 0;
-  font-size: 1.1rem;
+  font-size: 1rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
 .order-card-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.75rem;
+  gap: 0.4rem 0.65rem;
 }
 
 .order-card-grid div,
@@ -449,17 +470,30 @@ input:focus, select:focus, textarea:focus {
 .order-card-meta p {
   margin: 0;
   word-break: break-word;
+  font-size: 0.85rem;
+  line-height: 1.35;
 }
 
 .order-card-meta {
   display: grid;
-  gap: 0.75rem;
-  padding-top: 0.5rem;
+  gap: 0.4rem;
+  padding-top: 0.4rem;
   border-top: 1px solid var(--border);
 }
 
 .order-card-meta p {
   white-space: pre-wrap;
+}
+
+.order-card .mobile-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 0.35rem;
+}
+
+.order-card .action-button {
+  min-height: 44px;
+  padding: 0.35rem 0.5rem;
 }
 
 table {
@@ -811,7 +845,7 @@ button:disabled {
   }
 
   .order-card-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .form-grid {
