@@ -710,6 +710,52 @@ tr.overdue {
   word-break: break-word;
 }
 
+.table-wrap .order-notes-preview {
+  display: block;
+  width: 140px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+}
+
+.order-notes-preview span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+  line-height: 1.3;
+}
+
+.order-notes-preview small {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.75rem;
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+#orderNotesDialog {
+  width: min(calc(100vw - 2rem), 640px);
+  max-height: calc(100vh - 2rem);
+  padding: 1.25rem;
+  overflow: auto;
+}
+
+.order-notes-customer {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.order-notes-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
 .action-stack {
   display: flex;
   flex-wrap: wrap;

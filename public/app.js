@@ -46,6 +46,9 @@ const elements = {
   draftQueueSection: document.getElementById('draftQueueSection'),
   tableBody: document.getElementById('ordersTableBody'),
   desktopOrderMenu: document.getElementById('desktopOrderMenu'),
+  orderNotesDialog: document.getElementById('orderNotesDialog'),
+  orderNotesCustomer: document.getElementById('orderNotesCustomer'),
+  orderNotesText: document.getElementById('orderNotesText'),
   mobileOrderCards: document.getElementById('mobileOrderCards'),
   condensedViewToggle: document.getElementById('condensedViewToggle'),
   condensedViewHint: document.getElementById('condensedViewHint'),
@@ -254,6 +257,7 @@ function renderQueueVisibility() {
 }
 
 function bindEvents() {
+  for (const id of ['closeOrderNotesButton', 'dismissOrderNotesButton']) document.getElementById(id).addEventListener('click', () => elements.orderNotesDialog.close());
   elements.condensedViewToggle.addEventListener('click', () => {
     state.condensedView = !state.condensedView;
     try { window.localStorage.setItem('boulevard-condensed-view', String(state.condensedView)); } catch {}
@@ -469,6 +473,11 @@ function bindEvents() {
     elements.desktopOrderMenu.hidePopover?.();
 
     const { action, id } = button.dataset;
+    if (action === 'view-notes') {
+      const order = state.orders.find(entry => entry.id === id);
+      if (order) openOrderNotes(order);
+      return;
+    }
     if (action === 'edit') {
       const order = state.orders.find((entry) => entry.id === id);
       if (order) openOrderDialog(order);
@@ -1014,7 +1023,7 @@ function renderOrders() {
             <td>
               <span class="status-badge ${status === 'Received' ? 'received' : (order.is_overdue ? 'overdue' : 'ordered')}">${order.is_overdue ? 'Overdue' : status}</span>
             </td>
-            <td class="notes-cell">${notes || '—'}</td>
+            <td class="notes-cell">${renderOrderNotesPreview(order)}</td>
             <td>
               ${renderDesktopOrderActions(order)}
             </td>
@@ -1151,6 +1160,19 @@ function renderDesktopOrderActions(order) {
     ${primary}
     ${archived ? '' : `<button type="button" class="action-button" data-order-menu="${id}" popovertarget="desktopOrderMenu" aria-label="More actions for ${escapeAttr(order.customer_name)}">⋯</button>`}
   </div>`;
+}
+
+function renderOrderNotesPreview(order) {
+  const notes = String(order.notes || '').trim().replace(/\s+/g, ' ');
+  if (!notes) return '—';
+  const preview = notes.length > 80 ? `${notes.slice(0, 80)}…` : notes;
+  return `<button type="button" class="order-notes-preview" data-action="view-notes" data-id="${escapeAttr(order.id)}" aria-label="View full notes for ${escapeAttr(order.customer_name)}"><span>${escapeHtml(preview)}</span><small>View notes</small></button>`;
+}
+
+function openOrderNotes(order) {
+  elements.orderNotesCustomer.textContent = `${order.customer_name}${order.supplier ? ` · ${order.supplier}` : ''}`;
+  elements.orderNotesText.textContent = order.notes || 'No notes.';
+  elements.orderNotesDialog.showModal();
 }
 
 function openDesktopOrderMenu(orderId, trigger) {

@@ -375,6 +375,15 @@
     </dialog>
     <div id="desktopOrderMenu" class="desktop-order-menu" popover="auto" aria-label="More order actions"></div>
     <div id="draftActionsMenu" class="desktop-order-menu" popover="auto" aria-label="More job actions"></div>
+    <dialog id="orderNotesDialog" aria-labelledby="orderNotesTitle">
+      <div class="dialog-header">
+        <h2 id="orderNotesTitle">Order notes</h2>
+        <button id="closeOrderNotesButton" type="button" class="close-button" aria-label="Close order notes">×</button>
+      </div>
+      <p id="orderNotesCustomer" class="order-notes-customer"></p>
+      <p id="orderNotesText" class="order-notes-text"></p>
+      <div class="dialog-actions"><button id="dismissOrderNotesButton" type="button" class="secondary-button">Close</button></div>
+    </dialog>
     <script src="/app.js"></script>
   </body>
 </html>

@@ -12,6 +12,8 @@ function client(fetch) {
         listeners: {}, attributes: {}, dataset: {}, style: {}, offsetWidth: 150, offsetHeight: 90,
         showPopover() { this.open = true; },
         hidePopover() { this.open = false; },
+        showModal() { this.open = true; },
+        close() { this.open = false; },
         matches() { return Boolean(this.open); },
         addEventListener(name, callback) { this.listeners[name] = callback; },
         setAttribute(name, value) { this.attributes[name] = value; },
@@ -42,7 +44,7 @@ function client(fetch) {
     renderOrders = () => calls.push(['render', state.orders[0]?.id]);
     renderQueueVisibility = () => {};
     showStatus = message => errors.push(message);
-    globalThis.tracker = { state, bindEvents, loadOrders, renderJobDrafts, openDraftActionsMenu, renderCondensedOrders, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility };
+    globalThis.tracker = { state, bindEvents, loadOrders, renderJobDrafts, openDraftActionsMenu, renderCondensedOrders, renderOrderNotesPreview, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility };
   `, context);
   return { context, node, tracker: context.tracker };
 }
@@ -134,6 +136,27 @@ test('approved queue separates jobs, shows deposit readiness and preserves full 
   tracker.renderJobDrafts();
   assert.match(node('jobDraftList').innerHTML, /No approved jobs waiting to order/);
   assert.equal(menu.open, false);
+});
+
+test('desktop notes preview stays short and clicking opens the complete original text', async () => {
+  const { node, tracker } = client();
+  const notes = 'Synthetic <notes>\n'.repeat(12) + 'Final instruction.';
+  const order = { id: 'notes-order', customer_name: 'Synthetic Customer', supplier: 'Synthetic Supplier', notes };
+  tracker.state.orders = [order];
+  tracker.bindEvents();
+  const html = tracker.renderOrderNotesPreview(order);
+  assert.match(html, /Synthetic &lt;notes&gt;/);
+  assert.match(html, /…/);
+  assert.match(html, /View notes/);
+  assert.doesNotMatch(html, /Final instruction/);
+  await node('ordersTableBody').listeners.click({ target: { closest: () => ({ dataset: { action: 'view-notes', id: order.id } }) } });
+  assert.equal(node('orderNotesDialog').open, true);
+  assert.equal(node('orderNotesText').textContent, notes);
+  assert.equal(node('orderNotesCustomer').textContent, 'Synthetic Customer · Synthetic Supplier');
+  node('dismissOrderNotesButton').listeners.click();
+  assert.equal(node('orderNotesDialog').open, false);
+  assert.equal(tracker.renderOrderNotesPreview({ notes: '  ' }), '—');
+  assert.equal(order.notes, notes);
 });
 
 test('condensed toggle preserves filters, uses the loaded orders and switches layout on desktop and phone', () => {
