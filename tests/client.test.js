@@ -29,7 +29,11 @@ function client(fetch) {
     calls: [], errors: []
   });
   vm.runInContext(readFileSync(new URL('../public/app.js', import.meta.url), 'utf8') + `
-    openOrderDialog = order => calls.push(['edit', order.id]);
+    openOrderDialog = (order, draft) => calls.push([draft ? 'create-order' : 'edit', (order || draft).id]);
+    openDraftDialog = draft => calls.push(['edit-draft', draft.id]);
+    archiveDraft = async id => calls.push(['archive-draft', id]);
+    completeDraft = async id => calls.push(['complete-draft', id]);
+    reopenDraft = async id => calls.push(['reopen-draft', id]);
     markReceived = async id => calls.push(['mark-received', id]);
     archiveOrder = async id => calls.push(['archive-order', id]);
     restoreOrder = async id => calls.push(['restore-order', id]);
@@ -38,7 +42,7 @@ function client(fetch) {
     renderOrders = () => calls.push(['render', state.orders[0]?.id]);
     renderQueueVisibility = () => {};
     showStatus = message => errors.push(message);
-    globalThis.tracker = { state, bindEvents, loadOrders, renderCondensedOrders, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility };
+    globalThis.tracker = { state, bindEvents, loadOrders, renderJobDrafts, openDraftActionsMenu, renderCondensedOrders, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility };
   `, context);
   return { context, node, tracker: context.tracker };
 }
@@ -88,6 +92,48 @@ test('desktop actions keep common buttons inline and move secondary actions into
   html = tracker.renderDesktopOrderActions(order);
   assert.match(html, /data-action="restore-order"/);
   assert.doesNotMatch(html, /data-order-menu|data-action="archive-order"|data-action="mark-received"/);
+});
+
+test('approved queue separates jobs, shows deposit readiness and preserves full notes and draft actions', async () => {
+  const { context, node, tracker } = client();
+  const notes = 'Synthetic <notes> '.repeat(12);
+  tracker.state.jobDrafts = [
+    { id: 'ready', customer_name: 'Ready <Job>', deposit_status: 'Deposit received', status: 'Open', housecall_job_number: 'HC-42', hcp_job_id: 'internal-synthetic-id', supplier_order_count: 2, notes },
+    { id: 'waiting', customer_name: 'Awaiting job', deposit_status: 'Awaiting deposit', status: 'Open' },
+    { id: 'completed', customer_name: 'Completed job', deposit_status: 'Deposit waived / not required', status: 'Completed' }
+  ];
+  tracker.bindEvents();
+  tracker.renderJobDrafts();
+  const html = node('jobDraftList').innerHTML;
+  assert.equal((html.match(/<article /g) || []).length, 3);
+  assert.equal(node('draftQueueSummary').textContent, '3 jobs · 1 ready to order');
+  assert.match(html, /Ready &lt;Job&gt;/);
+  assert.match(html, /HC-42/);
+  assert.doesNotMatch(html, /internal-synthetic-id|Stable HCP ID/);
+  assert.ok(html.includes(notes.trim().replaceAll('<', '&lt;').replaceAll('>', '&gt;')));
+  assert.match(html, /data-action="create-order" data-id="waiting" disabled/);
+  assert.match(html, /data-action="create-order" data-id="completed" disabled/);
+  assert.doesNotMatch(html, /data-action="archive-draft"|data-action="complete-draft"/);
+  const trigger = { dataset: { draftMenu: 'ready' }, getBoundingClientRect: () => ({ right: 500, top: 200, bottom: 240 }) };
+  await node('jobDraftList').listeners.click({ preventDefault() {}, target: { closest: () => trigger } });
+  const menu = node('draftActionsMenu');
+  assert.equal(menu.open, true);
+  assert.match(menu.innerHTML, /data-action="complete-draft"/);
+  assert.match(menu.innerHTML, /data-action="archive-draft"/);
+  for (const action of ['edit-draft', 'create-order', 'complete-draft', 'archive-draft']) {
+    await (action === 'complete-draft' || action === 'archive-draft' ? menu : node('jobDraftList')).listeners.click({ target: { closest: () => ({ dataset: { action, id: 'ready' } }) } });
+    assert.deepEqual(Array.from(context.calls.at(-1)), [action, 'ready']);
+    assert.equal(menu.open, false);
+  }
+  tracker.openDraftActionsMenu('completed', trigger);
+  assert.match(menu.innerHTML, /data-action="reopen-draft"/);
+  assert.doesNotMatch(menu.innerHTML, /data-action="complete-draft"/);
+  await menu.listeners.click({ target: { closest: () => ({ dataset: { action: 'reopen-draft', id: 'completed' } }) } });
+  assert.deepEqual(Array.from(context.calls.at(-1)), ['reopen-draft', 'completed']);
+  tracker.state.jobDrafts = [];
+  tracker.renderJobDrafts();
+  assert.match(node('jobDraftList').innerHTML, /No approved jobs waiting to order/);
+  assert.equal(menu.open, false);
 });
 
 test('condensed toggle preserves filters, uses the loaded orders and switches layout on desktop and phone', () => {

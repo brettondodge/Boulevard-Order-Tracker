@@ -69,6 +69,8 @@ const elements = {
   draftDepositStatus: document.getElementById('draftDepositStatus'),
   draftNotes: document.getElementById('draftNotes'),
   jobDraftList: document.getElementById('jobDraftList'),
+  draftQueueSummary: document.getElementById('draftQueueSummary'),
+  draftActionsMenu: document.getElementById('draftActionsMenu'),
   closeDraftDialogButton: document.getElementById('closeDraftDialogButton'),
   cancelDraftButton: document.getElementById('cancelDraftButton'),
   form: document.getElementById('orderForm'),
@@ -111,6 +113,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   updateLayoutMode();
   window.addEventListener('resize', () => {
     elements.desktopOrderMenu.hidePopover?.();
+    elements.draftActionsMenu.hidePopover?.();
     updateLayoutMode();
   });
 
@@ -282,6 +285,8 @@ function bindEvents() {
     button.addEventListener('click', () => {
       document.querySelectorAll('.tab-button').forEach((node) => node.classList.toggle('active', node === button));
       state.status = button.dataset.view;
+      showStatus('');
+      elements.draftActionsMenu.hidePopover?.();
       renderQueueVisibility();
       if (state.status === 'Approved – Need to Order') {
         loadJobDrafts();
@@ -494,16 +499,25 @@ function bindEvents() {
   elements.mobileOrderCards.addEventListener('click', handleOrderAction);
   elements.condensedOrdersBody.addEventListener('click', handleOrderAction);
   elements.desktopOrderMenu.addEventListener('click', handleOrderAction);
-  document.addEventListener('scroll', () => elements.desktopOrderMenu.hidePopover?.(), true);
+  document.addEventListener('scroll', () => {
+    elements.desktopOrderMenu.hidePopover?.();
+    elements.draftActionsMenu.hidePopover?.();
+  }, true);
 
   elements.draftForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     await saveDraft();
   });
 
-  elements.jobDraftList.addEventListener('click', async (event) => {
-    const button = event.target.closest('button[data-action]');
+  const handleDraftAction = async (event) => {
+    const button = event.target.closest('button[data-action], button[data-draft-menu]');
     if (!button) return;
+    if (button.dataset.draftMenu) {
+      event.preventDefault();
+      openDraftActionsMenu(button.dataset.draftMenu, button);
+      return;
+    }
+    elements.draftActionsMenu.hidePopover?.();
 
     const { action, id } = button.dataset;
     const draft = state.jobDrafts.find((entry) => entry.id === id);
@@ -532,7 +546,9 @@ function bindEvents() {
       await reopenDraft(id);
       return;
     }
-  });
+  };
+  elements.jobDraftList.addEventListener('click', handleDraftAction);
+  elements.draftActionsMenu.addEventListener('click', handleDraftAction);
 }
 
 async function refreshAdminState() {
@@ -898,6 +914,9 @@ async function loadOrders() {
 }
 
 function renderJobDrafts() {
+  elements.draftActionsMenu.hidePopover?.();
+  const readyCount = state.jobDrafts.filter(draft => draft.deposit_status !== 'Awaiting deposit' && draft.status !== 'Completed').length;
+  elements.draftQueueSummary.textContent = `${state.jobDrafts.length} ${state.jobDrafts.length === 1 ? 'job' : 'jobs'} · ${readyCount} ready to order`;
   if (!state.jobDrafts.length) {
     elements.jobDraftList.innerHTML = '<div class="empty-state small-empty-state"><h3>No approved jobs waiting to order</h3><p>When a job is approved, add it here and mark the deposit status as soon as it is confirmed.</p></div>';
     return;
@@ -908,16 +927,13 @@ function renderJobDrafts() {
       const readyToOrder = draft.deposit_status !== 'Awaiting deposit' && draft.status !== 'Completed';
       const depositClass = draft.deposit_status === 'Awaiting deposit' ? 'awaiting' : 'ready';
       const statusLabel = draft.status === 'Completed' ? 'Completed' : 'Open';
-      const linkedOrders = state.orders.filter((order) => order.job_draft_id === draft.id);
-      const archiveSummary = linkedOrders.length
-        ? linkedOrders.map((order) => `${order.supplier || 'Supplier'}${order.po_number ? ` (${order.po_number})` : ''}`).join(', ')
-        : 'No linked supplier orders yet.';
+      const notes = String(draft.notes || '').trim();
+      const id = escapeAttr(draft.id);
 
       return `
         <article class="draft-card ${draft.status === 'Completed' ? 'completed' : ''}">
           <div class="draft-card-header">
             <div>
-              <p class="order-card-label">Customer</p>
               <h3>${escapeHtml(draft.customer_name)}</h3>
             </div>
             <span class="deposit-status ${depositClass}">${escapeHtml(draft.deposit_status || 'Awaiting deposit')}</span>
@@ -925,24 +941,18 @@ function renderJobDrafts() {
 
           <div class="draft-meta-grid">
             <div><span>HCP #</span><strong>${escapeHtml(draft.housecall_job_number || '—')}</strong></div>
-            <div><span>Stable HCP ID</span><strong>${escapeHtml(draft.hcp_job_id || '—')}</strong></div>
             <div><span>Queue status</span><strong>${statusLabel}</strong></div>
             <div><span>Supplier orders</span><strong>${Number(draft.supplier_order_count || 0)}</strong></div>
           </div>
 
-          <div class="draft-notes">
-            <span>Notes</span>
-            <p>${escapeHtml(draft.notes || 'No notes yet.')}</p>
-          </div>
+          ${notes ? `<details class="draft-notes"><summary>Notes <span>${escapeHtml(notes.length > 90 ? `${notes.slice(0, 90)}…` : notes)}</span></summary><p>${escapeHtml(notes)}</p></details>` : ''}
 
-          <div class="action-stack mobile-actions">
-            <button type="button" class="action-button" data-action="edit-draft" data-id="${draft.id}">Edit</button>
-            <button type="button" class="action-button ${readyToOrder ? 'primary' : ''}" data-action="create-order" data-id="${draft.id}" ${readyToOrder ? '' : 'disabled'}>Create supplier order</button>
-            <button type="button" class="action-button danger" data-action="archive-draft" data-id="${draft.id}" title="Archive this job and its linked supplier orders: ${escapeAttr(archiveSummary)}">Archive job</button>
-            ${draft.status === 'Completed'
-              ? `<button type="button" class="action-button" data-action="reopen-draft" data-id="${draft.id}">Reopen</button>`
-              : `<button type="button" class="action-button danger" data-action="complete-draft" data-id="${draft.id}">All materials ordered</button>`}
+          <div class="draft-actions">
+            <button type="button" class="action-button" data-action="edit-draft" data-id="${id}">Edit</button>
+            <button type="button" class="action-button ${readyToOrder ? 'primary' : ''}" data-action="create-order" data-id="${id}" ${readyToOrder ? '' : 'disabled'}>Create supplier order</button>
+            <button type="button" class="action-button" data-draft-menu="${id}" popovertarget="draftActionsMenu" aria-label="More actions for ${escapeAttr(draft.customer_name)}">⋯</button>
           </div>
+          ${draft.deposit_status === 'Awaiting deposit' && draft.status !== 'Completed' ? '<p class="draft-order-hint">Receive or waive the deposit before creating supplier orders.</p>' : ''}
         </article>
       `;
     })
@@ -1157,8 +1167,28 @@ function openDesktopOrderMenu(orderId, trigger) {
     <button type="button" class="action-button danger" data-action="archive-order" data-id="${id}" ${(order.status || 'Ordered') === 'Received' ? '' : 'autofocus'}>Archive</button>`;
   elements.desktopOrderMenu.setAttribute('aria-label', `More actions for ${order.customer_name}`);
   elements.desktopOrderMenu.showPopover();
+  positionActionMenu(elements.desktopOrderMenu, trigger);
+}
+
+function openDraftActionsMenu(draftId, trigger) {
+  const draft = state.jobDrafts.find(item => item.id === draftId);
+  if (!draft) return;
+  const menu = elements.draftActionsMenu;
+  if (menu.matches(':popover-open') && menu.dataset.draftId === draftId) {
+    menu.hidePopover();
+    return;
+  }
+  menu.dataset.draftId = draftId;
+  const id = escapeAttr(draftId);
+  menu.innerHTML = `<button type="button" class="action-button" data-action="${draft.status === 'Completed' ? 'reopen-draft' : 'complete-draft'}" data-id="${id}" autofocus>${draft.status === 'Completed' ? 'Reopen job' : 'All materials ordered'}</button>
+    <button type="button" class="action-button danger" data-action="archive-draft" data-id="${id}">Archive job</button>`;
+  menu.setAttribute('aria-label', `More actions for ${draft.customer_name}`);
+  menu.showPopover();
+  positionActionMenu(menu, trigger);
+}
+
+function positionActionMenu(menu, trigger) {
   const rect = trigger.getBoundingClientRect();
-  const menu = elements.desktopOrderMenu;
   menu.style.left = `${Math.max(8, Math.min(rect.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8))}px`;
   const top = rect.bottom + 6;
   menu.style.top = `${Math.max(8, top + menu.offsetHeight > window.innerHeight - 8 ? rect.top - menu.offsetHeight - 6 : top)}px`;
