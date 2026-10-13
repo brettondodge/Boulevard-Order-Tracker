@@ -390,6 +390,34 @@ input:focus, select:focus, textarea:focus {
   padding: 0.55rem 0.6rem;
 }
 
+.desktop-order-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.desktop-order-actions .action-button {
+  white-space: nowrap;
+}
+
+.desktop-order-menu {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  width: 150px;
+  padding: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.desktop-order-menu:popover-open {
+  display: grid;
+  gap: 0.35rem;
+}
+
 .mobile-order-list {
   display: grid;
   gap: 0.55rem;

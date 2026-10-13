@@ -9,7 +9,10 @@ function client(fetch) {
     if (!nodes.has(id)) {
       const classes = new Set();
       nodes.set(id, {
-        listeners: {}, attributes: {},
+        listeners: {}, attributes: {}, dataset: {}, style: {}, offsetWidth: 150, offsetHeight: 90,
+        showPopover() { this.open = true; },
+        hidePopover() { this.open = false; },
+        matches() { return Boolean(this.open); },
         addEventListener(name, callback) { this.listeners[name] = callback; },
         setAttribute(name, value) { this.attributes[name] = value; },
         classList: {
@@ -22,7 +25,7 @@ function client(fetch) {
   };
   const context = vm.createContext({
     document: { getElementById: node, querySelector: node, querySelectorAll: () => [], addEventListener() {} },
-    window: { matchMedia: () => ({ matches: false }), localStorage: { setItem() {} } }, fetch, AbortController, URLSearchParams,
+    window: { innerWidth: 1200, innerHeight: 800, matchMedia: () => ({ matches: false }), localStorage: { setItem() {} } }, fetch, AbortController, URLSearchParams,
     calls: [], errors: []
   });
   vm.runInContext(readFileSync(new URL('../public/app.js', import.meta.url), 'utf8') + `
@@ -35,7 +38,7 @@ function client(fetch) {
     renderOrders = () => calls.push(['render', state.orders[0]?.id]);
     renderQueueVisibility = () => {};
     showStatus = message => errors.push(message);
-    globalThis.tracker = { state, bindEvents, loadOrders, renderCondensedOrders, updateLayoutMode, originalQueueVisibility };
+    globalThis.tracker = { state, bindEvents, loadOrders, renderCondensedOrders, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility };
   `, context);
   return { context, node, tracker: context.tracker };
 }
@@ -44,14 +47,47 @@ test('phone cards and desktop table dispatch every order action', async () => {
   const { context, node, tracker } = client();
   tracker.state.orders = [{ id: 'synthetic-order' }];
   tracker.bindEvents();
-  for (const container of ['mobileOrderCards', 'ordersTableBody', 'condensedOrdersBody']) {
+  for (const container of ['mobileOrderCards', 'ordersTableBody', 'condensedOrdersBody', 'desktopOrderMenu']) {
     for (const action of ['edit', 'mark-received', 'archive-order', 'restore-order', 'reopen']) {
       await node(container).listeners.click({ target: { closest: () => ({ dataset: { action, id: 'synthetic-order' } }) } });
       assert.deepEqual(Array.from(context.calls.at(-1)), [action, 'synthetic-order']);
     }
     await node(container).listeners.click({ target: { closest: () => null } });
   }
-  assert.equal(context.calls.length, 15);
+  assert.equal(context.calls.length, 20);
+});
+
+test('desktop actions keep common buttons inline and move secondary actions into the menu', async () => {
+  const { node, tracker, context } = client();
+  tracker.bindEvents();
+  const order = { id: 'synthetic', customer_name: 'Synthetic job', status: 'Received' };
+  tracker.state.orders = [order];
+  let html = tracker.renderDesktopOrderActions(order);
+  assert.match(html, /data-action="edit"/);
+  assert.match(html, /data-order-menu="synthetic"/);
+  assert.doesNotMatch(html, /data-action="reopen"|data-action="archive-order"/);
+  const trigger = { dataset: { orderMenu: 'synthetic' }, getBoundingClientRect: () => ({ right: 1200, top: 760, bottom: 795 }) };
+  await node('ordersTableBody').listeners.click({ preventDefault() {}, target: { closest: () => trigger } });
+  const menu = node('desktopOrderMenu');
+  assert.equal(menu.open, true);
+  assert.match(menu.innerHTML, /data-action="reopen"/);
+  assert.match(menu.innerHTML, /data-action="archive-order"/);
+  assert.equal(menu.style.left, '1042px');
+  assert.equal(menu.style.top, '664px');
+  await menu.listeners.click({ target: { closest: () => ({ dataset: { action: 'reopen', id: 'synthetic' } }) } });
+  assert.deepEqual(Array.from(context.calls.at(-1)), ['reopen', 'synthetic']);
+  assert.equal(menu.open, false);
+  order.status = 'Ordered';
+  html = tracker.renderDesktopOrderActions(order);
+  assert.match(html, /data-action="mark-received"/);
+  tracker.openDesktopOrderMenu(order.id, trigger);
+  assert.doesNotMatch(menu.innerHTML, /data-action="reopen"/);
+  tracker.openDesktopOrderMenu(order.id, trigger);
+  assert.equal(menu.open, false);
+  order.is_archived = 1;
+  html = tracker.renderDesktopOrderActions(order);
+  assert.match(html, /data-action="restore-order"/);
+  assert.doesNotMatch(html, /data-order-menu|data-action="archive-order"|data-action="mark-received"/);
 });
 
 test('condensed toggle preserves filters, uses the loaded orders and switches layout on desktop and phone', () => {

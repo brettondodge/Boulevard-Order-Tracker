@@ -45,6 +45,7 @@ const elements = {
   tableWrap: document.querySelector('.table-wrap'),
   draftQueueSection: document.getElementById('draftQueueSection'),
   tableBody: document.getElementById('ordersTableBody'),
+  desktopOrderMenu: document.getElementById('desktopOrderMenu'),
   mobileOrderCards: document.getElementById('mobileOrderCards'),
   condensedViewToggle: document.getElementById('condensedViewToggle'),
   condensedViewHint: document.getElementById('condensedViewHint'),
@@ -108,7 +109,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   elements.sortSelect.value = state.sort;
   renderQueueVisibility();
   updateLayoutMode();
-  window.addEventListener('resize', updateLayoutMode);
+  window.addEventListener('resize', () => {
+    elements.desktopOrderMenu.hidePopover?.();
+    updateLayoutMode();
+  });
 
   try {
     await refreshAdminState();
@@ -450,8 +454,14 @@ function bindEvents() {
   });
 
   const handleOrderAction = async (event) => {
-    const button = event.target.closest('button[data-action]');
+    const button = event.target.closest('button[data-action], button[data-order-menu]');
     if (!button) return;
+    if (button.dataset.orderMenu) {
+      event.preventDefault();
+      openDesktopOrderMenu(button.dataset.orderMenu, button);
+      return;
+    }
+    elements.desktopOrderMenu.hidePopover?.();
 
     const { action, id } = button.dataset;
     if (action === 'edit') {
@@ -483,6 +493,8 @@ function bindEvents() {
   elements.tableBody.addEventListener('click', handleOrderAction);
   elements.mobileOrderCards.addEventListener('click', handleOrderAction);
   elements.condensedOrdersBody.addEventListener('click', handleOrderAction);
+  elements.desktopOrderMenu.addEventListener('click', handleOrderAction);
+  document.addEventListener('scroll', () => elements.desktopOrderMenu.hidePopover?.(), true);
 
   elements.draftForm.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -839,6 +851,7 @@ async function loadJobDrafts() {
 }
 
 async function loadOrders() {
+  elements.desktopOrderMenu.hidePopover?.();
   const requestId = ++state.orderRequestCounter;
   state.orderRequestController?.abort();
   state.orderRequestController = null;
@@ -993,10 +1006,7 @@ function renderOrders() {
             </td>
             <td class="notes-cell">${notes || '—'}</td>
             <td>
-              <div class="action-stack">
-                <button type="button" class="action-button" data-action="edit" data-id="${order.id}">Edit</button>
-                ${actionButtons}
-              </div>
+              ${renderDesktopOrderActions(order)}
             </td>
           </tr>
         `,
@@ -1117,6 +1127,41 @@ function renderCondensedOrders() {
       <td><button type="button" class="action-button" data-action="edit" data-id="${escapeAttr(order.id)}" aria-label="Edit order for ${escapeAttr(order.customer_name)}">Edit</button></td>
     </tr>`;
   }).join('');
+}
+
+function renderDesktopOrderActions(order) {
+  const id = escapeAttr(order.id);
+  const archived = Number(order.is_archived || 0) === 1;
+  const primary = archived
+    ? `<button type="button" class="action-button primary" data-action="restore-order" data-id="${id}">Restore</button>`
+    : (order.status || 'Ordered') === 'Received' ? ''
+    : `<button type="button" class="action-button primary" data-action="mark-received" data-id="${id}">Mark received</button>`;
+  return `<div class="desktop-order-actions">
+    <button type="button" class="action-button" data-action="edit" data-id="${id}">Edit</button>
+    ${primary}
+    ${archived ? '' : `<button type="button" class="action-button" data-order-menu="${id}" popovertarget="desktopOrderMenu" aria-label="More actions for ${escapeAttr(order.customer_name)}">⋯</button>`}
+  </div>`;
+}
+
+function openDesktopOrderMenu(orderId, trigger) {
+  const order = state.orders.find(item => item.id === orderId);
+  if (!order || Number(order.is_archived || 0) === 1) return;
+  if (elements.desktopOrderMenu.matches(':popover-open') && elements.desktopOrderMenu.dataset.orderId === orderId) {
+    elements.desktopOrderMenu.hidePopover();
+    return;
+  }
+  elements.desktopOrderMenu.dataset.orderId = orderId;
+  const id = escapeAttr(order.id);
+  elements.desktopOrderMenu.innerHTML = `${(order.status || 'Ordered') === 'Received'
+    ? `<button type="button" class="action-button danger" data-action="reopen" data-id="${id}" autofocus>Reopen</button>` : ''}
+    <button type="button" class="action-button danger" data-action="archive-order" data-id="${id}" ${(order.status || 'Ordered') === 'Received' ? '' : 'autofocus'}>Archive</button>`;
+  elements.desktopOrderMenu.setAttribute('aria-label', `More actions for ${order.customer_name}`);
+  elements.desktopOrderMenu.showPopover();
+  const rect = trigger.getBoundingClientRect();
+  const menu = elements.desktopOrderMenu;
+  menu.style.left = `${Math.max(8, Math.min(rect.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8))}px`;
+  const top = rect.bottom + 6;
+  menu.style.top = `${Math.max(8, top + menu.offsetHeight > window.innerHeight - 8 ? rect.top - menu.offsetHeight - 6 : top)}px`;
 }
 
 async function archiveDraft(draftId) {
