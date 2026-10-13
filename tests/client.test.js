@@ -6,12 +6,23 @@ import vm from 'node:vm';
 function client(fetch) {
   const nodes = new Map();
   const node = id => {
-    if (!nodes.has(id)) nodes.set(id, { listeners: {}, addEventListener(name, callback) { this.listeners[name] = callback; } });
+    if (!nodes.has(id)) {
+      const classes = new Set();
+      nodes.set(id, {
+        listeners: {}, attributes: {},
+        addEventListener(name, callback) { this.listeners[name] = callback; },
+        setAttribute(name, value) { this.attributes[name] = value; },
+        classList: {
+          toggle(name, enabled) { if (enabled) classes.add(name); else classes.delete(name); },
+          contains: name => classes.has(name)
+        }
+      });
+    }
     return nodes.get(id);
   };
   const context = vm.createContext({
     document: { getElementById: node, querySelector: node, querySelectorAll: () => [], addEventListener() {} },
-    window: {}, fetch, AbortController, URLSearchParams,
+    window: { matchMedia: () => ({ matches: false }), localStorage: { setItem() {} } }, fetch, AbortController, URLSearchParams,
     calls: [], errors: []
   });
   vm.runInContext(readFileSync(new URL('../public/app.js', import.meta.url), 'utf8') + `
@@ -20,10 +31,11 @@ function client(fetch) {
     archiveOrder = async id => calls.push(['archive-order', id]);
     restoreOrder = async id => calls.push(['restore-order', id]);
     reopenOrder = async id => calls.push(['reopen', id]);
+    const originalQueueVisibility = renderQueueVisibility;
     renderOrders = () => calls.push(['render', state.orders[0]?.id]);
     renderQueueVisibility = () => {};
     showStatus = message => errors.push(message);
-    globalThis.tracker = { state, bindEvents, loadOrders };
+    globalThis.tracker = { state, bindEvents, loadOrders, renderCondensedOrders, updateLayoutMode, originalQueueVisibility };
   `, context);
   return { context, node, tracker: context.tracker };
 }
@@ -32,14 +44,56 @@ test('phone cards and desktop table dispatch every order action', async () => {
   const { context, node, tracker } = client();
   tracker.state.orders = [{ id: 'synthetic-order' }];
   tracker.bindEvents();
-  for (const container of ['mobileOrderCards', 'ordersTableBody']) {
+  for (const container of ['mobileOrderCards', 'ordersTableBody', 'condensedOrdersBody']) {
     for (const action of ['edit', 'mark-received', 'archive-order', 'restore-order', 'reopen']) {
       await node(container).listeners.click({ target: { closest: () => ({ dataset: { action, id: 'synthetic-order' } }) } });
       assert.deepEqual(Array.from(context.calls.at(-1)), [action, 'synthetic-order']);
     }
     await node(container).listeners.click({ target: { closest: () => null } });
   }
-  assert.equal(context.calls.length, 10);
+  assert.equal(context.calls.length, 15);
+});
+
+test('condensed toggle preserves filters, uses the loaded orders and switches layout on desktop and phone', () => {
+  const { context, node, tracker } = client(() => { throw new Error('Toggling layout must not request new data'); });
+  tracker.state.orders = [{ id: 'filtered-order', customer_name: 'Synthetic <Customer>', supplier: 'Keep Supplier', status: 'Received', notes: 'Check clearance', date_received: '2026-10-12' }];
+  tracker.state.supplier = ['keep-id'];
+  tracker.state.orderedBy = ['staff-id'];
+  tracker.state.status = 'Received';
+  tracker.bindEvents();
+  node('condensedViewToggle').listeners.click();
+  assert.equal(tracker.state.condensedView, true);
+  assert.deepEqual(Array.from(tracker.state.supplier), ['keep-id']);
+  assert.deepEqual(Array.from(tracker.state.orderedBy), ['staff-id']);
+  assert.equal(tracker.state.status, 'Received');
+  assert.match(node('condensedOrderCount').textContent, /1 matching supplier order$/);
+  assert.match(node('condensedOrdersBody').innerHTML, /Synthetic &lt;Customer&gt;/);
+  assert.match(node('condensedOrdersBody').innerHTML, /Check clearance/);
+  assert.match(node('condensedOrdersBody').innerHTML, /data-id="filtered-order"/);
+  for (const mobile of [false, true]) {
+    context.window.matchMedia = () => ({ matches: mobile });
+    tracker.originalQueueVisibility();
+    assert.equal(node('condensedOrders').classList.contains('hidden'), false);
+    assert.equal(node('.table-wrap').classList.contains('hidden'), true);
+    assert.equal(node('mobileOrderCards').classList.contains('hidden'), true);
+    assert.equal(node('condensedViewToggle').attributes['aria-pressed'], 'true');
+  }
+  node('condensedViewToggle').listeners.click();
+  tracker.originalQueueVisibility();
+  assert.equal(node('condensedOrders').classList.contains('hidden'), true);
+  assert.equal(node('mobileOrderCards').classList.contains('hidden'), false);
+  tracker.state.condensedView = true;
+  tracker.state.status = 'Approved – Need to Order';
+  tracker.originalQueueVisibility();
+  assert.equal(node('condensedOrders').classList.contains('hidden'), true);
+  assert.equal(node('condensedViewToggle').disabled, true);
+  tracker.state.status = 'Archived';
+  tracker.state.orders = [];
+  tracker.renderCondensedOrders();
+  tracker.originalQueueVisibility();
+  assert.equal(node('condensedOrders').classList.contains('hidden'), true);
+  assert.equal(node('emptyState').classList.contains('hidden'), false);
+  assert.equal(node('condensedOrdersBody').innerHTML, '');
 });
 
 test('new filters cancel old requests and stale responses cannot replace current orders', async () => {

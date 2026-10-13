@@ -104,6 +104,11 @@
         <button type="button" class="tab-button" data-view="Archived">Archived</button>
       </nav>
 
+      <div class="order-display-controls">
+        <button id="condensedViewToggle" type="button" class="secondary-button" aria-pressed="false" aria-controls="condensedOrders">Condensed lines</button>
+        <span id="condensedViewHint" class="hidden">One line per supplier order. Scroll sideways on small screens; Edit opens the full order.</span>
+      </div>
+
       <div class="sync-status-bar">
         <span id="liveStatus" class="connection-indicator live">Live</span>
         <span id="saveStatus" class="save-status saved">Saved</span>
@@ -140,6 +145,16 @@
       </div>
 
       <div id="mobileOrderCards" class="mobile-order-list hidden" aria-live="polite"></div>
+
+      <section id="condensedOrders" class="condensed-orders hidden" aria-label="Condensed orders">
+        <p id="condensedOrderCount" aria-live="polite"></p>
+        <div class="condensed-table-wrap" tabindex="0" role="region" aria-label="Order lines, scroll horizontally for more columns">
+          <table>
+            <thead><tr><th scope="col">Customer</th><th scope="col">Job #</th><th scope="col">Category</th><th scope="col">Supplier</th><th scope="col">ETA</th><th scope="col">Received</th><th scope="col">Status</th><th scope="col">Notes</th><th scope="col">Details</th></tr></thead>
+            <tbody id="condensedOrdersBody"></tbody>
+          </table>
+        </div>
+      </section>
 
       <div id="emptyState" class="empty-state hidden">
         <h2>No matching orders</h2>

@@ -232,6 +232,60 @@ input:focus, select:focus, textarea:focus {
   margin-bottom: 1rem;
 }
 
+.order-display-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.order-display-controls span,
+#condensedOrderCount {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+#condensedViewToggle[aria-pressed="true"] {
+  background: var(--primary);
+  color: white;
+}
+
+.condensed-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.condensed-orders table {
+  min-width: 1000px;
+  width: 100%;
+}
+
+.condensed-orders th,
+.condensed-orders td {
+  padding: 0.4rem 0.55rem;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+
+.condensed-orders .condensed-customer,
+.condensed-orders .condensed-supplier,
+.condensed-orders .condensed-notes {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.condensed-orders .action-button {
+  padding: 0.3rem 0.6rem;
+}
+
+.condensed-orders .status-badge {
+  padding: 0.2rem 0.45rem;
+}
+
 .tab-button {
   background: var(--panel);
   border: 1px solid var(--border);

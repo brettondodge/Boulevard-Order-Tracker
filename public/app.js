@@ -15,6 +15,7 @@ const state = {
   supplierFilterOptions: [],
   masterListsDirty: false,
   supplierCleanupPreview: null,
+  condensedView: false,
   adminLoggedIn: false,
   connectionState: 'live',
   requestCounter: 0,
@@ -45,6 +46,11 @@ const elements = {
   draftQueueSection: document.getElementById('draftQueueSection'),
   tableBody: document.getElementById('ordersTableBody'),
   mobileOrderCards: document.getElementById('mobileOrderCards'),
+  condensedViewToggle: document.getElementById('condensedViewToggle'),
+  condensedViewHint: document.getElementById('condensedViewHint'),
+  condensedOrders: document.getElementById('condensedOrders'),
+  condensedOrdersBody: document.getElementById('condensedOrdersBody'),
+  condensedOrderCount: document.getElementById('condensedOrderCount'),
   emptyState: document.getElementById('emptyState'),
   statusMessage: document.getElementById('statusMessage'),
   liveStatus: document.getElementById('liveStatus'),
@@ -96,6 +102,7 @@ const elements = {
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
+  try { state.condensedView = window.localStorage.getItem('boulevard-condensed-view') === 'true'; } catch {}
   bindEvents();
   setupLiveUpdates();
   elements.sortSelect.value = state.sort;
@@ -147,12 +154,17 @@ function updateLayoutMode() {
 
   if (elements.tableWrap) {
     elements.tableWrap.classList.toggle('desktop-table', !mobile);
-    elements.tableWrap.classList.toggle('mobile-hidden', mobile || draftView);
-    elements.tableWrap.classList.toggle('hidden', draftView);
+    elements.tableWrap.classList.toggle('mobile-hidden', mobile || draftView || state.condensedView);
+    elements.tableWrap.classList.toggle('hidden', draftView || state.condensedView);
   }
   if (elements.mobileOrderCards) {
-    elements.mobileOrderCards.classList.toggle('hidden', !mobile || draftView);
+    elements.mobileOrderCards.classList.toggle('hidden', !mobile || draftView || state.condensedView);
   }
+
+  elements.condensedOrders.classList.toggle('hidden', draftView || !state.condensedView || !state.orders.length);
+  elements.condensedViewToggle.setAttribute('aria-pressed', String(state.condensedView));
+  elements.condensedViewToggle.disabled = draftView;
+  elements.condensedViewHint.classList.toggle('hidden', draftView || !state.condensedView);
 
   if (elements.draftQueueSection) {
     elements.draftQueueSection.classList.toggle('hidden', !draftView);
@@ -223,17 +235,24 @@ function renderQueueVisibility() {
     elements.draftQueueSection.classList.toggle('hidden', !draftView);
   }
   if (elements.tableWrap) {
-    elements.tableWrap.classList.toggle('hidden', draftView);
+    elements.tableWrap.classList.toggle('hidden', draftView || state.condensedView);
   }
   if (elements.mobileOrderCards) {
-    elements.mobileOrderCards.classList.toggle('hidden', draftView || !window.matchMedia('(max-width: 820px)').matches);
+    elements.mobileOrderCards.classList.toggle('hidden', draftView || state.condensedView || !window.matchMedia('(max-width: 820px)').matches);
   }
+  updateLayoutMode();
   if (elements.emptyState) {
     elements.emptyState.classList.toggle('hidden', draftView || !!state.orders.length);
   }
 }
 
 function bindEvents() {
+  elements.condensedViewToggle.addEventListener('click', () => {
+    state.condensedView = !state.condensedView;
+    try { window.localStorage.setItem('boulevard-condensed-view', String(state.condensedView)); } catch {}
+    renderCondensedOrders();
+    renderQueueVisibility();
+  });
   elements.masterListsDialog.addEventListener('close', () => {
     state.masterListsDirty = false;
     loadMasterLists().catch(() => {});
@@ -463,6 +482,7 @@ function bindEvents() {
   };
   elements.tableBody.addEventListener('click', handleOrderAction);
   elements.mobileOrderCards.addEventListener('click', handleOrderAction);
+  elements.condensedOrdersBody.addEventListener('click', handleOrderAction);
 
   elements.draftForm.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -918,6 +938,7 @@ function renderJobDrafts() {
 
 function renderOrders() {
   const mobile = window.matchMedia('(max-width: 820px)').matches;
+  renderCondensedOrders();
 
   if (!state.orders.length) {
     elements.tableBody.innerHTML = '';
@@ -1074,9 +1095,28 @@ function renderOrders() {
 
   renderQueueVisibility();
   updateLayoutMode();
-  if (mobile && state.status !== 'Approved – Need to Order') {
+  if (mobile && !state.condensedView && state.status !== 'Approved – Need to Order') {
     elements.mobileOrderCards.classList.remove('hidden');
   }
+}
+
+function renderCondensedOrders() {
+  elements.condensedOrderCount.textContent = `${state.orders.length} matching supplier ${state.orders.length === 1 ? 'order' : 'orders'}`;
+  elements.condensedOrdersBody.innerHTML = state.orders.map(order => {
+    const status = order.is_overdue ? 'Overdue' : order.status || 'Ordered';
+    const notes = order.notes || '—';
+    return `<tr class="${order.is_overdue ? 'overdue' : ''}">
+      <td class="condensed-customer" title="${escapeAttr(order.customer_name)}"><strong>${escapeHtml(order.customer_name)}</strong></td>
+      <td>${escapeHtml(order.housecall_job_number || '—')}</td>
+      <td>${escapeHtml(order.category || 'Unassigned')}</td>
+      <td class="condensed-supplier" title="${escapeAttr(order.supplier || '')}">${escapeHtml(order.supplier || '—')}</td>
+      <td>${order.expected_delivery_date ? formatDate(order.expected_delivery_date) : 'No ETA'}</td>
+      <td>${order.date_received ? formatDate(order.date_received) : '—'}</td>
+      <td><span class="status-badge ${order.is_overdue ? 'overdue' : status === 'Received' ? 'received' : 'ordered'}">${escapeHtml(status)}</span></td>
+      <td class="condensed-notes" title="${escapeAttr(notes)}">${escapeHtml(notes)}</td>
+      <td><button type="button" class="action-button" data-action="edit" data-id="${escapeAttr(order.id)}" aria-label="Edit order for ${escapeAttr(order.customer_name)}">Edit</button></td>
+    </tr>`;
+  }).join('');
 }
 
 async function archiveDraft(draftId) {
