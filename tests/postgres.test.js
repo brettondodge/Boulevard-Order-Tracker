@@ -10,6 +10,7 @@ import EmbeddedPostgres from 'embedded-postgres';
 import pg from 'pg';
 import Database from 'better-sqlite3';
 import { generateKeyPair, exportJWK, SignJWT } from 'jose';
+import { recordFingerprint } from '../src/record-fingerprint.js';
 
 // Uses a fresh temporary cluster and synthetic records only. No provider credentials.
 test('real Postgres production access, orders, admin gate and restart persistence', { timeout: 90000 }, async () => {
@@ -63,6 +64,36 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     assert.equal(identity.body.user.username, 'staff@example.test');
     assert.equal((await request('/api/master-lists/suppliers', { name: 'Blocked Supplier' })).status, 401);
     assert.equal((await request('/api/admin/login', { username: 'office-admin', password: 'synthetic-admin-password' })).status, 200);
+
+    // The new module shares verified Access identity and the existing admin gate.
+    assert.equal((await request('/api/freeport/files/missing', null, '')).status, 403);
+    const freeportSettings = await request('/api/freeport/settings');
+    assert.equal(freeportSettings.status, 200);
+    assert.equal((await request('/api/freeport/settings', { ...freeportSettings.body, remittance: 'Synthetic Postgres remittance' }, token, 'tools.blvdglass.com', 'PUT')).status, 200);
+    const freeportJob = await request('/api/freeport/jobs', {
+      sourceSystem: 'Synthetic', sourceCompany: 'Synthetic Company', invoiceNumber: 'PG-001', documentType: 'Invoice',
+      invoiceDate: '2026-09-01', month: '2026-09', orderNumber: '000123', accountCode: '100', usingArea: 'Synthetic',
+      subtotal: '10.00', tax: '0.91', total: '10.91', manualSourceReason: 'Synthetic test only',
+      lines: [{ name: 'Synthetic material', description: 'Test', quantity: '1', unit: 'ea', rate: '10', amount: '10', classification: 'Parts', exportDescription: 'Test', mappingReviewed: true }]
+    });
+    assert.equal(freeportJob.status, 201, JSON.stringify(freeportJob));
+    const reviewedJob = await request(`/api/freeport/jobs/${freeportJob.body.id}`, { ...freeportJob.body, reviewed: true }, token, 'tools.blvdglass.com', 'PUT');
+    assert.equal(reviewedJob.status, 200);
+    const freeportPackages = [];
+    for (let i = 0; i < 2; i++) {
+      const created = await request('/api/freeport/packages', { month: '2026-09' });
+      const ready = await request(`/api/freeport/packages/${created.body.id}`, { ...created.body, status: 'Ready for Review', jobIds: [freeportJob.body.id], taxMethod: 'source' }, token, 'tools.blvdglass.com', 'PUT');
+      assert.equal(ready.status, 200, JSON.stringify(ready)); freeportPackages.push(ready.body);
+    }
+    const competing = await Promise.all(freeportPackages.map(p => request(`/api/freeport/packages/${p.id}/finalize`, { version: p.version })));
+    assert.deepEqual(competing.map(r => r.status).sort(), [200, 409]);
+    assert.equal(Number((await pool.query('SELECT COUNT(*) AS count FROM freeport_invoice_claims')).rows[0].count), 1);
+    const fingerprints = await recordFingerprint(pool);
+    assert.equal(fingerprints.freeport_invoice_claims.count, 1);
+    assert.ok(fingerprints.freeport_records.count >= 4);
+    const legacyFingerprint = await recordFingerprint(pool, { includeFreeport: false });
+    assert.equal(Object.hasOwn(legacyFingerprint, 'freeport_records'), false);
+    const audit = await request('/api/freeport/audit'); assert.ok(audit.body.some(a => a.actor === 'staff@example.test' && a.action === 'package finalized'));
     await request('/api/master-lists/suppliers', { items: [{ name: 'Test Supplier', active: true }] });
     const order = await request('/api/orders', { customer_name: 'Synthetic Test Job', supplier: 'Test Supplier', ordered_by: 'Test Staff', category: 'Windows', date_ordered: '2026-10-10' });
     assert.equal(order.status, 201);
@@ -97,6 +128,8 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     await stop(); await start();
     assert.equal((await request('/api/orders')).body.orders.length, 1);
     assert.equal((await request('/api/admin/me')).status, 200);
+    assert.equal((await request('/api/freeport/jobs')).body.length, 1);
+    assert.equal((await request('/api/freeport/packages')).body.filter(p => p.status === 'Finalized').length, 1);
     const sessionsAfter = (await pool.query('SELECT sid FROM sessions')).rows.map(row => row.sid);
     assert.deepEqual(sessionsAfter, sessionsBefore);
     // Rename/deactivate a linked supplier and staff member: filters use stable IDs.

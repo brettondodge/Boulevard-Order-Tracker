@@ -103,3 +103,10 @@ npm test
 ## Production reminder
 
 This preview is ready for local office use. To make it available to the whole office online, deploy it to a hosted environment and configure a real login model, domain, and persistent storage.
+
+## Boulevard Glass Tools and Freeport Billing
+
+The shared workspace is at `/`, the existing tracker remains at `/app`, and the
+new billing module is at `/freeport`. See [Freeport setup, workflow, verification,
+reference limitations and deployment/rollback instructions](docs/freeport.md).
+Use an isolated development database for previews. No production update is implied.

@@ -21,7 +21,8 @@ loginForm.addEventListener('submit', async (event) => {
       throw new Error(data.error || 'Login failed.');
     }
 
-    window.location.href = '/app';
+    const next = new URLSearchParams(window.location.search).get('next');
+    window.location.href = next && /^\/(?!\/)/.test(next) ? next : '/';
   } catch (error) {
     loginMessage.textContent = error.message;
     loginMessage.classList.add('error');

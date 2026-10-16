@@ -1,0 +1,4 @@
+[
+  {"title":"Order Tracker","description":"Manage supplier orders, drafts, deliveries and archived jobs.","path":"/app","label":"Ordering"},
+  {"title":"Freeport Billing","description":"Review invoice charges and prepare monthly billing packages.","path":"/freeport","label":"Monthly billing"}
+]

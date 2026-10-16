@@ -389,6 +389,14 @@ export async function initializeDatabase() {
     return;
   }
 
+  db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');
+  db.transaction(() => {
+    const name = '002-freeport.sql';
+    if (!db.prepare('SELECT name FROM schema_migrations WHERE name = ?').get(name)) {
+      db.exec(fs.readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8'));
+      db.prepare('INSERT INTO schema_migrations (name) VALUES (?)').run(name);
+    }
+  })();
   seedUsers();
   if (process.env.PREVIEW_MODE !== 'false') {
     seedPreviewData();
