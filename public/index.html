@@ -2,8 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#2d5f9f" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Boulevard Tracker" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <title>Boulevard Glass Order Tracker</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -15,8 +23,9 @@
       <div class="topbar-actions">
         <span class="preview-pill">Preview data • fictional sample orders</span>
         <div class="user-chip">
-          <span id="currentUser">Loading…</span>
-          <button id="logoutButton" type="button" class="secondary-button">Log out</button>
+          <span id="currentUser">Office staff</span>
+          <button id="masterListsButton" type="button" class="secondary-button">Master Lists</button>
+          <button id="logoutButton" type="button" class="secondary-button hidden">Log out</button>
         </div>
       </div>
     </header>
@@ -24,7 +33,10 @@
     <main class="app-shell">
       <section class="toolbar">
         <div class="toolbar-main">
-          <button id="addOrderButton" type="button" class="primary-button">Add order</button>
+          <div class="action-button-row">
+            <button id="addOrderButton" type="button" class="primary-button">Add order</button>
+            <button id="addDraftButton" type="button" class="primary-button secondary-variant">Add draft</button>
+          </div>
           <label class="search-field">
             <span class="sr-only">Search orders</span>
             <input id="searchInput" type="search" placeholder="Search customer, job, supplier, or PO" />
@@ -32,16 +44,6 @@
         </div>
 
         <div class="toolbar-controls">
-          <label>
-            Status
-            <select id="statusFilter">
-              <option value="Outstanding">Outstanding</option>
-              <option value="Overdue">Overdue</option>
-              <option value="Received">Received</option>
-              <option value="All Orders">All Orders</option>
-            </select>
-          </label>
-
           <label>
             Group
             <select id="groupFilter">
@@ -63,13 +65,29 @@
           </label>
 
           <label class="supplier-filter-wrap">
-            Supplier
+            <span class="filter-label-row">
+              <span>Supplier</span>
+              <button id="clearSupplierButton" type="button" class="text-button">Clear suppliers</button>
+            </span>
+            <p id="supplierSelectionSummary" class="filter-summary">All Suppliers</p>
             <select id="supplierFilter" multiple size="4"></select>
+            <small>On desktop, hold ⌘ or Ctrl to select several.</small>
+          </label>
+
+          <label class="supplier-filter-wrap">
+            <span class="filter-label-row">
+              <span>Ordered By</span>
+              <button id="clearOrderedByButton" type="button" class="text-button">Clear</button>
+            </span>
+            <p id="orderedBySelectionSummary" class="filter-summary">Everyone</p>
+            <select id="orderedByFilter" multiple size="4"></select>
+            <small>On desktop, hold ⌘ or Ctrl to select several.</small>
           </label>
 
           <label>
             Sort
             <select id="sortSelect">
+              <option value="customer_name">Alphabetical (A–Z)</option>
               <option value="expected_delivery_date">Expected delivery</option>
               <option value="order_date">Order date</option>
             </select>
@@ -77,7 +95,33 @@
         </div>
       </section>
 
+      <nav class="view-tabs" aria-label="Order views">
+        <button type="button" class="tab-button active" data-view="Outstanding">Outstanding</button>
+        <button type="button" class="tab-button" data-view="Overdue">Overdue</button>
+        <button type="button" class="tab-button" data-view="Received">Received</button>
+        <button type="button" class="tab-button" data-view="All Orders">All orders</button>
+        <button type="button" class="tab-button" data-view="Approved – Need to Order">Approved – Need to Order</button>
+        <button type="button" class="tab-button" data-view="Archived">Archived</button>
+      </nav>
+
+      <div class="order-display-controls">
+        <button id="condensedViewToggle" type="button" class="secondary-button" aria-pressed="false" aria-controls="condensedOrders">Condensed lines</button>
+        <span id="condensedViewHint" class="hidden">One line per supplier order. Scroll sideways on small screens; Edit opens the full order.</span>
+      </div>
+
+      <div class="sync-status-bar">
+        <span id="liveStatus" class="connection-indicator live">Live</span>
+        <span id="saveStatus" class="save-status saved">Saved</span>
+      </div>
       <div id="statusMessage" class="message-box" aria-live="polite"></div>
+
+      <section id="draftQueueSection" class="draft-queue hidden">
+        <div class="section-header-row">
+          <h2>Approved – Need to Order</h2>
+        </div>
+        <p id="draftQueueSummary" class="draft-queue-summary" aria-live="polite"></p>
+        <div id="jobDraftList" class="draft-list"></div>
+      </section>
 
       <div class="table-wrap">
         <table>
@@ -87,6 +131,7 @@
               <th>Category</th>
               <th>Job #</th>
               <th>Supplier</th>
+              <th>Ordered by</th>
               <th>PO / order #</th>
               <th>Ordered</th>
               <th>ETA</th>
@@ -100,6 +145,18 @@
         </table>
       </div>
 
+      <div id="mobileOrderCards" class="mobile-order-list hidden" aria-live="polite"></div>
+
+      <section id="condensedOrders" class="condensed-orders hidden" aria-label="Condensed orders">
+        <p id="condensedOrderCount" aria-live="polite"></p>
+        <div class="condensed-table-wrap" tabindex="0" role="region" aria-label="Order lines, scroll horizontally for more columns">
+          <table>
+            <thead><tr><th scope="col">Customer</th><th scope="col">Job #</th><th scope="col">Category</th><th scope="col">Supplier</th><th scope="col">ETA</th><th scope="col">Received</th><th scope="col">Status</th><th scope="col">Notes</th><th scope="col">Details</th></tr></thead>
+            <tbody id="condensedOrdersBody"></tbody>
+          </table>
+        </div>
+      </section>
+
       <div id="emptyState" class="empty-state hidden">
         <h2>No matching orders</h2>
         <p>Adjust your search, change the selected filters, or add a new order.</p>
@@ -110,6 +167,7 @@
       <form id="orderForm" method="dialog">
         <input type="hidden" id="orderId" />
         <input type="hidden" id="orderUpdatedAt" />
+        <input type="hidden" id="jobDraftId" />
 
         <div class="dialog-header">
           <h2 id="dialogTitle">Add order</h2>
@@ -145,8 +203,16 @@
 
           <label>
             Supplier
-            <input id="supplierInput" name="supplier" list="supplierList" type="text" required />
-            <datalist id="supplierList"></datalist>
+            <select id="supplierInput" name="supplier_id" required>
+              <option value="">Select supplier</option>
+            </select>
+          </label>
+
+          <label>
+            Ordered by
+            <select id="orderedBySelect" name="ordered_by" required>
+              <option value="">Select staff name</option>
+            </select>
           </label>
 
           <label>
@@ -184,6 +250,140 @@
       </form>
     </dialog>
 
+    <dialog id="draftDialog">
+      <form id="draftForm" method="dialog">
+        <input type="hidden" id="draftId" />
+
+        <div class="dialog-header">
+          <h2 id="draftDialogTitle">Add draft</h2>
+          <button type="button" id="closeDraftDialogButton" class="close-button" aria-label="Close">×</button>
+        </div>
+
+        <div class="form-grid">
+          <label class="full-width">
+            Customer name
+            <input id="draftCustomerName" name="customer_name" type="text" required />
+          </label>
+
+          <label>
+            Housecall Pro job #
+            <input id="draftHousecallJobNumber" name="housecall_job_number" type="text" />
+          </label>
+
+          <label>
+            Stable HCP job ID
+            <input id="draftHcpJobId" name="hcp_job_id" type="text" placeholder="Optional future import key" />
+          </label>
+
+          <label class="full-width">
+            Housecall Pro job link
+            <input id="draftHousecallJobLink" name="housecall_job_link" type="url" placeholder="https://..." />
+          </label>
+
+          <label>
+            Deposit status
+            <select id="draftDepositStatus" name="deposit_status" required>
+              <option value="Awaiting deposit">Awaiting deposit</option>
+              <option value="Deposit received">Deposit received</option>
+              <option value="Deposit waived / not required">Deposit waived / not required</option>
+            </select>
+          </label>
+
+          <label class="full-width">
+            Notes
+            <textarea id="draftNotes" name="notes" rows="4"></textarea>
+          </label>
+        </div>
+
+        <div id="draftFormError" class="form-error" aria-live="polite"></div>
+
+        <div class="dialog-actions">
+          <button type="button" id="cancelDraftButton" class="secondary-button">Cancel</button>
+          <button type="submit" class="primary-button">Save draft</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="masterListsDialog">
+      <form id="masterListsForm" method="dialog">
+        <div class="dialog-header">
+          <h2>Master Lists</h2>
+          <button type="button" id="closeMasterListsButton" class="close-button" aria-label="Close">×</button>
+        </div>
+
+        <div id="adminLoginSection" class="master-list-auth">
+          <label>
+            Admin username
+            <input id="adminUsernameInput" type="text" autocomplete="username" />
+          </label>
+          <label>
+            Admin password
+            <input id="adminPasswordInput" type="password" autocomplete="current-password" />
+          </label>
+          <div class="dialog-actions compact-actions">
+            <button type="button" id="adminLoginButton" class="primary-button">Sign in</button>
+          </div>
+        </div>
+
+        <div id="masterListsSection" class="hidden">
+          <div class="master-list-section">
+            <div class="section-header-row">
+              <h3>Suppliers</h3>
+              <button type="button" id="addSupplierEntry" class="secondary-button">Add supplier</button>
+            </div>
+            <div id="supplierMasterList" class="master-list-editor"></div>
+            <section id="historicalSupplierSection" hidden>
+              <h4>Historical supplier names</h4>
+              <p>These names are stored on older orders and have no Master List entry.</p>
+              <ul id="historicalSupplierList" class="cleanup-list"></ul>
+            </section>
+            <label class="checkbox-inline"><input type="checkbox" id="includeHistoricalSupplierCleanup" /> Include orders with historical supplier names missing from Master Lists in cleanup</label>
+            <button type="button" id="previewSupplierCleanupButton" class="secondary-button">Preview deletion of inactive suppliers</button>
+            <p>Save your list changes first. Cleanup deletes inactive suppliers and their linked orders after review; drafts stay.</p>
+          </div>
+
+          <div class="master-list-section">
+            <div class="section-header-row">
+              <h3>Ordered By staff</h3>
+              <button type="button" id="addStaffEntry" class="secondary-button">Add staff</button>
+            </div>
+            <div id="orderedByMasterList" class="master-list-editor"></div>
+          </div>
+
+          <div class="dialog-actions">
+            <button type="button" id="adminLogoutButton" class="secondary-button">Sign out</button>
+            <button type="button" id="saveMasterListsButton" class="primary-button">Save lists</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="supplierCleanupDialog">
+      <div class="dialog-header">
+        <h2>Delete inactive suppliers</h2>
+        <button type="button" id="closeSupplierCleanupButton" class="close-button" aria-label="Close">×</button>
+      </div>
+      <p id="supplierCleanupSummary"></p>
+      <ul id="supplierCleanupList" class="cleanup-list"></ul>
+      <p>Deletion is permanent. All drafts and orders assigned to active suppliers will stay.</p>
+      <label>Type DELETE to confirm <input id="supplierCleanupConfirmation" type="text" autocomplete="off" /></label>
+      <p id="supplierCleanupError" class="message-box" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancelSupplierCleanupButton" class="secondary-button">Cancel</button>
+        <button type="button" id="deleteInactiveSuppliersButton" class="primary-button" disabled>Delete listed suppliers and orders</button>
+      </div>
+    </dialog>
+    <div id="desktopOrderMenu" class="desktop-order-menu" popover="auto" aria-label="More order actions"></div>
+    <div id="draftActionsMenu" class="desktop-order-menu" popover="auto" aria-label="More job actions"></div>
+    <dialog id="orderNotesDialog" aria-labelledby="orderNotesTitle">
+      <div class="dialog-header">
+        <h2 id="orderNotesTitle">Order notes</h2>
+        <button id="closeOrderNotesButton" type="button" class="close-button" aria-label="Close order notes">×</button>
+      </div>
+      <p id="orderNotesCustomer" class="order-notes-customer"></p>
+      <p id="orderNotesText" class="order-notes-text"></p>
+      <div class="dialog-actions"><button id="dismissOrderNotesButton" type="button" class="secondary-button">Close</button></div>
+    </dialog>
     <script src="/app.js"></script>
   </body>
 </html>

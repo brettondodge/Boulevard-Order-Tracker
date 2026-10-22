@@ -51,27 +51,39 @@ The app includes fictional sample orders for preview use. The sample data is cle
 - Overdue is a calculated flag, not a separate status.
 - Orders without an ETA show `No ETA`.
 
-## Publish the app for office staff online
+## Hosting preparation
 
-For real office use, deploy the app to a host with persistent storage and a custom domain. A straightforward option is:
-
-- Host: Render, Railway, Fly.io, or another Node.js host
-- Database: SQLite for a small office at first, or move to PostgreSQL if you want a more production-style setup
-- Domain: use a private or internal company domain if the app is only for staff access
-- Secure session secret: set a strong value in the environment
-
-Recommended production settings:
-
-- Set `SESSION_SECRET` to a real long secret.
-- Set `PREVIEW_MODE=false` when you want to stop using sample data.
-- Use a real user account system or add staff accounts to the database.
-- Back up the database file or migrate to a managed database if the app grows.
+Follow [the hosting and recovery guide](docs/hosting.md) for the existing Render database, Cloudflare staff protection, exact service fields, import, backups and cutover. Production requires Access configuration and a strong session secret; it cannot fall back to SQLite. Provider deployment, S3 upload and restore must each be tested before staff cutover.
 
 ## Ongoing costs and requirements
 
 - Local preview: no ongoing cost.
 - Shared online deployment: usually a small monthly hosting fee, plus optional domain and backups.
 - If you want a fully managed database and permanent external access, expect a small monthly service cost depending on the host.
+
+## HCP automation readiness
+
+The archive workflow is designed to support a later Housecall Pro import or automation step without connecting to HCP from this project.
+
+Eligibility for a future automated archive decision:
+
+- The job is completed.
+- The job has been invoiced.
+- The job is paid in full.
+- All linked supplier orders have been received.
+
+Important exclusions:
+
+- Deposit payments alone do not qualify.
+- Individually paid progress invoices do not qualify on their own.
+- If HCP conditions are satisfied but local ordering or receiving work is still incomplete, the job should be flagged for review instead of being auto-hidden.
+
+Safety rules for later integration:
+
+- Use stable HCP job IDs and treat repeated notifications as idempotent.
+- Keep archive metadata in the local database with source values like `manual` and `future_hcp_automation` and the optional archive reason.
+- Verify the actual HCP API fields, event semantics, and payload naming during the later integration.
+- Do not connect to HCP or change anything in HCP during this task.
 
 ## Notes for beginners
 

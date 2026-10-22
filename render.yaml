@@ -1,0 +1,59 @@
+# Reuse existing boulevard-tools-db in Oregon via DATABASE_URL secrets. No database is provisioned here.
+services:
+  - type: web
+    name: boulevard-order-tracker
+    runtime: node
+    branch: codex/production-preparation
+    domains:
+      - tools.blvdglass.com
+    renderSubdomainPolicy: disabled
+    region: oregon
+    plan: 0.5c-512mb
+    buildCommand: npm ci
+    preDeployCommand: npm run migrate:postgres
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeployTrigger: "off"
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: PREVIEW_MODE
+        value: "false"
+      - key: SESSION_SECRET
+        sync: false
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CF_ACCESS_TEAM_DOMAIN
+        sync: false
+      - key: CF_ACCESS_AUD
+        sync: false
+  - type: cron
+    name: boulevard-tools-daily-backup
+    runtime: docker
+    branch: codex/production-preparation
+    dockerfilePath: ./Dockerfile.backup
+    region: oregon
+    plan: 0.5c-512mb
+    schedule: "0 9 * * *"
+    autoDeployTrigger: "off"
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_BACKUP_BUCKET
+        sync: false
+      - key: S3_BACKUP_PREFIX
+        value: boulevard-tools/daily
+      - key: BACKUP_HEARTBEAT_URL
+        sync: false

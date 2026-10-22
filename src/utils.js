@@ -76,6 +76,9 @@ export function isOrderOverdue(order) {
 export function normalizeOrderInput(payload = {}) {
   const customerName = normalizeText(payload.customer_name);
   const supplier = normalizeText(payload.supplier);
+  const orderedBy = normalizeText(payload.ordered_by);
+  const orderedById = normalizeText(payload.ordered_by_id);
+  const supplierId = normalizeText(payload.supplier_id);
   const dateOrdered = normalizeDate(payload.date_ordered) || todayPhoenixString();
   const expectedDelivery = normalizeDate(payload.expected_delivery_date);
   const receivedDate = normalizeDate(payload.date_received);
@@ -84,6 +87,7 @@ export function normalizeOrderInput(payload = {}) {
   return {
     customer_name: customerName,
     supplier,
+    supplier_id: supplierId,
     category,
     combined_group: getOrderGroup(category),
     housecall_job_number: normalizeText(payload.housecall_job_number),
@@ -92,6 +96,8 @@ export function normalizeOrderInput(payload = {}) {
     date_ordered: dateOrdered,
     expected_delivery_date: expectedDelivery,
     date_received: receivedDate,
+    ordered_by: orderedBy,
+    ordered_by_id: orderedById,
     notes: typeof payload.notes === 'string' ? payload.notes.trim() : ''
   };
 }

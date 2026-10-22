@@ -1,0 +1,12 @@
+{
+  "Rules": [
+    {
+      "ID": "BoulevardDaily30Days",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "boulevard-tools/daily/" },
+      "Expiration": { "Days": 30 },
+      "NoncurrentVersionExpiration": { "NoncurrentDays": 1 },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 1 }
+    }
+  ]
+}

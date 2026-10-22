@@ -1,0 +1,16 @@
+import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+const [key, filename] = process.argv.slice(2);
+if (!key || !filename || !process.env.S3_BACKUP_BUCKET || !process.env.AWS_REGION) throw new Error('Supply S3 object key and a new private output filename; set bucket, region and recovery credentials privately.');
+const s3 = new S3Client({ region: process.env.AWS_REGION });
+const object = await s3.send(new GetObjectCommand({ Bucket: process.env.S3_BACKUP_BUCKET, Key: key, ChecksumMode: 'ENABLED' }));
+const bytes = await object.Body.transformToByteArray();
+const checksum = createHash('sha256').update(bytes).digest('base64');
+if (!object.ChecksumSHA256 || checksum !== object.ChecksumSHA256) throw new Error('Backup checksum failed or unavailable');
+const fingerprint = object.Metadata?.['record-fingerprint'];
+if (!fingerprint) throw new Error('Backup has no record-verification evidence');
+JSON.parse(fingerprint);
+await writeFile(filename, bytes, { mode: 0o600, flag: 'wx' });
+await writeFile(filename + '.verification.json', fingerprint, { mode: 0o600, flag: 'wx' });
+console.log('Backup download checksum verified. Restore only to a separate empty recovery database.');
