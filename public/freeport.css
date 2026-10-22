@@ -240,16 +240,21 @@ textarea:disabled {
   z-index: 1;
 }
 
-.sheet tr.band td {
-  background: #eaf3fb;
+.sheet tr.invoice-start td {
+  border-top: 2px solid #c9d6e2;
+}
+
+.sheet tbody tr:first-child td {
+  border-top: 0;
 }
 
 .sheet tr.flagged td {
   background: #fff8e9;
 }
 
-.sheet tr.clickable:hover td {
-  background: #d9e9f6;
+.sheet tr.clickable:hover td,
+.sheet tr.invoice-hover td {
+  background: #eaf3fb;
 }
 
 .sheet td a {

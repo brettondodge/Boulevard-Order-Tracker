@@ -561,12 +561,12 @@ async function renderClose(params, isCurrent) {
   const rowCount = spreadsheetRows(summary, config).length;
   const taxDifference = summary.tax - summary.invoiceTaxTotal;
   // Each row opens its invoice on screen; the .xlsx gets plain text.
-  // Every other invoice's lines get a light blue band so invoices are easy to tell apart.
-  const sheetBody = summary.invoices.map((invoice, invoiceIndex) => {
+  // A divider starts each invoice; hovering any line highlights that whole invoice.
+  const sheetBody = summary.invoices.map(invoice => {
     const href = `/freeport/invoices/${encodeURIComponent(invoice.number)}`;
-    return spreadsheetRows({ invoices: [invoice] }, config).map(row => {
+    return spreadsheetRows({ invoices: [invoice] }, config).map((row, lineIndex) => {
       const [description, ...rest] = row.cells;
-      return `<tr class="clickable ${invoiceIndex % 2 ? 'band' : ''} ${row.unmatched ? 'flagged' : ''}" data-href="${href}">
+      return `<tr class="clickable ${lineIndex === 0 ? 'invoice-start' : ''} ${row.unmatched ? 'flagged' : ''}" data-href="${href}" data-invoice="${esc(invoice.number)}">
         <td><a href="${href}" title="Open invoice ${esc(invoice.number)}">${esc(description)}</a></td>${rest.map(cell => `<td>${esc(cell)}</td>`).join('')}
       </tr>`;
     }).join('');
@@ -629,6 +629,21 @@ async function renderClose(params, isCurrent) {
       </ol>
     </section>`;
 }
+
+// Hovering one spreadsheet line highlights every line of that invoice.
+function highlightInvoice(number) {
+  screen.querySelectorAll('.sheet tr.invoice-hover').forEach(row => row.classList.remove('invoice-hover'));
+  if (number) screen.querySelectorAll(`.sheet tr[data-invoice="${CSS.escape(number)}"]`).forEach(row => row.classList.add('invoice-hover'));
+}
+
+screen.addEventListener('mouseover', event => {
+  const row = event.target.closest('.sheet tr[data-invoice]');
+  if (row && !row.classList.contains('invoice-hover')) highlightInvoice(row.dataset.invoice);
+});
+
+screen.addEventListener('mouseout', event => {
+  if (event.target.closest('.sheet tbody') && !event.relatedTarget?.closest?.('.sheet tbody')) highlightInvoice(null);
+});
 
 // ---------- Admin ----------
 
