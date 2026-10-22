@@ -1,6 +1,6 @@
 # Freeport Billing — Rebuild Plan
 
-Status: **in progress** — steps 1–2 done. This replaced most of the first
+Status: **in progress** — steps 1–3 done. This replaced most of the first
 Freeport build; the Tools dashboard and login stayed.
 
 ## The problem
@@ -183,7 +183,9 @@ Each step is a small commit you can look at before the next.
 2. ✅ **Records** — save invoices, line items, item master list, account codes,
    settings. Manual entry. Staff edit invoices; items, account codes and settings
    need the existing admin unlock (same as Master Lists).
-3. **Spreadsheet export** — the 15-column .xlsx.
+3. ✅ **Spreadsheet export** — the 15-column .xlsx, one sheet named like the
+   Google Sheet tabs ("September 2026"); code columns are numbers. Downloads only
+   once every invoice in the month is Ready.
 4. **Consolidated invoice PDF.**
 5. **Merged invoice PDF** (app-generated invoice pages).
 6. **Month close** — Sent lock and revisions.

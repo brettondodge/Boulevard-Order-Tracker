@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
+import ExcelJS from 'exceljs';
 import {
   SPREADSHEET_COLUMNS,
   billingMonthFor,
@@ -177,7 +178,7 @@ async function stopServer(child) {
 
 function client() {
   let cookie = '';
-  return async (route, { method = 'GET', body } = {}) => {
+  const send = async (route, { method = 'GET', body } = {}) => {
     const response = await fetch(`${BASE}${route}`, {
       method,
       headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}) },
@@ -185,8 +186,14 @@ function client() {
     });
     const setCookie = response.headers.get('set-cookie');
     if (setCookie) cookie = setCookie.split(';')[0];
+    return response;
+  };
+  const request = async (route, options) => {
+    const response = await send(route, options);
     return { status: response.status, body: await response.json().catch(() => null) };
   };
+  request.raw = send;
+  return request;
 }
 
 const newInvoice = (overrides = {}) => ({
@@ -241,6 +248,31 @@ test('Freeport invoice records save, validate and persist', { timeout: 60000 }, 
     assert.equal((await request('/api/freeport/invoices?month=2026-09')).body.length, 1);
     assert.equal((await request('/api/freeport/invoices?month=2026-10')).body.length, 0);
     assert.equal((await request('/api/freeport/invoices?month=bad')).status, 400);
+
+    // Spreadsheet download: refused while anything needs review, then Freeport's 15 columns.
+    const pending = await request('/api/freeport/invoices', { method: 'POST', body: newInvoice({ number: '91002', installDate: '2026-09-15' }) });
+    const refused = await request('/api/freeport/months/2026-09/spreadsheet.xlsx');
+    assert.equal(refused.status, 409);
+    assert.deepEqual(refused.body.invoices, ['91002']);
+    assert.equal((await request(`/api/freeport/invoices/91002?version=${pending.body.version}`, { method: 'DELETE' })).status, 200);
+    assert.equal((await request('/api/freeport/months/2026-10/spreadsheet.xlsx')).status, 409);
+    assert.equal((await request('/api/freeport/months/2026-9/spreadsheet.xlsx')).status, 400);
+
+    const download = await request.raw('/api/freeport/months/2026-09/spreadsheet.xlsx');
+    assert.equal(download.status, 200);
+    assert.match(download.headers.get('content-type'), /spreadsheetml/);
+    assert.equal(download.headers.get('content-disposition'), 'attachment; filename="FMI-2026-09 Line Items.xlsx"');
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(Buffer.from(await download.arrayBuffer()));
+    const sheet = workbook.getWorksheet('September 2026');
+    assert.ok(sheet, 'sheet is named like the Google Sheet tabs');
+    const cells = rowNumber => SPREADSHEET_COLUMNS.map((_, index) => sheet.getRow(rowNumber).getCell(index + 1).value);
+    assert.deepEqual(cells(1), SPREADSHEET_COLUMNS);
+    assert.equal(sheet.actualRowCount, 3);
+    const labor = ['Tech Labor - Straight', null, 2, 'hr', 125, 'Work Order', 1328, 100000910001, null, 1060401328, null, 61120032, '91001-A', 'Mine Maintenance', 'ZD00000669'];
+    assert.deepEqual(cells(2), labor);
+    assert.deepEqual(cells(3), labor); // one row per technician
+    assert.equal(sheet.getRow(2).getCell(8).numFmt, '0', 'order numbers show every digit in Excel');
 
     // Admin changes need the separate admin unlock.
     assert.equal((await request('/api/freeport/settings', { method: 'PUT', body: config.settings })).status, 401);

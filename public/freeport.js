@@ -90,9 +90,11 @@ function messageHtml(error) {
   if (!error) return '';
   const blockers = error.body?.blockers || [];
   const existing = error.body?.existing;
+  const invoices = error.body?.invoices || [];
   return `<div class="alert error" role="alert">
     ${esc(error.message)}
     ${existing ? ` <a href="/freeport/invoices/${encodeURIComponent(existing)}">Open invoice ${esc(existing)}</a>` : ''}
+    ${invoices.length ? ` Needs review: ${invoices.map(number => `<a href="/freeport/invoices/${encodeURIComponent(number)}">${esc(number)}</a>`).join(', ')}` : ''}
     ${blockers.length ? `<ul>${blockers.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
   </div>`;
 }
@@ -609,8 +611,11 @@ async function renderClose(params, isCurrent) {
     <section class="panel">
       <div class="section-head">
         <div><h2>2. Line-item spreadsheet</h2><p class="muted">${rowCount} rows · replaces the Google Sheet · click a row to open its invoice</p></div>
-        ${stepButton(3, 'Download .xlsx')}
+        ${summary.invoices.length && !summary.needsReview.length
+          ? `<button type="button" class="primary" data-action="download-xlsx" data-month="${month}">Download .xlsx</button>`
+          : '<button type="button" disabled title="Every invoice must be Ready first">Download .xlsx</button>'}
       </div>
+      <div id="sheetMessage"></div>
       <div class="scroll sheet">
         <table>
           <thead><tr>${SPREADSHEET_COLUMNS.map(column => `<th>${esc(column)}</th>`).join('')}</tr></thead>
@@ -628,6 +633,40 @@ async function renderClose(params, isCurrent) {
         ${summary.invoices.map(invoice => `<li><strong>${esc(invoice.number)}</strong> · installed ${formatDate(invoice.installDate)} · ${money(invoice.total)}</li>`).join('')}
       </ol>
     </section>`;
+}
+
+// The download goes through fetch so a refusal shows as a message, not a broken file.
+function handleCloseClick(event) {
+  const button = event.target.closest('[data-action="download-xlsx"]');
+  if (!button) return false;
+  downloadSpreadsheet(button);
+  return true;
+}
+
+async function downloadSpreadsheet(button) {
+  const box = screen.querySelector('#sheetMessage');
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/freeport/months/${encodeURIComponent(button.dataset.month)}/spreadsheet.xlsx`);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      const error = new Error(body.error || 'The spreadsheet could not be downloaded. Try again.');
+      error.body = body;
+      throw error;
+    }
+    const filename = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') || '')?.[1] || 'Line Items.xlsx';
+    const url = URL.createObjectURL(await response.blob());
+    const link = Object.assign(document.createElement('a'), { href: url, download: filename });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    box.innerHTML = '';
+  } catch (error) {
+    box.innerHTML = messageHtml(error);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 // Hovering one spreadsheet line highlights every line of that invoice.
@@ -862,7 +901,7 @@ function navigate(href, { replace = false } = {}) {
 }
 
 document.addEventListener('click', event => {
-  if (handleEditorClick(event) || handleAdminClick(event)) return;
+  if (handleEditorClick(event) || handleAdminClick(event) || handleCloseClick(event)) return;
   if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey) return;
   const link = event.target.closest('a[href^="/freeport"]');
   const row = !link && event.target.closest('tr[data-href]');

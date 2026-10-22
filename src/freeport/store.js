@@ -11,26 +11,35 @@ const newId = prefix => `${prefix}-${randomUUID()}`;
 const toPostgres = sql => { let index = 0; return sql.replace(/\?/g, () => `$${++index}`); };
 const isUniqueViolation = error => error?.code === '23505' || error?.code === 'SQLITE_CONSTRAINT_UNIQUE' || error?.code === 'SQLITE_CONSTRAINT_PRIMARYKEY';
 
+// SQLite has one connection, so its transactions run one after another.
+let sqliteQueue = Promise.resolve();
+
+async function sqliteTransaction(work) {
+  const db = getDb();
+  const tx = {
+    get: async (sql, params = []) => db.prepare(sql).get(...params) ?? null,
+    all: async (sql, params = []) => db.prepare(sql).all(...params),
+    run: async (sql, params = []) => db.prepare(sql).run(...params).changes
+  };
+  // better-sqlite3 is synchronous, so these awaits settle as microtasks and no
+  // other request can run until COMMIT. `work` must not await real I/O.
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = await work(tx);
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    if (db.inTransaction) db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 // Runs `work` in one database transaction with a small get/all/run helper.
 async function transaction(work) {
   if (!isProduction) {
-    const db = getDb();
-    const tx = {
-      get: async (sql, params = []) => db.prepare(sql).get(...params) ?? null,
-      all: async (sql, params = []) => db.prepare(sql).all(...params),
-      run: async (sql, params = []) => db.prepare(sql).run(...params).changes
-    };
-    // better-sqlite3 is synchronous, so these awaits settle as microtasks and no
-    // other request can run until COMMIT. `work` must not await real I/O.
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      const result = await work(tx);
-      db.exec('COMMIT');
-      return result;
-    } catch (error) {
-      if (db.inTransaction) db.exec('ROLLBACK');
-      throw error;
-    }
+    const result = sqliteQueue.then(() => sqliteTransaction(work));
+    sqliteQueue = result.catch(() => {});
+    return result;
   }
 
   const client = await (await getPool()).connect();

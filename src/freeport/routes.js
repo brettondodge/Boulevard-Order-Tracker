@@ -1,5 +1,6 @@
 import express from 'express';
-import { isValidMonth } from '../../public/freeport-billing.js';
+import { isValidMonth, summarizeMonth } from '../../public/freeport-billing.js';
+import { buildSpreadsheet } from './spreadsheet.js';
 import {
   FreeportError,
   normalizeAccountsInput,
@@ -48,6 +49,26 @@ export function freeportRouter({ requireStaffAuth, requireAdminAuth }) {
   }));
 
   router.get('/months', route(async (req, res) => res.json(await listMonths())));
+
+  // Month-end line-item spreadsheet. Only built once every invoice is Ready,
+  // so an incomplete file can't be sent to Freeport by accident.
+  router.get('/months/:month/spreadsheet.xlsx', route(async (req, res) => {
+    const { month } = req.params;
+    if (!isValidMonth(month)) throw new FreeportError(400, 'Choose a month like 2026-09.');
+    const [config, invoices] = await Promise.all([getConfig(), listInvoices(month)]);
+    const summary = summarizeMonth(month, invoices, config);
+    if (!summary.invoices.length) throw new FreeportError(409, `There are no invoices in ${month} yet.`);
+    if (summary.needsReview.length) {
+      throw new FreeportError(409, 'Every invoice must be Ready before downloading the spreadsheet.', { invoices: summary.needsReview.map(invoice => invoice.number) });
+    }
+    const buffer = await buildSpreadsheet(summary, config);
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': `attachment; filename="${summary.packageNumber} Line Items.xlsx"`,
+      'Cache-Control': 'no-store'
+    });
+    res.send(Buffer.from(buffer));
+  }));
 
   router.get('/invoices', route(async (req, res) => {
     if (!isValidMonth(req.query.month)) throw new FreeportError(400, 'Choose a month like 2026-09.');
