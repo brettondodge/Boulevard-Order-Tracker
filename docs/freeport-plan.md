@@ -1,7 +1,7 @@
 # Freeport Billing — Rebuild Plan
 
-Status: **draft for review**. No code has changed yet. This replaces most of the
-first Freeport build (see `docs/freeport.md`); the Tools dashboard and login stay.
+Status: **in progress** — steps 1–2 done. This replaced most of the first
+Freeport build; the Tools dashboard and login stayed.
 
 ## The problem
 
@@ -171,10 +171,11 @@ remit-to info, ROC#, Vendor ID.
 
 Each step is a small commit you can look at before the next.
 
-1. **Shell** — the four screens with sample data, navigation, no saving. Remove
+1. ✅ **Shell** — the four screens with sample data, navigation, no saving. Remove
    the first build's Freeport code (the dashboard and login stay).
-2. **Records** — save invoices, line items, item master list, account codes,
-   settings. Manual entry.
+2. ✅ **Records** — save invoices, line items, item master list, account codes,
+   settings. Manual entry. Staff edit invoices; items, account codes and settings
+   need the existing admin unlock (same as Master Lists).
 3. **Spreadsheet export** — the 15-column .xlsx.
 4. **Consolidated invoice PDF.**
 5. **Merged invoice PDF** (app-generated invoice pages).

@@ -10,6 +10,7 @@ import EmbeddedPostgres from 'embedded-postgres';
 import pg from 'pg';
 import Database from 'better-sqlite3';
 import { generateKeyPair, exportJWK, SignJWT } from 'jose';
+import { recordFingerprint } from '../src/record-fingerprint.js';
 
 // Uses a fresh temporary cluster and synthetic records only. No provider credentials.
 test('real Postgres production access, orders, admin gate and restart persistence', { timeout: 90000 }, async () => {
@@ -63,6 +64,20 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     assert.equal(identity.body.user.username, 'staff@example.test');
     assert.equal((await request('/api/master-lists/suppliers', { name: 'Blocked Supplier' })).status, 401);
     assert.equal((await request('/api/admin/login', { username: 'office-admin', password: 'synthetic-admin-password' })).status, 200);
+
+    // Freeport records share Access identity and come from the Postgres migration.
+    assert.equal((await request('/api/freeport/config')).body.accounts.length, 14);
+    const freeportInvoice = { number: 'PG-1', installDate: '2026-09-29', omegaDate: '2026-10-06', orderNumber: '100000000001', accountCode: '1060401328', status: 'Ready', lines: [{ sku: 'Labor', quantity: '2.5', rateCents: 12500 }] };
+    const createdInvoice = await request('/api/freeport/invoices', freeportInvoice);
+    assert.equal(createdInvoice.status, 201, JSON.stringify(createdInvoice.body));
+    assert.equal(createdInvoice.body.billingMonth, '2026-09');
+    assert.equal(createdInvoice.body.createdBy, 'staff@example.test');
+    assert.equal((await request('/api/freeport/invoices', freeportInvoice)).status, 409);
+    assert.deepEqual((await request('/api/freeport/months')).body, [{ month: '2026-09', invoices: 1, needsReview: 0 }]);
+    assert.equal((await request('/api/freeport/invoices/PG-1', { ...freeportInvoice, version: 9 }, token, 'tools.blvdglass.com', 'PUT')).status, 409);
+    const fingerprint = await recordFingerprint(pool);
+    assert.equal(fingerprint.freeport_invoices.count, 1);
+    assert.equal(fingerprint.freeport_accounts.count, 14);
     await request('/api/master-lists/suppliers', { items: [{ name: 'Test Supplier', active: true }] });
     const order = await request('/api/orders', { customer_name: 'Synthetic Test Job', supplier: 'Test Supplier', ordered_by: 'Test Staff', category: 'Windows', date_ordered: '2026-10-10' });
     assert.equal(order.status, 201);
@@ -97,6 +112,8 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     await stop(); await start();
     assert.equal((await request('/api/orders')).body.orders.length, 1);
     assert.equal((await request('/api/admin/me')).status, 200);
+    assert.equal((await request('/api/freeport/invoices/PG-1')).body.lines[0].quantity, '2.5');
+    assert.equal((await request('/api/freeport/config')).body.accounts.length, 14);
     const sessionsAfter = (await pool.query('SELECT sid FROM sessions')).rows.map(row => row.sid);
     assert.deepEqual(sessionsAfter, sessionsBefore);
     // Rename/deactivate a linked supplier and staff member: filters use stable IDs.

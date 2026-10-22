@@ -5,14 +5,6 @@ nav a.active {
   text-underline-offset: 6px;
 }
 
-.shell-banner {
-  background: #fff2db;
-  color: #6b4508;
-  text-align: center;
-  font-size: 12px;
-  padding: 6px 16px;
-}
-
 .page-head {
   display: flex;
   justify-content: space-between;
@@ -239,6 +231,15 @@ textarea:disabled {
 .sheet thead th {
   position: sticky;
   top: 0;
+  z-index: 1;
+}
+
+.sheet td a {
+  text-decoration: none;
+}
+
+.sheet td a:hover {
+  text-decoration: underline;
 }
 
 .pages {
@@ -274,6 +275,169 @@ textarea:disabled {
 .tabs + .panel {
   margin-top: 0;
   border-top-left-radius: 0;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.chip {
+  padding: 5px 12px;
+  border: 1px solid #d3dce4;
+  border-radius: 20px;
+  background: white;
+  color: #33495e;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.chip.active {
+  border-color: #215777;
+  background: #eaf2f8;
+  font-weight: 600;
+}
+
+.alert {
+  padding: 12px 16px;
+  border-radius: 6px;
+  margin: 12px 0;
+}
+
+.alert.error {
+  background: #fbecee;
+  color: #7d1f28;
+  border-left: 3px solid #b83a46;
+}
+
+.alert.success {
+  background: #e3f3ec;
+  color: #1d6a52;
+  border-left: 3px solid #23735b;
+}
+
+.alert ul {
+  margin: 8px 0 0;
+}
+
+.alert a {
+  color: inherit;
+  font-weight: 600;
+}
+
+button.danger {
+  color: #9e2832;
+  border-color: #e3b9be;
+}
+
+.info-text {
+  color: #2b5585;
+}
+
+.issues {
+  margin: 4px 0 14px;
+  padding-left: 20px;
+}
+
+.issues.blockers li {
+  color: #8d2a33;
+}
+
+.issues.warnings li {
+  color: #6b4508;
+}
+
+details summary {
+  font-weight: 500;
+  color: #226080;
+}
+
+label.inline {
+  max-width: 240px;
+}
+
+#billedIn {
+  margin: 4px 0 0;
+}
+
+.lines-table td {
+  vertical-align: middle;
+}
+
+.lines-table .item-cell {
+  min-width: 280px;
+}
+
+.lines-table select {
+  width: 100%;
+}
+
+td input.short,
+input.short {
+  width: 90px;
+  min-width: 70px;
+}
+
+.row-actions {
+  white-space: nowrap;
+}
+
+.row-actions button {
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.totals-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.tax-input {
+  max-width: 260px;
+}
+
+.tax-input input {
+  width: 140px;
+}
+
+.admin-table td {
+  padding: 6px 6px;
+  vertical-align: middle;
+}
+
+.page-head .actions {
+  align-items: center;
+}
+
+.admin-table input.wide {
+  min-width: 240px;
+}
+
+.admin-table input.code {
+  min-width: 120px;
+}
+
+input[readonly] {
+  background: #f6f8fa;
+  color: #506477;
+}
+
+.center {
+  text-align: center;
+}
+
+.unlock p {
+  margin: 0;
+}
+
+.unlock .bar {
+  margin: 12px 0 0;
 }
 
 /* Consolidated invoice preview, styled like a printed page. */

@@ -1,5 +1,7 @@
 import express from 'express';
 import { createAccessMiddleware } from './access.js';
+import { freeportRouter } from './freeport/routes.js';
+import { initializeFreeport } from './freeport/store.js';
 import { createPostgresSessionStore, configureSessionMiddleware } from './session-config.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,6 +50,7 @@ const VALID_DEPOSIT_STATUSES = [
 
 validateRuntimeDatabaseConfig();
 await initializeDatabase();
+await initializeFreeport({ includePreviewInvoices: !isProduction && process.env.PREVIEW_MODE !== 'false' });
 
 const app = express();
 // Express 4 needs rejected route promises forwarded to its error middleware.
@@ -246,6 +249,7 @@ app.get('/api/tools', requireStaffAuth, asyncRoute(async (req, res) => {
   const { readFile } = await import('node:fs/promises');
   res.json(JSON.parse(await readFile(path.join(publicDir, 'tools.json'), 'utf8')));
 }));
+app.use('/api/freeport', freeportRouter({ requireStaffAuth, requireAdminAuth }));
 app.get(['/freeport', '/freeport/*'], (req, res) => req.session.user ? res.sendFile(path.join(publicDir, '../views/freeport.html')) : res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`));
 app.get('/login', (req, res) => res.sendFile(path.join(publicDir, 'login.html')));
 app.get('/app', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));

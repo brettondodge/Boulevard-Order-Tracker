@@ -12,7 +12,8 @@ try {
   const integrity = sqlite.pragma('integrity_check');
   if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok') throw new Error('SQLite integrity failed');
   const actualTables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().map(row => row.name);
-  if (actualTables.some(name => !tables.includes(name))) throw new Error('Unrecognized source table');
+  // Local Freeport tables hold test records and are never imported into production.
+  if (actualTables.some(name => !tables.includes(name) && !name.startsWith('freeport_'))) throw new Error('Unrecognized source table');
   sqlite.exec('BEGIN');
   await migratePostgres(pool);
   client = await pool.connect();
