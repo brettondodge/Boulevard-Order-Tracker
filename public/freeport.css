@@ -27,6 +27,12 @@ nav a.active {
   text-decoration: none;
 }
 
+.back-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 24px;
+}
+
 .month-picker {
   display: flex;
   align-items: center;

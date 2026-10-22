@@ -324,7 +324,10 @@ async function renderInvoice(number, params, isCurrent, loaded = null) {
   const unknownAccount = invoice.accountCode && !config.accounts.some(account => account.code === invoice.accountCode);
 
   screen.innerHTML = `
-    <a class="back" href="/freeport?month=${backMonth}">← ${formatMonth(backMonth)}</a>
+    <nav class="back-links">
+      <a class="back" href="/freeport?month=${backMonth}">← ${formatMonth(backMonth)}</a>
+      <a class="back" href="/freeport/close?month=${backMonth}">← ${formatMonth(backMonth)} month close</a>
+    </nav>
     <form id="invoiceForm" novalidate>
       <div class="page-head">
         <div>
@@ -557,12 +560,12 @@ async function renderClose(params, isCurrent) {
   const summary = summarizeMonth(month, invoices, config);
   const rowCount = spreadsheetRows(summary, config).length;
   const taxDifference = summary.tax - summary.invoiceTaxTotal;
-  // Each DESCRIPTION links to its invoice on screen; the .xlsx gets plain text.
+  // Each row opens its invoice on screen; the .xlsx gets plain text.
   const sheetBody = summary.invoices.map(invoice => {
     const href = `/freeport/invoices/${encodeURIComponent(invoice.number)}`;
     return spreadsheetRows({ invoices: [invoice] }, config).map(row => {
       const [description, ...rest] = row.cells;
-      return `<tr class="${row.unmatched ? 'flagged' : ''}">
+      return `<tr class="clickable ${row.unmatched ? 'flagged' : ''}" data-href="${href}">
         <td><a href="${href}" title="Open invoice ${esc(invoice.number)}">${esc(description)}</a></td>${rest.map(cell => `<td>${esc(cell)}</td>`).join('')}
       </tr>`;
     }).join('');
@@ -604,7 +607,7 @@ async function renderClose(params, isCurrent) {
 
     <section class="panel">
       <div class="section-head">
-        <div><h2>2. Line-item spreadsheet</h2><p class="muted">${rowCount} rows · replaces the Google Sheet · click a description to open its invoice</p></div>
+        <div><h2>2. Line-item spreadsheet</h2><p class="muted">${rowCount} rows · replaces the Google Sheet · click a row to open its invoice</p></div>
         ${stepButton(3, 'Download .xlsx')}
       </div>
       <div class="scroll sheet">
