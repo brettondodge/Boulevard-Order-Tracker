@@ -240,6 +240,18 @@ textarea:disabled {
   z-index: 1;
 }
 
+.sheet tr.band td {
+  background: #eaf3fb;
+}
+
+.sheet tr.flagged td {
+  background: #fff8e9;
+}
+
+.sheet tr.clickable:hover td {
+  background: #d9e9f6;
+}
+
 .sheet td a {
   text-decoration: none;
 }

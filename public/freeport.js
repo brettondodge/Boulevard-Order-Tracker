@@ -561,11 +561,12 @@ async function renderClose(params, isCurrent) {
   const rowCount = spreadsheetRows(summary, config).length;
   const taxDifference = summary.tax - summary.invoiceTaxTotal;
   // Each row opens its invoice on screen; the .xlsx gets plain text.
-  const sheetBody = summary.invoices.map(invoice => {
+  // Every other invoice's lines get a light blue band so invoices are easy to tell apart.
+  const sheetBody = summary.invoices.map((invoice, invoiceIndex) => {
     const href = `/freeport/invoices/${encodeURIComponent(invoice.number)}`;
     return spreadsheetRows({ invoices: [invoice] }, config).map(row => {
       const [description, ...rest] = row.cells;
-      return `<tr class="clickable ${row.unmatched ? 'flagged' : ''}" data-href="${href}">
+      return `<tr class="clickable ${invoiceIndex % 2 ? 'band' : ''} ${row.unmatched ? 'flagged' : ''}" data-href="${href}">
         <td><a href="${href}" title="Open invoice ${esc(invoice.number)}">${esc(description)}</a></td>${rest.map(cell => `<td>${esc(cell)}</td>`).join('')}
       </tr>`;
     }).join('');
