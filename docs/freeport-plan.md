@@ -42,7 +42,8 @@ Users: mainly the office manager; Bretton and admins can view everything.
    - Invoice number **FMI-YYYY-MM** (corrections: **FMI-YYYY-MM-R1**, R2…)
    - Line items: **Total Parts**, **Total Labor**; Subtotal; **Tax 9.1% of parts
      only**; Invoice Total
-   - Business info, remit-to, AZ ROC#, AZ Procure Vendor ID
+   - Business info, remit-to, AZ ROC#, AZ Procure Vendor ID, late-fee line —
+     the same information as past invoice 10239376, which Freeport accepted
    - Layout: a clean version of past invoice 10239376, without the auto-glass
      insurance/vehicle/signature sections.
 3. **Line-item spreadsheet (.xlsx)** — replaces the Google Sheet. One row per
@@ -63,7 +64,7 @@ Users: mainly the office manager; Bretton and admins can view everything.
    | Cash Pay | blank |
    | EXPENSE ELEMENT | From item type: Parts 61040078 / Labor 61120032 |
    | SUPPLIER REFERENCE | Omega invoice number |
-   | USING AREA NAME | "Mine Maintenance" (confirm for non-Mine accounts) |
+   | USING AREA NAME | Per account code; all start as "Mine Maintenance" |
    | PO NUMBER | always **ZD00000669** |
 
    Labor stays **one row per technician** (two techs = two identical rows).
@@ -93,12 +94,15 @@ order number, account code, line items, Omega tax, Omega total, status
 Per item: Omega SKU, description for Freeport's sheet, unit (ea/hr),
 Parts/Labor (sets expense element and taxability), standard price, active flag.
 
-SKUs that cover several sizes (e.g. ".090 Clear Laminate" = 36×48, 48×48,
-60×48, 72×48) are matched **by price** for now. If two sizes ever share a price,
-the office manager picks during review. *Pending:* office manager to confirm
-whether each size can have its own SKU in Omega, which would remove this step.
+Each glass size will get its own SKU in Omega (e.g. "24 x 48 (.090 Clr Lami)"),
+so lines match **by SKU**. Until Omega is updated, a SKU that still covers
+several sizes falls back to matching **by price**; if that fails, the office
+manager picks during review.
 
 ### Account codes (location dropdown)
+
+Each account also stores its USING AREA NAME for the spreadsheet. All start as
+"Mine Maintenance" and can be changed in Admin if Freeport ever asks.
 
 | Code | Name | Group |
 |---|---|---|
@@ -151,16 +155,29 @@ Each step is a small commit you can look at before the next.
 4. **Consolidated invoice PDF.**
 5. **Merged invoice PDF** (app-generated invoice pages).
 6. **Month close** — Sent lock and revisions.
-7. **Omega import** — read the ItemsReportDrilldown .xlsx, match SKUs to the
-   master list, flag anything unknown.
+7. **Omega import** — preferably through the **Omega API**
+   (https://app.omegaedi.com/api/docs/): API key auth, `GET /Invoices` with
+   date filters, CSV export, combined-PDF print, and an event webhook that
+   could pull new Freeport invoices automatically. First, a test call to confirm
+   it returns line items, scheduled date and the ORDER NO. custom field (the
+   docs don't show them). If it doesn't, fall back to the ItemsReportDrilldown
+   .xlsx plus entering the missing fields. Either way: match SKUs to the master
+   list and flag anything unknown. The API key lives in local `.env` / hosting
+   secrets only. The app reads from Omega; it never changes Omega invoices.
 8. *Later:* Google Drive uploads for work orders and photos.
+
+## Resolved questions
+
+1. **Own SKU per glass size?** Yes — Omega SKUs will be renamed per size.
+2. **Where do install date, ORDER NO., description and UOM come from?** All are
+   on the Omega invoice; Omega also has an API (see step 7).
+3. **USING AREA NAME for non-Mine accounts?** Stays "Mine Maintenance" for now;
+   stored per account so it can change without code.
+4. **Consolidated invoice wording?** Not confirmed with Freeport; mirror the
+   accepted past invoice 10239376, minus the auto-glass sections.
+5. **Which bulk-print PDFs are Freeport invoices?** Deferred — not needed yet.
 
 ## Open questions
 
-1. Can each glass size get its own SKU in Omega? (office manager)
-2. Can the Omega line-item report include install/scheduled date, ORDER NO.,
-   description and UOM? Otherwise those are entered per invoice in the app.
-3. Does USING AREA NAME change for non-Mine accounts (e.g. "Leaching")?
-4. Full business/remit-to block, ROC# and Vendor ID wording for the new
-   consolidated invoice — confirm it matches what Freeport expects.
-5. Which Omega bulk-print PDFs are Freeport invoices, for import testing.
+1. Does the Omega API return line items, scheduled date and custom fields?
+   (Answer with a test call in step 7; needs an Omega API key.)
