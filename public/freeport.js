@@ -1,92 +1,459 @@
-const $=id=>document.getElementById(id);
-const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const dollars=cents=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format((cents||0)/100);
-let jobs=[],packages=[],settings={},active=null,editing=null,dirty=false;
-const initialQuery=new URLSearchParams(location.search);
-const syncURL=()=>{const url=new URL(location.href);url.searchParams.set('month',$('month').value);active?url.searchParams.set('package',active.id):url.searchParams.delete('package');history.replaceState(null,'',url);};
-const selected=new Set();
-$('month').value=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Phoenix',year:'numeric',month:'2-digit'}).format(new Date()).replace(/^(\d{2})\/(\d{4})$/,'$2-$1');
-if(/^\d{4}-(0[1-9]|1[0-2])$/.test(initialQuery.get('month')||'')) $('month').value=initialQuery.get('month');
-async function api(path,method='GET',body){
-  const response=await fetch(`/api/freeport${path}`,{method,headers:body instanceof FormData?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:body instanceof FormData?body:JSON.stringify(body)});
-  let data;try{data=await response.json();}catch{throw new Error('The server did not return a valid response.');}
-  if(!response.ok){if(response.status===401 && !path.includes('settings')){const me=await fetch('/api/me');if(!me.ok)location.href='/login?next=/freeport';}throw new Error(data.error||'Request failed.');}return data;
+import * as sample from './freeport-sample.js';
+
+const SPREADSHEET_COLUMNS = [
+  'DESCRIPTION', 'Classification', 'QUANTITY', 'UNIT OF MEASURE', 'UNIT RATE', 'TYPE', 'COMPANY CODE',
+  'ORDER NUMBER', 'WBS ELEMENT', 'ACCOUNT CODE', 'Cash Pay', 'EXPENSE ELEMENT', 'SUPPLIER REFERENCE',
+  'USING AREA NAME', 'PO NUMBER'
+];
+
+const screen = document.getElementById('screen');
+
+// ---------- Formatting ----------
+
+const moneyFormat = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+const money = cents => moneyFormat.format(cents / 100);
+const toCents = value => Math.round(Number(value) * 100);
+
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
-function message(text,error=false){$('message').textContent=text;$('message').className=error?'error':'success';}
-async function action(fn){try{await fn();}catch(e){message(e.message,true);}}
-async function load(){
-  [jobs,packages,settings]=await Promise.all([api('/jobs'),api('/packages'),api('/settings')]);
-  $('packages').innerHTML='<option value="">Choose a package…</option>'+packages.map(p=>`<option value="${esc(p.id)}">${esc(p.month)} · ${esc(p.status)} · ${esc(p.reference||p.id.slice(0,8))}</option>`).join('');
-  if(!active&&initialQuery.get('package')&&packages.some(p=>p.id===initialQuery.get('package')))active={id:initialQuery.get('package')};
-  if(active){active=await api(`/packages/${active.id}`);$('packages').value=active.id;selected.clear();active.jobIds.forEach(id=>selected.add(id));}
-  syncURL();renderJobs();renderPackage();await loadTiming();await renderConflicts();
+
+function parseDate(iso) {
+  const [year, month, day] = iso.split('-').map(Number);
+  return new Date(year, month - 1, day || 1);
 }
-function renderJobs(){
-  const search=$('search').value.toLowerCase(),account=$('accountFilter').value.toLowerCase(),filter=$('reviewFilter').value,inclusion=$('inclusion').value;
-  const rows=jobs.filter(j=>($('period').value==='all'||!j.month||j.month===$('month').value)&&JSON.stringify([j.invoiceNumber,j.orderNumber,j.source?.orderNo,j.equipmentNo,j.source?.equipmentNo]).toLowerCase().includes(search)&&String(j.accountCode||'').toLowerCase().includes(account)&&(!filter||(filter==='review'?j.review.issues.length:!j.review.issues.length))&&(!inclusion||(inclusion==='included'?selected.has(j.id):!selected.has(j.id))));
-  $('count').textContent=`${rows.length} invoices`;
-  $('jobs').innerHTML=rows.map(j=>`<tr><td><input aria-label="Include invoice ${esc(j.invoiceNumber)}" type="checkbox" data-select="${esc(j.id)}" ${selected.has(j.id)?'checked':''} ${!active||!['Draft','Ready for Review'].includes(active.status)||j.month!==active.month?'disabled':''}></td><td><button data-edit="${esc(j.id)}">${esc(j.invoiceNumber)}</button><br><small>${esc(j.sourceSystem)} · ${esc(j.documentType)}<br>${esc(j.month||'Unassigned month')}</small></td><td>${esc(j.orderNumber||'Mapping needed')}<br><small>${esc(j.accountCode||'No account')}</small></td><td>${dollars(j.review.parts)}</td><td>${dollars(j.review.labor)}</td><td>${esc(j.tax||'Missing')}</td><td>${esc(j.total||'Missing')}</td><td><span class="badge ${j.review.issues.length?'review':''}">${j.review.issues.length?`${j.review.issues.length} review issues`:'Ready'}</span><details><summary>Charge rows</summary>${j.lines.map(l=>`<div>${esc(l.quantity)} ${esc(l.unit)} · ${esc(l.description)} · $${esc(l.amount)}</div>`).join('')}</details></td></tr>`).join('')||'<tr><td colspan="8">No invoices in this view. Import a PDF or add a manual invoice.</td></tr>';
-  $('jobs').querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>openJob(jobs.find(j=>j.id===b.dataset.edit)));
-  $('jobs').querySelectorAll('[data-select]').forEach(c=>c.onchange=()=>{c.checked?selected.add(c.dataset.select):selected.delete(c.dataset.select);$('packageSaveState').textContent='Unsaved inclusion changes';});
+
+const formatDate = iso => parseDate(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+const formatMonth = month => parseDate(month).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+function shiftMonth(month, delta) {
+  const date = parseDate(month);
+  date.setMonth(date.getMonth() + delta);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 }
-function field(key,label,value,type='text'){return `<label>${esc(label)}<input data-field="${esc(key)}" type="${type}" value="${esc(value)}"></label>`;}
-const jobFields=[['invoiceNumber','Original invoice number'],['sourceSystem','Source system'],['sourceCompany','Source company'],['invoiceDate','Original invoice date'],['po','Original PO #'],['orderNo','Original ORDER NO.'],['equipmentNo','Equipment number'],['customer','Customer / bill to'],['serviceDate','Appointment / service date'],['make','Make'],['model','Model'],['year','Year'],['vin','VIN / serial'],['unitNumber','Unit number'],['orderNumber','Freeport spreadsheet Order Number'],['accountCode','Department / account code'],['usingArea','Using Area Name'],['wbs','WBS element (optional)'],['cashPay','Cash Pay (optional)'],['month','Assigned billing month','month'],['subtotal','Source subtotal'],['tax','Source tax'],['total','Source total']];
-function openJob(job){
-  editing=structuredClone(job);delete editing.review;dirty=false;
-  $('editorTitle').textContent=`Review invoice ${job.invoiceNumber}`;
-  $('jobFields').innerHTML=jobFields.map(([key,label,type])=>field(key,label,job[key]??job.source?.[key]??'',type)).join('')+`<label>Document type<select data-field="documentType">${['Invoice','Quote','Unknown'].map(t=>`<option ${job.documentType===t?'selected':''}>${t}</option>`).join('')}</select></label>`;
-  for(const key of ['invoiceNumber','sourceSystem','sourceCompany'])$('jobFields').querySelector(`[data-field="${key}"]`).readOnly=key!=='invoiceNumber'||!job.invoiceNumber.startsWith('UNIDENTIFIED-');
-  $('jobFields').querySelector('[data-field="accountCode"]').setAttribute('list','accountCodes');
-  let dl=$('accountCodes');if(!dl){dl=document.createElement('datalist');dl.id='accountCodes';document.body.append(dl);}dl.innerHTML=(settings.accounts||[]).map(a=>`<option value="${esc(a.code)}">${esc(a.description)}</option>`).join('');
-  $('sourceLinks').innerHTML=job.fileId?`<a class="button" target="_blank" href="/api/freeport/files/${esc(job.fileId)}">Open original PDF · pages ${esc(job.pages.join(', '))}</a>`:'';
-  $('sourcePages').value=(job.pages||[]).join(', ');
-  $('sourceText').textContent=job.source?.text||'Manual source record. Original financial values are retained in source evidence and audit history.';
-  $('sourceText').textContent+='\n\nOriginal evidence:\n'+JSON.stringify(job.source,null,2);
-  $('workNotes').value=job.workNotes||'';$('manualReason').value=job.manualSourceReason||'';$('correctionReason').value='';$('reviewed').checked=!!job.reviewed;$('jobSave').textContent=job.parserNotice||'';
-  $('timingFields').innerHTML=[['requestAt','First request / message time (Phoenix)','datetime-local'],['completedAt','Completion time (Phoenix)','datetime-local'],['onsiteStart','On-site start (Phoenix)','datetime-local'],['onsiteEnd','On-site end (Phoenix)','datetime-local'],['actualHours','Manual actual elapsed hours'],['onsiteHours','Manual on-site duration (hours)'],['people','Number of people'],['source','Timing source / notes']].map(([key,label,type])=>field(key,label,(job.timing||{})[key]?.replace?.(/-07:00$/,'')??'',type)).join('');
-  renderLines();renderJobIssues(job);renderAttachments();$('editor').showModal();
+
+function monthEnd(month) {
+  const date = parseDate(shiftMonth(month, 1));
+  date.setDate(0);
+  return `${month}-${String(date.getDate()).padStart(2, '0')}`;
 }
-function renderLines(){
-  $('lines').innerHTML=editing.lines.map((l,i)=>`<tr>${['name','description','quantity','unit','rate','amount'].map(key=>`<td><input class="${['name','description'].includes(key)?'wide':''}" aria-label="Row ${i+1} ${key}" data-line="${i}" data-key="${key}" value="${esc(l[key])}"></td>`).join('')}<td><select data-line="${i}" data-key="classification" aria-label="Row ${i+1} mapping">${['','Parts','Labor','Informational'].map(v=>`<option value="${v}" ${l.classification===v?'selected':''}>${v||'Needs mapping'}</option>`).join('')}</select><button type="button" data-alias="${i}">Suggest alias</button></td><td><input class="wide" data-line="${i}" data-key="exportDescription" aria-label="Row ${i+1} export description" value="${esc(l.exportDescription)}"></td><td><input data-line="${i}" data-key="expense" aria-label="Row ${i+1} expense element" value="${esc(l.expense)}"></td><td><input type="checkbox" data-line="${i}" data-key="mappingReviewed" aria-label="Row ${i+1} reviewed" ${l.mappingReviewed?'checked':''}></td><td><button type="button" data-remove="${i}">Remove</button></td></tr>`).join('');
-  $('lines').querySelectorAll('[data-line]').forEach(el=>el.oninput=()=>{editing.lines[el.dataset.line][el.dataset.key]=el.type==='checkbox'?el.checked:el.value;dirty=true;});
-  $('lines').querySelectorAll('[data-remove]').forEach(el=>el.onclick=()=>{editing.lines.splice(Number(el.dataset.remove),1);dirty=true;renderLines();});
-  $('lines').querySelectorAll('[data-alias]').forEach(el=>el.onclick=()=>{const line=editing.lines[el.dataset.alias],alias=settings.aliases.find(a=>a.name===line.name&&a.description===line.description);if(alias){Object.assign(line,{classification:alias.classification,exportDescription:alias.exportDescription,expense:alias.expense||'',mappingReviewed:false});dirty=true;renderLines();}else{$('jobSave').textContent='No exact item-name and description alias. Map and review this row manually.';}});
+
+// ---------- Billing math ----------
+
+function taxOnParts(partsCents) {
+  return Math.round(partsCents * Number(sample.settings.taxRate) / 100);
 }
-function renderJobIssues(job){$('reviewIssues').innerHTML='<h3>Review issues</h3>'+(job.review?.issues||[]).map(i=>`<div class="notice">${esc(i.message)}${i.financial?`<label>Decision / explanation<input data-decision="${esc(i.key)}" value="${esc(editing.decisions?.[i.key]?.reason)}"></label>`:''}</div>`).join('');}
-function renderAttachments(){$('attachments').innerHTML=(editing.attachments||[]).map(a=>`<a target="_blank" class="button" href="/api/freeport/files/${esc(a.id)}">${esc(a.purpose)} · ${esc(a.name)}</a>`).join('');}
-$('jobForm').oninput=()=>{dirty=true;$('jobSave').textContent='Unsaved changes';};
-$('jobForm').onsubmit=event=>{event.preventDefault();action(async()=>{
-  $('jobSave').textContent='Saving…';
-  $('jobFields').querySelectorAll('[data-field]').forEach(el=>editing[el.dataset.field]=el.value);
-  editing.timing={};$('timingFields').querySelectorAll('[data-field]').forEach(el=>{editing.timing[el.dataset.field]=el.value+(el.type==='datetime-local'&&el.value?'-07:00':'');});
-  editing.pages=$('sourcePages').value.split(',').map(x=>x.trim()).filter(Boolean).map(Number);
-  editing.reviewed=$('reviewed').checked;editing.workNotes=$('workNotes').value;editing.manualSourceReason=$('manualReason').value;
-  editing.correction={reason:$('correctionReason').value};editing.decisions=editing.decisions||{};
-  $('reviewIssues').querySelectorAll('[data-decision]').forEach(el=>editing.decisions[el.dataset.decision]={reason:el.value});
-  try{editing=await api(`/jobs/${editing.id}`,'PUT',editing);dirty=false;$('jobSave').textContent='Saved';await load();const job=jobs.find(j=>j.id===editing.id);renderJobIssues(job);message('Invoice saved.');}catch(e){$('jobSave').textContent=`Save failed: ${e.message}`;throw e;}
-});};
-$('addLine').onclick=()=>{editing.lines.push({name:'',description:'',quantity:'',unit:'',rate:'',amount:'',classification:'',exportDescription:'',mappingReviewed:false});dirty=true;renderLines();};
-function closeEditor(){if(dirty&&!confirm('Discard unsaved invoice changes?'))return;$('editor').close();dirty=false;}
-$('closeEditor').onclick=closeEditor;$('editor').addEventListener('cancel',e=>{e.preventDefault();closeEditor();});
-window.addEventListener('beforeunload',e=>{if(dirty||$('packageSaveState')?.textContent.includes('Unsaved')){e.preventDefault();e.returnValue='';}});
-$('attach').onclick=()=>action(async()=>{if(dirty)throw new Error('Save invoice edits before attaching files.');const f=$('attachmentFile').files[0];if(!f)throw new Error('Choose an attachment.');const form=new FormData();form.append('file',f);form.append('version',editing.version);form.append('purpose',$('attachmentPurpose').value);editing=await api(`/jobs/${editing.id}/attachments`,'POST',form);renderAttachments();$('sourcePages').value=(editing.pages||[]).join(', ');$('sourceLinks').innerHTML=editing.fileId?`<a class="button" target="_blank" href="/api/freeport/files/${esc(editing.fileId)}">Open original PDF</a>`:'';await load();message('Private attachment saved.');});
-$('manual').onclick=()=>action(async()=>{const number=prompt('Original invoice number');if(!number)return;const system=prompt('Source system (Omega, ELMO, Manual)','Manual');if(!system)return;const job=await api('/jobs','POST',{sourceSystem:system,sourceCompany:'Boulevard Glass LLC',invoiceNumber:number,documentType:'Invoice',invoiceDate:'',month:$('month').value,subtotal:'',tax:'',total:'',lines:[],timing:{},decisions:{}});await load();openJob(jobs.find(j=>j.id===job.id));message('Manual invoice created; enter and review source values.');});
-$('import').onclick=()=>$('pdf').click();$('pdf').onchange=()=>action(async()=>{if(!$('pdf').files[0])return;const form=new FormData();form.append('file',$('pdf').files[0]);form.append('sourceSystem',$('importSource').value);message('Extracting PDF; please wait…');$('import').disabled=true;try{const result=await api('/imports','POST',form);await load();message(`Import saved: ${result.results.map(r=>r.status).join(', ')}. Review every invoice and its page grouping.`);}finally{$('import').disabled=false;$('pdf').value='';}});
-async function renderConflicts(){const conflicts=(await api('/conflicts')).filter(c=>c.status==='Open');$('conflicts').classList.toggle('hidden',!conflicts.length);$('conflicts').innerHTML='<h2>Changed import comparisons</h2>'+conflicts.map(c=>{const old=jobs.find(j=>j.id===c.jobId);return `<details><summary>Invoice ${esc(old?.invoiceNumber)} · incoming source differs</summary><div class="grid"><pre class="source">${esc(JSON.stringify(old?.source,null,2))}</pre><pre class="source">${esc(JSON.stringify(c.incoming.source,null,2))}</pre></div><a target="_blank" href="/api/freeport/files/${esc(c.incoming.fileId)}">View incoming PDF</a><div class="bar"><button data-conflict="${esc(c.id)}" data-action="keep">Keep current</button><button data-conflict="${esc(c.id)}" data-action="replace">Use incoming; reset review</button></div></details>`;}).join('');$('conflicts').querySelectorAll('[data-conflict]').forEach(el=>el.onclick=()=>action(async()=>{const c=conflicts.find(c=>c.id===el.dataset.conflict),reason=prompt('Explain this import decision');if(!reason)return;await api(`/conflicts/${c.id}/resolve`,'POST',{action:el.dataset.action,reason,jobVersion:jobs.find(j=>j.id===c.jobId).version});await load();message('Import decision saved.');}));}
-function renderPackage(){
-  if(!active){$('package').innerHTML='<p class="muted">Create or choose a monthly package, then select reviewed invoices.</p>';return;}
-  const s=active.preview,t=s.totals,editable=['Draft','Ready for Review'].includes(active.status);
-  $('package').innerHTML=`<p><span class="badge">${esc(active.status)}</span> ${esc(active.reference||'Reference assigned at finalization')} · ${esc(active.month)} · Invoice date ${esc(active.invoiceDate)}</p><div class="metrics">${[['Parts','parts'],['Labor','labor'],['Source tax','sourceTax'],['Monthly tax comparison','monthlyTax'],['Selected tax','selectedTax'],['Total due','total'],['Original invoice total','sourceTotal'],['Allocation difference','difference'],['Spreadsheet extension total','exportSubtotal'],['Spreadsheet difference','exportDifference']].map(([label,key])=>`<div><span>${label}</span><b>${dollars(t[key])}</b></div>`).join('')}</div><p class="muted">${esc(s.settings.referenceAcceptance)}</p>${editable?`<div class="bar"><label>Status<select id="packageStatus"><option ${active.status==='Draft'?'selected':''}>Draft</option><option ${active.status==='Ready for Review'?'selected':''}>Ready for Review</option></select></label><label>Consolidated tax method<select id="taxMethod"><option value="source" ${active.taxMethod==='source'?'selected':''}>Sum original invoice taxes</option><option value="monthly" ${active.taxMethod==='monthly'?'selected':''}>Monthly parts × configured rate</option><option value="manual" ${active.taxMethod==='manual'?'selected':''}>Reviewed manual tax</option></select></label><label>Manual tax amount<input id="manualTax" value="${esc(active.manualTax||'0.00')}"></label></div><label>Tax / allocation review decision<textarea id="taxReason">${esc(active.taxDecision?.reason||'')}</textarea></label><div class="bar"><button id="savePackage" class="primary">Save selection and review</button><button id="finalize">Finalize package</button><span id="packageSaveState">Saved · ${active.jobIds.length} included invoices</span></div><details class="issue-list" open><summary>${t.issues.length} review issues</summary>${t.issues.map(i=>`<div class="notice">${esc(jobs.find(j=>j.id===i.jobId)?.invoiceNumber||'Package')}: ${esc(i.message)}</div>`).join('')}</details>`:`<div class="actions">${['xlsx','invoice','detail','supporting','allocation'].map(f=>`<a class="button" href="/api/freeport/packages/${esc(active.id)}/download/${f}">Download ${f}</a>`).join('')}</div><p class="notice">Payment information is a manual reference. It does not verify or post payment in Omega.</p><p>${esc(active.payment?.reference||'No payment reference recorded')}</p><div class="actions">${active.status==='Cancelled'?'':'<button data-state="sent">Mark Sent</button><button data-state="payment">Record payment reference</button><button data-state="revise">Revise package</button><button data-state="cancel">Cancel package</button>'}</div>`}<details><summary>Prior finalized versions (${active.history?.length||0})</summary>${(active.history||[]).map((h,i)=>`<p>${esc(h.snapshot.reference)} · ${esc(h.action)} · ${esc(h.reason)} · ${esc(h.actor)} ${['xlsx','invoice','detail','allocation','supporting'].map(f=>`<a href="/api/freeport/packages/${esc(active.id)}/download/${f}?revision=${i}">${f}</a>`).join(' · ')}</p>`).join('')}</details>`;
-  if(editable){$('savePackage').onclick=()=>action(savePackage);$('finalize').onclick=()=>action(async()=>{if($('packageSaveState').textContent.includes('Unsaved'))throw new Error('Save package edits before finalizing.');if(!confirm('Freeze this package and its included invoices?'))return;await api(`/packages/${active.id}/finalize`,'POST',{version:active.version});await load();message('Package finalized. All outputs use the saved snapshot.');});for(const id of ['packageStatus','taxMethod','manualTax','taxReason'])$(id).oninput=()=>$('packageSaveState').textContent='Unsaved package changes';}
-  $('package').querySelectorAll('[data-state]').forEach(el=>el.onclick=()=>action(async()=>{const a=el.dataset.state,body={action:a,version:active.version};if(['revise','cancel'].includes(a)){body.reason=prompt('Reason for revision/cancellation');if(!body.reason)return;}if(a==='payment'){body.reference=prompt('Manual check / payment reference (not verified in Omega)');if(!body.reference)return;}await api(`/packages/${active.id}/state`,'POST',body);await load();message('Package history updated.');}));
+
+// SKUs that cover several sizes are matched by billed price until each size has its own SKU.
+function matchLine(line) {
+  const candidates = sample.items.filter(item => item.sku === line.sku);
+  const total = Math.round(Number(line.quantity) * toCents(line.rate));
+  if (!candidates.length) {
+    return { ...line, total, item: null, issue: 'SKU is not on the item master list' };
+  }
+  if (candidates.length > 1) {
+    const item = candidates.find(candidate => toCents(candidate.price) === toCents(line.rate));
+    return item
+      ? { ...line, total, item }
+      : { ...line, total, item: null, issue: `Price matches no ${line.sku} size; pick one` };
+  }
+  const [item] = candidates;
+  const issue = toCents(item.price) === toCents(line.rate) ? '' : `Billed price differs from list price ${money(toCents(item.price))}`;
+  return { ...line, total, item, issue };
 }
-async function savePackage(){const body={version:active.version,status:$('packageStatus').value,jobIds:[...selected],taxMethod:$('taxMethod').value,manualTax:$('manualTax').value,taxDecision:{reason:$('taxReason').value}};await api(`/packages/${active.id}`,'PUT',body);await load();message('Package selection and review saved.');}
-$('newPackage').onclick=()=>action(async()=>{active=await api('/packages','POST',{month:$('month').value});selected.clear();await load();message('Draft package created. Assign invoices to its billing month, then include them.');});
-$('packages').onchange=()=>action(async()=>{active=$('packages').value?await api(`/packages/${$('packages').value}`):null;selected.clear();active?.jobIds.forEach(id=>selected.add(id));syncURL();renderJobs();renderPackage();});
-async function loadTiming(){const data=await api(`/timing?month=${encodeURIComponent($('month').value)}`);$('timing').innerHTML=[['Selected month '+data.month,data.monthly],['Calendar quarter '+data.quarter,data.quarterly]].map(([label,t])=>`<h3>${esc(label)}</h3><div class="metrics"><div><span>Actual elapsed hours · ${t.actualCoverage}/${t.jobs} jobs</span><b>${esc(t.actualHours??'No data')}</b></div><div><span>On-site hours · ${t.onsiteCoverage}/${t.jobs} jobs</span><b>${esc(t.onsiteHours??'No data')}</b></div><div><span>Billed technician-hours · hour units only</span><b>${esc(t.billedTechnicianHours)}</b></div></div>`).join('');}
-for(const id of ['search','accountFilter','reviewFilter','inclusion','period'])$(id).oninput=renderJobs;
-$('month').onchange=()=>action(async()=>{syncURL();renderJobs();await loadTiming();});
-$('settings').onclick=()=>{$('settingsJson').value=JSON.stringify(settings,null,2);$('admin').showModal();};$('closeAdmin').onclick=()=>$('admin').close();
-$('adminLogin').onsubmit=async event=>{event.preventDefault();try{const response=await fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('adminUser').value,password:$('adminPassword').value})});const data=await response.json();if(!response.ok)throw new Error(data.error);$('adminPassword').value='';$('adminMessage').textContent='Administrator gate unlocked.';}catch(e){$('adminMessage').textContent=e.message;}};
-$('saveSettings').onclick=async()=>{try{settings=await api('/settings','PUT',JSON.parse($('settingsJson').value));$('settingsJson').value=JSON.stringify(settings,null,2);$('adminMessage').textContent='Saved';await load();}catch(e){$('adminMessage').textContent=e.message;}};
-await action(async()=>{await load();message('Saved workspace loaded. Source documents require review before billing.');});
+
+function summarizeInvoice(invoice) {
+  const lines = invoice.lines.map(matchLine);
+  const parts = lines.filter(line => line.item?.type === 'Parts').reduce((sum, line) => sum + line.total, 0);
+  const labor = lines.filter(line => line.item?.type === 'Labor').reduce((sum, line) => sum + line.total, 0);
+  const unmatched = lines.filter(line => !line.item).reduce((sum, line) => sum + line.total, 0);
+  const omegaTax = taxOnParts(parts);
+  return {
+    ...invoice,
+    lines,
+    parts,
+    labor,
+    unmatched,
+    omegaTax,
+    total: parts + labor + unmatched + omegaTax,
+    issues: lines.filter(line => line.issue).length,
+    account: sample.accountCodes.find(account => account.code === invoice.accountCode)
+  };
+}
+
+function summarizeMonth(month) {
+  const invoices = sample.invoices
+    .filter(invoice => invoice.month === month)
+    .sort((a, b) => a.installDate.localeCompare(b.installDate))
+    .map(summarizeInvoice);
+  const parts = invoices.reduce((sum, invoice) => sum + invoice.parts, 0);
+  const labor = invoices.reduce((sum, invoice) => sum + invoice.labor, 0);
+  const tax = taxOnParts(parts);
+  const record = sample.months[month] || { status: 'Open', revision: 0 };
+  return {
+    month,
+    invoices,
+    parts,
+    labor,
+    tax,
+    omegaTax: invoices.reduce((sum, invoice) => sum + invoice.omegaTax, 0),
+    total: parts + labor + tax,
+    needsReview: invoices.filter(invoice => invoice.status !== 'Ready'),
+    record,
+    invoiceNumber: `FMI-${month}${record.revision ? `-R${record.revision}` : ''}`
+  };
+}
+
+function spreadsheetRows(summary) {
+  const { settings } = sample;
+  return summary.invoices.flatMap(invoice => invoice.lines.map(line => ({
+    unmatched: !line.item,
+    cells: [
+      line.item?.description ?? line.sku, '', line.quantity, line.item?.unit ?? '', line.rate, 'Work Order',
+      settings.companyCode, invoice.orderNumber, '', invoice.accountCode, '',
+      line.item ? (line.item.type === 'Labor' ? settings.laborExpense : settings.partsExpense) : '',
+      invoice.number, settings.usingAreaName, settings.poNumber
+    ]
+  })));
+}
+
+// ---------- Shared pieces ----------
+
+const statusBadge = status => `<span class="badge ${status === 'Ready' || status === 'Sent' ? 'ok' : 'review'}">${esc(status)}</span>`;
+
+const stepNote = (step, label) => `<button disabled title="Arrives in build step ${step}">${esc(label)}</button>`;
+
+function metric(label, value, note = '') {
+  return `<div class="metric"><span>${esc(label)}</span><b>${value}</b>${note ? `<small>${note}</small>` : ''}</div>`;
+}
+
+function defaultMonth() {
+  return Object.keys(sample.months).sort().reverse().find(month => sample.months[month].status === 'Open')
+    || new Date().toISOString().slice(0, 7);
+}
+
+// ---------- Month view ----------
+
+function renderMonth(params) {
+  const month = params.get('month') || defaultMonth();
+  const summary = summarizeMonth(month);
+  const rows = summary.invoices.map(invoice => {
+    const lateInvoice = invoice.omegaDate.slice(0, 7) !== invoice.month;
+    return `
+      <tr class="clickable" data-href="/freeport/invoices/${esc(invoice.number)}">
+        <td><a href="/freeport/invoices/${esc(invoice.number)}"><strong>${esc(invoice.number)}</strong></a></td>
+        <td>${formatDate(invoice.installDate)}</td>
+        <td>${formatDate(invoice.omegaDate)}${lateInvoice ? ' <span class="badge info" title="Billed by install date">Later month</span>' : ''}</td>
+        <td>${esc(invoice.orderNumber)}</td>
+        <td>${esc(invoice.account?.name ?? invoice.accountCode)}<small class="block">${esc(invoice.accountCode)}</small></td>
+        <td class="num">${money(invoice.parts)}</td>
+        <td class="num">${money(invoice.labor)}</td>
+        <td class="num">${money(invoice.omegaTax)}</td>
+        <td class="num">${money(invoice.total)}</td>
+        <td>${statusBadge(invoice.status)}${invoice.issues ? `<small class="block warn">${invoice.issues} flagged line${invoice.issues > 1 ? 's' : ''}</small>` : ''}</td>
+      </tr>`;
+  }).join('');
+
+  screen.innerHTML = `
+    <div class="page-head">
+      <div>
+        <p class="eyebrow">FREEPORT-MCMORAN · SAFFORD</p>
+        <div class="month-picker">
+          <a class="button icon" href="/freeport?month=${shiftMonth(month, -1)}" aria-label="Previous month">‹</a>
+          <h1>${formatMonth(month)}</h1>
+          <a class="button icon" href="/freeport?month=${shiftMonth(month, 1)}" aria-label="Next month">›</a>
+          ${statusBadge(summary.record.status)}
+        </div>
+      </div>
+      <div class="actions">
+        ${stepNote(7, 'Import Omega report')}
+        ${stepNote(2, 'Add invoice')}
+        <a class="button primary" href="/freeport/close?month=${month}">Month close →</a>
+      </div>
+    </div>
+
+    <section class="metrics-row">
+      ${metric('Invoices', summary.invoices.length, summary.needsReview.length ? `<span class="warn">${summary.needsReview.length} need review</span>` : 'All ready')}
+      ${metric('Parts', money(summary.parts))}
+      ${metric('Labor', money(summary.labor))}
+      ${metric(`Tax (${sample.settings.taxRate}% of parts)`, money(summary.tax))}
+      ${metric('Month total', money(summary.total))}
+    </section>
+
+    <section class="panel">
+      ${summary.invoices.length ? `
+        <div class="scroll">
+          <table class="invoice-table">
+            <thead><tr>
+              <th>Invoice #</th><th>Install date</th><th>Omega date</th><th>Order #</th><th>Account</th>
+              <th class="num">Parts</th><th class="num">Labor</th><th class="num">Omega tax</th><th class="num">Total</th><th>Status</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>` : `<p class="empty">No invoices billed to ${formatMonth(month)} yet.</p>`}
+    </section>`;
+}
+
+// ---------- Invoice record ----------
+
+function renderInvoice(number) {
+  const raw = sample.invoices.find(invoice => invoice.number === number);
+  if (!raw) {
+    screen.innerHTML = `<p class="empty">Invoice ${esc(number)} was not found. <a href="/freeport">Back to months</a></p>`;
+    return;
+  }
+  const invoice = summarizeInvoice(raw);
+  const lateInvoice = invoice.omegaDate.slice(0, 7) !== invoice.month;
+  const accountOptions = sample.accountCodes.map(account =>
+    `<option value="${account.code}" ${account.code === invoice.accountCode ? 'selected' : ''}>${esc(account.code)} · ${esc(account.name)}</option>`).join('');
+  const lineRows = invoice.lines.map(line => `
+    <tr class="${line.issue ? 'flagged' : ''}">
+      <td>${esc(line.sku)}</td>
+      <td>${line.item ? esc(line.item.description) : '<em>Not matched</em>'}</td>
+      <td class="num">${esc(line.quantity)}</td>
+      <td>${esc(line.item?.unit ?? '')}</td>
+      <td class="num">${money(toCents(line.rate))}</td>
+      <td class="num">${money(line.total)}</td>
+      <td>${esc(line.item?.type ?? '')}</td>
+      <td>${line.item ? (line.item.type === 'Labor' ? sample.settings.laborExpense : sample.settings.partsExpense) : ''}</td>
+      <td>${line.issue ? `<span class="warn">${esc(line.issue)}</span>` : '<span class="ok-text">OK</span>'}</td>
+    </tr>`).join('');
+
+  screen.innerHTML = `
+    <a class="back" href="/freeport?month=${invoice.month}">← ${formatMonth(invoice.month)}</a>
+    <div class="page-head">
+      <div>
+        <p class="eyebrow">OMEGA INVOICE</p>
+        <h1>Invoice ${esc(invoice.number)} ${statusBadge(invoice.status)}</h1>
+      </div>
+      <div class="actions">
+        ${stepNote(2, 'Mark ready')}
+        ${stepNote(2, 'Save')}
+      </div>
+    </div>
+
+    ${lateInvoice ? `<p class="notice">Omega dated this invoice ${formatDate(invoice.omegaDate)}. It's billed in <strong>${formatMonth(invoice.month)}</strong> because it was installed ${formatDate(invoice.installDate)}.</p>` : ''}
+
+    <section class="panel">
+      <h2>Details</h2>
+      <div class="grid">
+        <label>Omega invoice #<input value="${esc(invoice.number)}" disabled></label>
+        <label>Omega invoice date<input type="date" value="${invoice.omegaDate}" disabled></label>
+        <label>Install date<input type="date" value="${invoice.installDate}" disabled></label>
+        <label>Billing month<input type="month" value="${invoice.month}" disabled></label>
+        <label>Order number<input value="${esc(invoice.orderNumber)}" disabled></label>
+        <label class="span-2">Account code<select disabled>${accountOptions}</select></label>
+        <label class="span-2">Google Drive folder (work order and photos)<input placeholder="Paste folder link" disabled></label>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Line items</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr>
+            <th>Omega SKU</th><th>Freeport description</th><th class="num">Qty</th><th>Unit</th><th class="num">Rate</th>
+            <th class="num">Line total</th><th>Type</th><th>Expense element</th><th>Check</th>
+          </tr></thead>
+          <tbody>${lineRows}</tbody>
+        </table>
+      </div>
+      <dl class="totals">
+        <dt>Parts</dt><dd>${money(invoice.parts)}</dd>
+        <dt>Labor</dt><dd>${money(invoice.labor)}</dd>
+        ${invoice.unmatched ? `<dt class="warn">Not matched</dt><dd class="warn">${money(invoice.unmatched)}</dd>` : ''}
+        <dt>Omega tax</dt><dd>${money(invoice.omegaTax)}</dd>
+        <dt><strong>Total</strong></dt><dd><strong>${money(invoice.total)}</strong></dd>
+      </dl>
+    </section>`;
+}
+
+// ---------- Month close ----------
+
+function renderConsolidatedInvoice(summary) {
+  const { settings } = sample;
+  return `
+    <article class="paper" aria-label="Consolidated invoice preview">
+      <div class="paper-head">
+        <div>
+          <strong>${esc(settings.businessName)}</strong>
+          <p>${esc(settings.businessAddress).replace(/\n/g, '<br>')}<br>${esc(settings.businessPhone)}</p>
+        </div>
+        <dl class="paper-meta">
+          <dt>INVOICE</dt><dd>${esc(summary.invoiceNumber)}</dd>
+          <dt>DATE</dt><dd>${formatDate(monthEnd(summary.month))}</dd>
+          <dt>PO</dt><dd>${esc(settings.poNumber)}</dd>
+        </dl>
+      </div>
+      <div class="paper-parties">
+        <div><span>BILL TO</span><p>${esc(settings.billTo).replace(/\n/g, '<br>')}</p></div>
+        <div><span>FOR</span><p>Contract No. ${esc(settings.contractNumber)}<br>Attn: ${formatMonth(summary.month)}<br>${summary.invoices.length} invoices</p></div>
+      </div>
+      <table>
+        <thead><tr><th>Description</th><th class="num">Amount</th></tr></thead>
+        <tbody>
+          <tr><td>Parts and Materials · ${formatMonth(summary.month)}</td><td class="num">${money(summary.parts)}</td></tr>
+          <tr><td>Labor · ${formatMonth(summary.month)}</td><td class="num">${money(summary.labor)}</td></tr>
+        </tbody>
+      </table>
+      <dl class="totals">
+        <dt>Subtotal</dt><dd>${money(summary.parts + summary.labor)}</dd>
+        <dt>Tax (${esc(settings.taxRate)}% of parts)</dt><dd>${money(summary.tax)}</dd>
+        <dt><strong>Amount due</strong></dt><dd><strong>${money(summary.total)}</strong></dd>
+      </dl>
+      <p class="paper-foot">LICENSED-INSURED-BONDED AZ ROC# ${esc(settings.rocNumber)} · AZ Procure Vendor ID # ${esc(settings.vendorId)}</p>
+    </article>`;
+}
+
+function renderClose(params) {
+  const month = params.get('month') || defaultMonth();
+  const summary = summarizeMonth(month);
+  const sent = summary.record.status === 'Sent';
+  const rows = spreadsheetRows(summary);
+  const taxDifference = summary.tax - summary.omegaTax;
+
+  screen.innerHTML = `
+    <a class="back" href="/freeport?month=${month}">← ${formatMonth(month)}</a>
+    <div class="page-head">
+      <div>
+        <p class="eyebrow">MONTH CLOSE</p>
+        <h1>${formatMonth(month)} ${statusBadge(summary.record.status)}</h1>
+        <p class="muted">Package invoice number <strong>${esc(summary.invoiceNumber)}</strong>${sent ? ` · sent ${formatDate(summary.record.sentOn)}` : ''}</p>
+      </div>
+      <div class="actions">
+        ${sent ? stepNote(6, 'Start correction (R1)') : stepNote(6, 'Mark sent')}
+      </div>
+    </div>
+
+    <section class="panel checklist">
+      <h2>Ready to send?</h2>
+      <ul>
+        <li class="${summary.needsReview.length ? 'todo' : 'done'}">
+          ${summary.invoices.length - summary.needsReview.length} of ${summary.invoices.length} invoices ready
+          ${summary.needsReview.map(invoice => `<a href="/freeport/invoices/${esc(invoice.number)}">${esc(invoice.number)}</a>`).join(' ')}
+        </li>
+        <li class="${taxDifference ? 'info' : 'done'}">
+          Tax: ${money(summary.tax)} on this invoice (${sample.settings.taxRate}% of month parts) vs ${money(summary.omegaTax)} added up from Omega invoices
+          ${taxDifference ? `· ${money(Math.abs(taxDifference))} rounding difference` : '· matches'}
+        </li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <div><h2>1. Consolidated invoice</h2><p class="muted">The invoice Freeport writes the check from.</p></div>
+        ${stepNote(4, 'Download PDF')}
+      </div>
+      ${renderConsolidatedInvoice(summary)}
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <div><h2>2. Line-item spreadsheet</h2><p class="muted">${rows.length} rows · replaces the Google Sheet</p></div>
+        ${stepNote(3, 'Download .xlsx')}
+      </div>
+      <div class="scroll sheet">
+        <table>
+          <thead><tr>${SPREADSHEET_COLUMNS.map(column => `<th>${esc(column)}</th>`).join('')}</tr></thead>
+          <tbody>${rows.map(row => `<tr class="${row.unmatched ? 'flagged' : ''}">${row.cells.map(cell => `<td>${esc(cell)}</td>`).join('')}</tr>`).join('')}</tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <div><h2>3. Merged invoice PDF</h2><p class="muted">One app-generated page per invoice, in install-date order.</p></div>
+        ${stepNote(5, 'Download PDF')}
+      </div>
+      <ol class="pages">
+        ${summary.invoices.map(invoice => `<li><strong>${esc(invoice.number)}</strong> · installed ${formatDate(invoice.installDate)} · ${money(invoice.total)}</li>`).join('')}
+      </ol>
+    </section>`;
+}
+
+// ---------- Admin ----------
+
+function renderAdmin(params) {
+  const tab = params.get('tab') || 'items';
+  const { settings } = sample;
+  const tabs = [['items', 'Item master list'], ['accounts', 'Account codes'], ['settings', 'Settings']]
+    .map(([id, label]) => `<a class="tab ${tab === id ? 'active' : ''}" href="/freeport/admin?tab=${id}">${label}</a>`).join('');
+
+  const bodies = {
+    items: `
+      <p class="muted">Only these items can appear on Freeport invoices. Billed prices are never changed; a different price is flagged for review.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>Omega SKU</th><th>Freeport description</th><th>Unit</th><th>Type</th><th>Expense element</th><th class="num">List price</th></tr></thead>
+        <tbody>${sample.items.map(item => `<tr>
+          <td>${esc(item.sku)}</td><td>${esc(item.description)}</td><td>${esc(item.unit)}</td><td>${esc(item.type)}</td>
+          <td>${item.type === 'Labor' ? settings.laborExpense : settings.partsExpense}</td><td class="num">${money(toCents(item.price))}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`,
+    accounts: `
+      <p class="muted">Chosen per invoice based on where the job took place.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>Code</th><th>Name</th><th>Area</th></tr></thead>
+        <tbody>${sample.accountCodes.map(account => `<tr><td>${esc(account.code)}</td><td>${esc(account.name)}</td><td>${esc(account.group)}</td></tr>`).join('')}</tbody>
+      </table></div>`,
+    settings: `
+      <div class="grid">
+        ${[
+          ['PO number', settings.poNumber], ['Contract number', settings.contractNumber], ['Company code', settings.companyCode],
+          ['Tax rate (% of parts)', settings.taxRate], ['Parts expense element', settings.partsExpense], ['Labor expense element', settings.laborExpense],
+          ['Using area name', settings.usingAreaName], ['Business name', settings.businessName], ['Phone', settings.businessPhone],
+          ['AZ ROC #', settings.rocNumber], ['AZ Procure Vendor ID', settings.vendorId]
+        ].map(([label, value]) => `<label>${esc(label)}<input value="${esc(value)}" disabled></label>`).join('')}
+        <label>Business address<textarea disabled>${esc(settings.businessAddress)}</textarea></label>
+        <label>Bill to<textarea disabled>${esc(settings.billTo)}</textarea></label>
+      </div>`
+  };
+
+  screen.innerHTML = `
+    <div class="page-head">
+      <div><p class="eyebrow">FREEPORT ADMIN</p><h1>Admin</h1></div>
+      <div class="actions">${stepNote(2, 'Edit')}</div>
+    </div>
+    <nav class="tabs">${tabs}</nav>
+    <section class="panel">${bodies[tab] ?? bodies.items}</section>`;
+}
+
+// ---------- Routing ----------
+
+function render() {
+  const { pathname, searchParams } = new URL(location.href);
+  const invoiceMatch = pathname.match(/^\/freeport\/invoices\/([^/]+)$/);
+  let section = 'month';
+  if (invoiceMatch) renderInvoice(decodeURIComponent(invoiceMatch[1]));
+  else if (pathname === '/freeport/close') renderClose(searchParams);
+  else if (pathname === '/freeport/admin') { section = 'admin'; renderAdmin(searchParams); }
+  else renderMonth(searchParams);
+  document.querySelectorAll('[data-nav]').forEach(link => link.classList.toggle('active', link.dataset.nav === section));
+  window.scrollTo(0, 0);
+}
+
+function navigate(href) {
+  history.pushState(null, '', href);
+  render();
+}
+
+document.addEventListener('click', event => {
+  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey) return;
+  const link = event.target.closest('a[href^="/freeport"]');
+  const row = !link && event.target.closest('tr[data-href]');
+  if (link) {
+    event.preventDefault();
+    navigate(link.getAttribute('href'));
+  } else if (row) {
+    navigate(row.dataset.href);
+  }
+});
+
+window.addEventListener('popstate', render);
+
+const me = await fetch('/api/me');
+if (!me.ok) {
+  location.href = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+} else {
+  document.getElementById('user').textContent = (await me.json()).user.full_name;
+  render();
+}

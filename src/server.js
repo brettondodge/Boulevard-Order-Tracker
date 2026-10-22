@@ -1,4 +1,3 @@
-import { freeportRouter } from './freeport/routes.js';
 import express from 'express';
 import { createAccessMiddleware } from './access.js';
 import { createPostgresSessionStore, configureSessionMiddleware } from './session-config.js';
@@ -247,8 +246,7 @@ app.get('/api/tools', requireStaffAuth, asyncRoute(async (req, res) => {
   const { readFile } = await import('node:fs/promises');
   res.json(JSON.parse(await readFile(path.join(publicDir, 'tools.json'), 'utf8')));
 }));
-app.use('/api/freeport', freeportRouter(requireStaffAuth, requireAdminAuth));
-app.get(['/freeport', '/freeport/*'], (req, res) => req.session.user ? res.sendFile(path.join(publicDir, '../views/freeport.html')) : res.redirect('/login?next=/freeport'));
+app.get(['/freeport', '/freeport/*'], (req, res) => req.session.user ? res.sendFile(path.join(publicDir, '../views/freeport.html')) : res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`));
 app.get('/login', (req, res) => res.sendFile(path.join(publicDir, 'login.html')));
 app.get('/app', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
 

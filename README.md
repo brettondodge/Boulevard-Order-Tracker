@@ -106,7 +106,6 @@ This preview is ready for local office use. To make it available to the whole of
 
 ## Boulevard Glass Tools and Freeport Billing
 
-The shared workspace is at `/`, the existing tracker remains at `/app`, and the
-new billing module is at `/freeport`. See [Freeport setup, workflow, verification,
-reference limitations and deployment/rollback instructions](docs/freeport.md).
-Use an isolated development database for previews. No production update is implied.
+The shared workspace is at `/`, the existing tracker remains at `/app`, and
+Freeport billing is at `/freeport`. Freeport is being rebuilt; see the
+[rebuild plan](docs/freeport-plan.md). Use an isolated development database for previews.
