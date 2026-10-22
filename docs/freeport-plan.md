@@ -83,6 +83,30 @@ Users: mainly the office manager; Bretton and admins can view everything.
 - Once a month is marked **Sent** it's locked. Corrections create a new revision
   (R1, R2…) and the previous version is kept.
 
+### Dates and imports
+
+The import date range never decides the billing month. The import only brings
+invoices in; the app sorts them by install date.
+
+- **No duplicates.** One record per Omega invoice number. Re-importing updates an
+  unsent invoice and never creates a copy, so overlapping ranges are safe.
+  Habit: import "first of last month through today".
+- **Freeport only.** Imports keep only the Freeport McMoRan - Safford account.
+- **Late invoice for a sent month** → never added silently. It's flagged and goes
+  out as a correction (R1) of that month, so Freeport's records match ours.
+  (Billing it in the next month was rejected for that reason.)
+- **Date flags:** missing install date (blocks Ready); install date after the
+  invoice date; install date more than ~30 days before the invoice date.
+- **Missing-invoice check** (if the Omega API supports it): Month close warns
+  about Freeport jobs scheduled that month but not yet invoiced.
+
+### Month-end process
+
+- Office rule: **all Freeport jobs are invoiced in Omega before month-end.**
+- Boulevard sets the billing cycle and has **45 days** to submit. A month stays
+  Open until someone closes it; closing a few days into the next month (e.g. by
+  the 5th) lets last-day jobs land in the right package and keeps corrections rare.
+
 ## Data
 
 ### Invoice record
@@ -181,3 +205,5 @@ Each step is a small commit you can look at before the next.
 
 1. Does the Omega API return line items, scheduled date and custom fields?
    (Answer with a test call in step 7; needs an Omega API key.)
+2. What exactly is the 45-day window — submit within 45 days of month-end, or a
+   non-calendar billing cycle? The plan assumes calendar months.
