@@ -1,6 +1,8 @@
 -- Freeport billing records. Portable SQL: Postgres runs it through the migration
 -- runner; local SQLite runs it at startup (every statement is IF NOT EXISTS).
 -- Money is stored in integer cents; quantities as canonical decimal text.
+-- Items with custom_description take their spreadsheet description from each
+-- invoice line (e.g. a windshield part number) instead of the item list.
 
 CREATE TABLE IF NOT EXISTS freeport_settings (
   id TEXT PRIMARY KEY,
@@ -27,6 +29,7 @@ CREATE TABLE IF NOT EXISTS freeport_items (
   unit TEXT NOT NULL,
   item_type TEXT NOT NULL,
   price_cents INTEGER NOT NULL,
+  custom_description INTEGER NOT NULL DEFAULT 0,
   active INTEGER NOT NULL DEFAULT 1,
   sort_order INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
@@ -61,6 +64,7 @@ CREATE TABLE IF NOT EXISTS freeport_invoice_lines (
   position INTEGER NOT NULL,
   sku TEXT NOT NULL,
   item_id TEXT,
+  description TEXT,
   quantity TEXT NOT NULL,
   rate_cents INTEGER NOT NULL
 );

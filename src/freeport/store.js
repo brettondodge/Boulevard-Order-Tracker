@@ -66,7 +66,12 @@ async function transaction(work) {
 export async function initializeFreeport({ includePreviewInvoices = false } = {}) {
   if (!isProduction) {
     // Postgres gets these tables from the migration runner.
-    getDb().exec(fs.readFileSync(new URL('../../migrations/002-freeport.sql', import.meta.url), 'utf8'));
+    const db = getDb();
+    db.exec(fs.readFileSync(new URL('../../migrations/002-freeport.sql', import.meta.url), 'utf8'));
+    // Local databases created before these columns existed.
+    const hasColumn = (table, column) => db.prepare(`SELECT COUNT(*) AS count FROM pragma_table_info('${table}') WHERE name = ?`).get(column).count > 0;
+    if (!hasColumn('freeport_items', 'custom_description')) db.exec('ALTER TABLE freeport_items ADD COLUMN custom_description INTEGER NOT NULL DEFAULT 0');
+    if (!hasColumn('freeport_invoice_lines', 'description')) db.exec('ALTER TABLE freeport_invoice_lines ADD COLUMN description TEXT');
   }
 
   await transaction(async tx => {
@@ -86,8 +91,8 @@ export async function initializeFreeport({ includePreviewInvoices = false } = {}
     const items = defaultItems.map(item => ({ ...item, id: newId('item') }));
     for (const [index, item] of items.entries()) {
       await tx.run(
-        'INSERT INTO freeport_items (id, sku, description, unit, item_type, price_cents, active, sort_order, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)',
-        [item.id, item.sku, item.description, item.unit, item.type, item.priceCents, index, now, 'setup']
+        'INSERT INTO freeport_items (id, sku, description, unit, item_type, price_cents, custom_description, active, sort_order, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)',
+        [item.id, item.sku, item.description, item.unit, item.type, item.priceCents, item.customDescription ? 1 : 0, index, now, 'setup']
       );
     }
     if (includePreviewInvoices) {
@@ -102,7 +107,7 @@ export async function initializeFreeport({ includePreviewInvoices = false } = {}
 // ---------- Configuration ----------
 
 const accountFromRow = row => ({ code: row.code, name: row.name, group: row.area_group, usingAreaName: row.using_area_name, active: Boolean(row.active) });
-const itemFromRow = row => ({ id: row.id, sku: row.sku, description: row.description, unit: row.unit, type: row.item_type, priceCents: Number(row.price_cents), active: Boolean(row.active) });
+const itemFromRow = row => ({ id: row.id, sku: row.sku, description: row.description, unit: row.unit, type: row.item_type, priceCents: Number(row.price_cents), customDescription: Boolean(row.custom_description), active: Boolean(row.active) });
 
 async function readConfig(tx) {
   const settingsRow = await tx.get('SELECT data FROM freeport_settings WHERE id = ?', [SETTINGS_ID]);
@@ -142,13 +147,13 @@ export function saveItems(items, actor) {
   return transaction(async tx => {
     const now = isoNow();
     for (const [index, item] of items.entries()) {
-      const params = [item.sku, item.description, item.unit, item.type, item.priceCents, item.active ? 1 : 0, index, now, actor];
+      const params = [item.sku, item.description, item.unit, item.type, item.priceCents, item.customDescription ? 1 : 0, item.active ? 1 : 0, index, now, actor];
       const updated = item.id
-        ? await tx.run('UPDATE freeport_items SET sku = ?, description = ?, unit = ?, item_type = ?, price_cents = ?, active = ?, sort_order = ?, updated_at = ?, updated_by = ? WHERE id = ?', [...params, item.id])
+        ? await tx.run('UPDATE freeport_items SET sku = ?, description = ?, unit = ?, item_type = ?, price_cents = ?, custom_description = ?, active = ?, sort_order = ?, updated_at = ?, updated_by = ? WHERE id = ?', [...params, item.id])
         : 0;
       if (!updated) {
         if (item.id) throw new FreeportError(409, 'An item was removed while you were editing. Reload and try again.');
-        await tx.run('INSERT INTO freeport_items (sku, description, unit, item_type, price_cents, active, sort_order, updated_at, updated_by, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [...params, newId('item')]);
+        await tx.run('INSERT INTO freeport_items (sku, description, unit, item_type, price_cents, custom_description, active, sort_order, updated_at, updated_by, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [...params, newId('item')]);
       }
     }
     return readConfig(tx);
@@ -176,7 +181,7 @@ function invoiceFromRow(row, lines) {
     updatedAt: row.updated_at,
     createdBy: row.created_by || '',
     updatedBy: row.updated_by || '',
-    lines: lines.map(line => ({ id: line.id, sku: line.sku, itemId: line.item_id || '', quantity: line.quantity, rateCents: Number(line.rate_cents) }))
+    lines: lines.map(line => ({ id: line.id, sku: line.sku, itemId: line.item_id || '', description: line.description || '', quantity: line.quantity, rateCents: Number(line.rate_cents) }))
   };
 }
 
@@ -190,8 +195,8 @@ async function readInvoice(tx, number) {
 async function insertLines(tx, invoiceId, lines) {
   for (const [index, line] of lines.entries()) {
     await tx.run(
-      'INSERT INTO freeport_invoice_lines (id, invoice_id, position, sku, item_id, quantity, rate_cents) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [newId('line'), invoiceId, index, line.sku, line.itemId || null, line.quantity, line.rateCents]
+      'INSERT INTO freeport_invoice_lines (id, invoice_id, position, sku, item_id, description, quantity, rate_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [newId('line'), invoiceId, index, line.sku, line.itemId || null, line.description || null, line.quantity, line.rateCents]
     );
   }
 }

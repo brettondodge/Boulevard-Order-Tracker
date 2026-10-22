@@ -125,7 +125,17 @@ order number, account code, line items, Omega tax, Omega total, status
 Per item: Omega SKU, description for Freeport's sheet, unit (ea/hr),
 Parts/Labor (sets expense element and taxability), standard price, active flag.
 
-Each glass size will get its own SKU in Omega (e.g. "24 x 48 (.090 Clr Lami)"),
+**Per-line description items** (Windshield, Special-order part, Freight / crating)
+cover one-off parts: the description (e.g. "DW02153GTYN Windshield") and price are
+typed on each invoice line and go into the spreadsheet as typed. A blank list price
+means the price is always entered per line.
+
+The starting list comes from the January–September 2026 billing sheet: 15
+fixed-price items billed every month plus those three per-line items. Spelling and
+unit inconsistencies in the old sheet (e.g. "Tech Labor - Over Time", overtime
+billed as "ea") are standardized.
+
+Each glass size has its own SKU in Omega (e.g. "24 x 48 (.090 Clr Lami)"),
 so lines match **by SKU**. Until Omega is updated, a SKU that still covers
 several sizes falls back to matching **by price**; if that fails, the office
 manager picks during review.

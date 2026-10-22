@@ -66,7 +66,13 @@ export function normalizeInvoiceInput(body = {}, config) {
     const sku = item ? item.sku : text(line?.sku, `${label} SKU`, 120, { required: true });
     const quantity = parseQuantity(line?.quantity);
     if (!quantity) throw invalid(`${label}: quantity must be a number above zero (up to 3 decimals).`);
-    return { sku, itemId: item ? item.id : '', quantity: formatQuantity(quantity), rateCents: cents(line?.rateCents, `${label} rate`) };
+    return {
+      sku,
+      itemId: item ? item.id : '',
+      description: text(line?.description, `${label} description`, 200),
+      quantity: formatQuantity(quantity),
+      rateCents: cents(line?.rateCents, `${label} rate`)
+    };
   });
 
   const invoice = {
@@ -147,6 +153,7 @@ export function normalizeItemsInput(body = {}) {
       unit,
       type,
       priceCents: cents(row?.priceCents, `${label} price`),
+      customDescription: row?.customDescription === true,
       active: row?.active !== false
     };
   });

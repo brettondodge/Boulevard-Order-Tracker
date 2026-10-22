@@ -203,7 +203,7 @@ function draftFromInvoice(invoice) {
   return {
     ...invoice,
     omegaTax: centsToInput(invoice.omegaTaxCents),
-    lines: invoice.lines.map(line => ({ sku: line.sku, itemId: line.itemId, quantity: line.quantity, rate: centsToInput(line.rateCents) }))
+    lines: invoice.lines.map(line => ({ sku: line.sku, itemId: line.itemId, description: line.description, quantity: line.quantity, rate: centsToInput(line.rateCents) }))
   };
 }
 
@@ -221,7 +221,7 @@ function invoiceFromDraft(draft) {
     notes: draft.notes,
     status: draft.status,
     version: draft.version,
-    lines: draft.lines.map(line => ({ sku: line.sku, itemId: line.itemId, quantity: line.quantity.trim(), rateCents: parseMoney(line.rate) }))
+    lines: draft.lines.map(line => ({ sku: line.sku, itemId: line.itemId, description: (line.description || '').trim(), quantity: line.quantity.trim(), rateCents: parseMoney(line.rate) }))
   };
 }
 
@@ -229,7 +229,7 @@ function itemOptions(selectedId, config) {
   const options = ITEM_TYPES.map(type => {
     const items = config.items.filter(item => item.type === type && (item.active || item.id === selectedId));
     return `<optgroup label="${type}">${items.map(item => `
-      <option value="${item.id}" ${item.id === selectedId ? 'selected' : ''}>${esc(item.description)} · ${esc(item.sku)} · ${money(item.priceCents)}${item.active ? '' : ' (inactive)'}</option>`).join('')}
+      <option value="${item.id}" ${item.id === selectedId ? 'selected' : ''}>${esc(item.description)} · ${esc(item.sku)}${item.priceCents ? ` · ${money(item.priceCents)}` : ''}${item.active ? '' : ' (inactive)'}</option>`).join('')}
     </optgroup>`;
   }).join('');
   return `<option value="">Pick item…</option>${options}`;
@@ -241,6 +241,7 @@ function lineRowHtml(line, index, matched, config) {
     <tr data-row="${index}">
       <td class="item-cell">
         <select data-line-field="itemId" aria-label="Line ${index + 1} item">${itemOptions(selectedId, config)}</select>
+        <input data-line-field="description" value="${esc(line.description || '')}" class="line-description" placeholder="Description for the spreadsheet, e.g. DW02153GTYN Windshield" aria-label="Line ${index + 1} description" hidden>
         <small class="block warn" data-cell="sku-hint"></small>
       </td>
       <td><input data-line-field="quantity" value="${esc(line.quantity)}" inputmode="decimal" aria-label="Line ${index + 1} quantity" class="short"></td>
@@ -274,6 +275,7 @@ function updateDerived() {
     // Lines without a hand-picked item follow the match, e.g. a rate edit picks a different size.
     if (!draft.lines[index].itemId) row.querySelector('select').value = line.item?.id ?? '';
     row.querySelector('[data-cell="sku-hint"]').textContent = !line.item && line.sku ? `SKU on invoice: ${line.sku}` : '';
+    row.querySelector('[data-line-field="description"]').hidden = !line.item?.customDescription;
     row.classList.toggle('flagged', Boolean(line.issue));
     row.querySelector('[data-cell="unit"]').textContent = line.item?.unit ?? '';
     row.querySelector('[data-cell="type"]').textContent = line.item?.type ?? '';
@@ -419,7 +421,7 @@ function readField(target) {
     if (item) {
       line.sku = item.sku;
       // Fill the list price unless someone already typed a different billed rate.
-      if (!line.rate.trim() || (previous && parseMoney(line.rate) === previous.priceCents)) line.rate = centsToInput(item.priceCents);
+      if (item.priceCents && (!line.rate.trim() || (previous && parseMoney(line.rate) === previous.priceCents))) line.rate = centsToInput(item.priceCents);
     }
     renderLines();
     return;
@@ -485,7 +487,7 @@ function handleEditorClick(event) {
   const { draft } = state.editor;
   const index = Number(event.target.closest('tr[data-row]')?.dataset.row);
   if (action === 'add-line') {
-    draft.lines.push({ sku: '', itemId: '', quantity: '1', rate: '' });
+    draft.lines.push({ sku: '', itemId: '', description: '', quantity: '1', rate: '' });
     renderLines();
     screen.querySelector(`tr[data-row="${draft.lines.length - 1}"] select`)?.focus();
   } else if (action === 'copy-line') {
@@ -705,7 +707,8 @@ function itemRowHtml(item, disabled) {
     <td><input data-name="description" value="${esc(item.description)}" class="wide" ${disabled}></td>
     <td>${select('unit', ITEM_UNITS, item.unit, disabled)}</td>
     <td>${select('type', ITEM_TYPES, item.type, disabled)}</td>
-    <td><input data-name="price" value="${esc(centsToInput(item.priceCents))}" inputmode="decimal" class="short" ${disabled}></td>
+    <td><input data-name="price" value="${esc(item.customDescription && !item.priceCents ? '' : centsToInput(item.priceCents))}" inputmode="decimal" class="short" ${disabled}></td>
+    <td class="center"><input type="checkbox" data-name="customDescription" ${item.customDescription ? 'checked' : ''} ${disabled} aria-label="Description typed on each line"></td>
     <td class="center"><input type="checkbox" data-name="active" ${item.active ? 'checked' : ''} ${disabled} aria-label="Active"></td>
   </tr>`;
 }
@@ -731,9 +734,9 @@ async function renderAdmin(params, isCurrent) {
 
   const bodies = {
     items: `
-      <p class="muted">Only these items can be billed to Freeport. Invoice lines match by SKU (ELMO or Omega); when one SKU covers several sizes, the billed price picks the size. Billed prices are never changed.</p>
+      <p class="muted">Only these items can be billed to Freeport. Invoice lines match by SKU (ELMO or Omega); when one SKU covers several sizes, the billed price picks the size. Billed prices are never changed. "Per-line description" items (windshields, special-order parts) get their spreadsheet description typed on each invoice line; leave the list price blank if it varies.</p>
       <div class="scroll"><table class="admin-table">
-        <thead><tr><th>SKU</th><th>Freeport description (spreadsheet)</th><th>Unit</th><th>Type</th><th>List price</th><th>Active</th></tr></thead>
+        <thead><tr><th>SKU</th><th>Freeport description (spreadsheet)</th><th>Unit</th><th>Type</th><th>List price</th><th title="The description is typed on each invoice line, e.g. a windshield part number">Per-line description</th><th>Active</th></tr></thead>
         <tbody id="adminRows">${config.items.map(item => itemRowHtml(item, disabled)).join('')}</tbody>
       </table></div>
       ${isAdmin ? '<div class="bar"><button type="button" data-action="add-item">Add item</button><button type="button" class="primary" data-action="save-items">Save items</button></div>' : ''}`,
@@ -809,13 +812,18 @@ function handleAdminClick(event) {
 async function runAdminAction(action) {
   const rows = screen.querySelector('#adminRows');
   if (action === 'add-item') {
-    rows.insertAdjacentHTML('beforeend', itemRowHtml({ sku: '', description: '', unit: 'ea', type: 'Parts', priceCents: null, active: true }, ''));
+    rows.insertAdjacentHTML('beforeend', itemRowHtml({ sku: '', description: '', unit: 'ea', type: 'Parts', priceCents: null, customDescription: false, active: true }, ''));
     rows.lastElementChild.querySelector('input').focus();
   } else if (action === 'add-account') {
     rows.insertAdjacentHTML('beforeend', accountRowHtml({ code: '', name: '', group: '', usingAreaName: 'Mine Maintenance', active: true }, '', true));
     rows.lastElementChild.querySelector('input').focus();
   } else if (action === 'save-items') {
-    const items = readRows((row, get) => ({ id: row.dataset.id, sku: get('sku'), description: get('description'), unit: get('unit'), type: get('type'), priceCents: parseMoney(get('price')), active: get('active') }));
+    const items = readRows((row, get) => {
+      const customDescription = get('customDescription');
+      // A per-line description item may leave its price blank: priced on each line.
+      const priceCents = customDescription && !get('price').trim() ? 0 : parseMoney(get('price'));
+      return { id: row.dataset.id, sku: get('sku'), description: get('description'), unit: get('unit'), type: get('type'), priceCents, customDescription, active: get('active') };
+    });
     const badPrice = items.findIndex(item => item.priceCents === null);
     if (badPrice >= 0) {
       screen.querySelector('#adminMessage').innerHTML = messageHtml(new Error(`Item row ${badPrice + 1}: enter a list price like 125.00.`));

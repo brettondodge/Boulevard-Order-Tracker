@@ -143,6 +143,24 @@ test('saved lines keep their matched item even if the master list changes later'
   assert.equal(month.unmatched, 29928);
 });
 
+test('per-line description items take the spreadsheet description from the line', () => {
+  const items = [
+    ...config.items,
+    { id: 'windshield', sku: 'Windshield', description: 'Windshield (type part # and name)', unit: 'ea', type: 'Parts', priceCents: 28500, customDescription: true, active: true },
+    { id: 'special', sku: 'Special-order part', description: 'Special-order part (type description)', unit: 'ea', type: 'Parts', priceCents: 0, customDescription: true, active: true }
+  ];
+  const withParts = { ...config, items };
+  assert.match(matchLine({ sku: 'Windshield', quantity: '1', rateCents: 28500 }, items).issue, /Type the description/);
+  const cheaper = matchLine({ sku: 'Windshield', description: 'DW01851GBYN Windshield', quantity: '1', rateCents: 22900 }, items);
+  assert.equal(cheaper.issue, '');
+  assert.match(cheaper.warning, /list price \$285\.00/);
+  assert.equal(matchLine({ sku: 'Special-order part', description: 'Crating/Packaging', quantity: '1', rateCents: 43200 }, items).warning, '', 'no list price, no warning');
+
+  const month = summarizeMonth('2026-09', [invoice({ lines: [{ sku: 'Windshield', itemId: '', description: 'DW02153GTYN Windshield', quantity: '1', rateCents: 28500 }] })], withParts);
+  assert.equal(month.parts, 28500);
+  assert.equal(spreadsheetRows(month, withParts)[0].cells[0], 'DW02153GTYN Windshield');
+});
+
 // ---------- API ----------
 
 const PORT = 4120;
@@ -214,6 +232,13 @@ test('Freeport invoice records save, validate and persist', { timeout: 60000 }, 
     assert.equal(config.accounts.length, 14);
     assert.equal(config.settings.poNumber, 'ZD00000669');
     assert.ok(config.items.some(item => item.sku === 'Labor' && item.priceCents === 12500));
+    assert.ok(config.items.some(item => item.sku === 'Windshield' && item.customDescription && item.priceCents === 28500));
+    assert.ok(config.items.some(item => item.sku === '36 x 48 (.090 Clr Lami)' && !item.customDescription));
+
+    const windshield = await request('/api/freeport/invoices', { method: 'POST', body: newInvoice({ number: '91003', lines: [{ sku: 'Windshield', description: 'DW02153GTYN Windshield', quantity: '1', rateCents: 28500 }] }) });
+    assert.equal(windshield.status, 201, JSON.stringify(windshield.body));
+    assert.equal(windshield.body.lines[0].description, 'DW02153GTYN Windshield');
+    assert.equal((await request(`/api/freeport/invoices/91003?version=1`, { method: 'DELETE' })).status, 200);
 
     // Created by install date: invoice dated October, billed in September.
     const created = await request('/api/freeport/invoices', { method: 'POST', body: newInvoice() });

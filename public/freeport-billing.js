@@ -118,8 +118,19 @@ export function matchLine(line, items) {
     if (!item) return { ...result, issue: `Price matches no "${line.sku}" size; pick one` };
   }
 
-  const warning = item.priceCents === line.rateCents ? '' : `Billed ${formatMoney(line.rateCents)}, list price ${formatMoney(item.priceCents)}`;
+  // Per-line description items (windshields, special-order parts) carry their
+  // own description; a list price of 0 means the price is entered on each line.
+  if (item.customDescription && !String(line.description ?? '').trim()) {
+    return { ...result, item, issue: 'Type the description for the spreadsheet' };
+  }
+  const hasListPrice = !(item.customDescription && item.priceCents === 0);
+  const warning = !hasListPrice || item.priceCents === line.rateCents ? '' : `Billed ${formatMoney(line.rateCents)}, list price ${formatMoney(item.priceCents)}`;
   return { ...result, item, warning };
+}
+
+export function lineDescription(line) {
+  if (!line.item) return String(line.description || line.sku || '');
+  return line.item.customDescription ? String(line.description ?? '').trim() : line.item.description;
 }
 
 // Records the item each line matched when it's saved, so later price edits,
@@ -212,7 +223,7 @@ export function spreadsheetRows(monthSummary, config) {
   return monthSummary.invoices.flatMap(invoice => invoice.lines.map(line => ({
     unmatched: !line.item,
     cells: [
-      line.item?.description ?? line.sku,
+      lineDescription(line),
       '',
       line.quantity,
       line.item?.unit ?? '',
