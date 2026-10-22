@@ -43,8 +43,8 @@ function cents(value, label, { nullable = false } = {}) {
 }
 
 export function normalizeInvoiceInput(body = {}, config) {
-  const number = text(body.number, 'Omega invoice number', 30, { required: true });
-  if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(number)) throw invalid('Omega invoice number can only use letters, numbers and dashes.');
+  const number = text(body.number, 'Invoice number', 30, { required: true });
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(number)) throw invalid('Invoice number can only use letters, numbers and dashes.');
 
   const monthOverride = text(body.monthOverride, 'Billing month', 7);
   if (monthOverride && !isValidMonth(monthOverride)) throw invalid('Billing month must look like 2026-09.');
@@ -72,12 +72,12 @@ export function normalizeInvoiceInput(body = {}, config) {
   const invoice = {
     lines: pinMatchedItems(lines, config.items),
     number,
-    omegaDate: optionalDate(body.omegaDate, 'Omega invoice date'),
+    omegaDate: optionalDate(body.omegaDate, 'Invoice date'),
     installDate: optionalDate(body.installDate, 'Install date'),
     monthOverride,
     orderNumber: text(body.orderNumber, 'Order number', 40),
     accountCode: text(body.accountCode, 'Account code', 20),
-    omegaTaxCents: cents(body.omegaTaxCents, 'Omega tax', { nullable: true }),
+    omegaTaxCents: cents(body.omegaTaxCents, 'Invoice tax', { nullable: true }),
     driveLink,
     notes: text(body.notes, 'Notes', 2000),
     status: INVOICE_STATUSES.includes(body.status) ? body.status : 'Needs review'

@@ -1083,3 +1083,10 @@ button:disabled {
   max-height: 260px;
   overflow-y: auto;
 }
+
+/* Freeport Billing is a computer-only tool; phones keep the Order Tracker. */
+@media (max-width: 760px), (max-height: 500px) and (pointer: coarse) {
+  .desktop-only {
+    display: none !important;
+  }
+}

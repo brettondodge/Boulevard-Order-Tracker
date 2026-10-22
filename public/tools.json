@@ -1,4 +1,4 @@
 [
   {"title":"Order Tracker","description":"Manage supplier orders, drafts, deliveries and archived jobs.","path":"/app","label":"Ordering"},
-  {"title":"Freeport Billing","description":"Freeport invoice records and the month-end billing package.","path":"/freeport","label":"Monthly billing"}
+  {"title":"Freeport Billing","description":"Freeport invoice records and the month-end billing package.","path":"/freeport","label":"Monthly billing","desktopOnly":true}
 ]

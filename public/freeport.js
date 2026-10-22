@@ -177,7 +177,7 @@ async function renderMonth(params, isCurrent) {
         <div class="scroll">
           <table class="invoice-table">
             <thead><tr>
-              <th>Invoice #</th><th>Install date</th><th>Omega date</th><th>Order #</th><th>Account</th>
+              <th>Invoice #</th><th>Install date</th><th>Invoice date</th><th>Order #</th><th>Account</th>
               <th class="num">Parts</th><th class="num">Labor</th><th class="num">Tax</th><th class="num">Total</th><th>Status</th>
             </tr></thead>
             <tbody>${rows}</tbody>
@@ -271,7 +271,7 @@ function updateDerived() {
     if (!row) return;
     // Lines without a hand-picked item follow the match, e.g. a rate edit picks a different size.
     if (!draft.lines[index].itemId) row.querySelector('select').value = line.item?.id ?? '';
-    row.querySelector('[data-cell="sku-hint"]').textContent = !line.item && line.sku ? `Omega SKU: ${line.sku}` : '';
+    row.querySelector('[data-cell="sku-hint"]').textContent = !line.item && line.sku ? `SKU on invoice: ${line.sku}` : '';
     row.classList.toggle('flagged', Boolean(line.issue));
     row.querySelector('[data-cell="unit"]').textContent = line.item?.unit ?? '';
     row.querySelector('[data-cell="type"]').textContent = line.item?.type ?? '';
@@ -285,17 +285,17 @@ function updateDerived() {
     <dt>Parts</dt><dd>${money(summary.parts)}</dd>
     <dt>Labor</dt><dd>${money(summary.labor)}</dd>
     ${summary.unmatched ? `<dt class="warn">Not matched</dt><dd class="warn">${money(summary.unmatched)}</dd>` : ''}
-    <dt>Tax${Number.isInteger(summary.omegaTaxCents) ? ' (from Omega)' : ` (${esc(config.settings.taxRate)}% of parts)`}</dt><dd>${money(summary.tax)}</dd>
+    <dt>Tax${Number.isInteger(summary.omegaTaxCents) ? ' (from invoice)' : ` (${esc(config.settings.taxRate)}% of parts)`}</dt><dd>${money(summary.tax)}</dd>
     <dt><strong>Total</strong></dt><dd><strong>${money(summary.total)}</strong></dd>`;
   screen.querySelector('#omegaTaxHint').textContent = `Leave blank to use ${config.settings.taxRate}% of parts: ${money(summary.expectedTax)}`;
   screen.querySelector('#issues').innerHTML = issuesHtml(summary);
 
   const month = billingMonthFor(invoiceFromDraft(draft));
   screen.querySelector('#billedIn').innerHTML = month
-    ? `Billed in <strong>${formatMonth(month)}</strong>${draft.monthOverride ? ' (set by hand)' : draft.installDate ? ' (from install date)' : ' (from Omega date until the install date is entered)'}`
+    ? `Billed in <strong>${formatMonth(month)}</strong>${draft.monthOverride ? ' (set by hand)' : draft.installDate ? ' (from install date)' : ' (from invoice date until the install date is entered)'}`
     : '<span class="warn">Enter the install date to place this invoice in a month.</span>';
   if (draft.omegaDate && month && draft.omegaDate.slice(0, 7) !== month) {
-    screen.querySelector('#billedIn').innerHTML += `<br><small>Omega dated it ${formatDate(draft.omegaDate)}; it still bills in ${formatMonth(month)}.</small>`;
+    screen.querySelector('#billedIn').innerHTML += `<br><small>Invoice dated ${formatDate(draft.omegaDate)}; it still bills in ${formatMonth(month)}.</small>`;
   }
 
   const readyButton = screen.querySelector('[data-action="save-ready"]');
@@ -331,7 +331,7 @@ async function renderInvoice(number, params, isCurrent, loaded = null) {
     <form id="invoiceForm" novalidate>
       <div class="page-head">
         <div>
-          <p class="eyebrow">OMEGA INVOICE</p>
+          <p class="eyebrow">INVOICE</p>
           <h1>${isNew ? 'New invoice' : `Invoice ${esc(invoice.number)} ${statusBadge(invoice.status)}`}</h1>
           ${isNew ? '' : `<p class="muted">Last saved ${formatDate(invoice.updatedAt.slice(0, 10))} by ${esc(invoice.updatedBy)}</p>`}
         </div>
@@ -348,9 +348,9 @@ async function renderInvoice(number, params, isCurrent, loaded = null) {
       <section class="panel">
         <h2>Details</h2>
         <div class="grid">
-          <label>Omega invoice #<input data-field="number" value="${esc(invoice.number)}" required autocomplete="off"></label>
+          <label>Invoice #<input data-field="number" value="${esc(invoice.number)}" required autocomplete="off"></label>
           <label>Install date<input type="date" data-field="installDate" value="${esc(invoice.installDate)}"></label>
-          <label>Omega invoice date<input type="date" data-field="omegaDate" value="${esc(invoice.omegaDate)}"></label>
+          <label>Invoice date<input type="date" data-field="omegaDate" value="${esc(invoice.omegaDate)}"></label>
           <label>Order number<input data-field="orderNumber" value="${esc(invoice.orderNumber)}" autocomplete="off"></label>
           <label class="span-2">Account code
             <select data-field="accountCode">
@@ -377,7 +377,7 @@ async function renderInvoice(number, params, isCurrent, loaded = null) {
           </table>
         </div>
         <div class="totals-row">
-          <label class="tax-input">Omega tax<input data-field="omegaTax" value="${esc(invoice.omegaTax)}" inputmode="decimal" placeholder="Auto"><small id="omegaTaxHint"></small></label>
+          <label class="tax-input">Invoice tax<input data-field="omegaTax" value="${esc(invoice.omegaTax)}" inputmode="decimal" placeholder="Auto"><small id="omegaTaxHint"></small></label>
           <dl class="totals" id="totals"></dl>
         </div>
       </section>
@@ -435,7 +435,7 @@ async function saveInvoice(status) {
     return;
   }
   if (editor.draft.omegaTax.trim() && payload.omegaTaxCents === null) {
-    messageBox.innerHTML = messageHtml(new Error('Omega tax must be a dollar amount like 55.44, or blank.'));
+    messageBox.innerHTML = messageHtml(new Error('Invoice tax must be a dollar amount like 55.44, or blank.'));
     return;
   }
   const buttons = screen.querySelectorAll('#invoiceForm button');
@@ -692,9 +692,9 @@ async function renderAdmin(params, isCurrent) {
 
   const bodies = {
     items: `
-      <p class="muted">Only these items can be billed to Freeport. Invoice lines match by Omega SKU; when one SKU covers several sizes, the billed price picks the size. Billed prices are never changed.</p>
+      <p class="muted">Only these items can be billed to Freeport. Invoice lines match by SKU (ELMO or Omega); when one SKU covers several sizes, the billed price picks the size. Billed prices are never changed.</p>
       <div class="scroll"><table class="admin-table">
-        <thead><tr><th>Omega SKU</th><th>Freeport description (spreadsheet)</th><th>Unit</th><th>Type</th><th>List price</th><th>Active</th></tr></thead>
+        <thead><tr><th>SKU</th><th>Freeport description (spreadsheet)</th><th>Unit</th><th>Type</th><th>List price</th><th>Active</th></tr></thead>
         <tbody id="adminRows">${config.items.map(item => itemRowHtml(item, disabled)).join('')}</tbody>
       </table></div>
       ${isAdmin ? '<div class="bar"><button type="button" data-action="add-item">Add item</button><button type="button" class="primary" data-action="save-items">Save items</button></div>' : ''}`,
@@ -809,8 +809,25 @@ screen.addEventListener('submit', async event => {
 
 // ---------- Routing ----------
 
+// Phones (portrait or landscape) get the Order Tracker only; Freeport needs a computer.
+const PHONE_QUERY = '(max-width: 760px), (max-height: 500px) and (pointer: coarse)';
+
+function renderPhoneNotice() {
+  document.querySelectorAll('[data-nav]').forEach(link => link.remove());
+  screen.innerHTML = `
+    <section class="panel phone-notice">
+      <h1>Use a computer for Freeport Billing</h1>
+      <p class="muted">Freeport Billing isn't available on phones. The Order Tracker works here.</p>
+      <div class="actions"><a class="button primary" href="/app">Open Order Tracker</a><a class="button" href="/">Tools Home</a></div>
+    </section>`;
+}
+
 // Each render gets a token; a slower earlier render that finishes late is dropped.
 async function render() {
+  if (matchMedia(PHONE_QUERY).matches) {
+    renderPhoneNotice();
+    return;
+  }
   const renderId = ++state.renderId;
   const isCurrent = () => renderId === state.renderId;
   const { pathname, searchParams } = new URL(location.href);

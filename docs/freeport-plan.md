@@ -27,6 +27,13 @@ three month-end deliverables. It is not an accounting system and never posts to
 Omega.
 
 Users: mainly the office manager; Bretton and admins can view everything.
+Freeport Billing is **computer-only**: on phones the dashboard shows just the
+Order Tracker, and the home-screen app opens the dashboard.
+
+**Freeport is still invoiced in ELMO** until everything moves to Omega, so
+invoices are entered by hand for now (labels say "Invoice #", not "Omega").
+October 2026 runs in parallel: the usual Google Sheet plus the app, compared
+before any app-made file goes to Freeport.
 
 ## Month-end deliverables
 

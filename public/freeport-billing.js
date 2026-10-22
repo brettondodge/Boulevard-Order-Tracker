@@ -83,7 +83,7 @@ function daysBetween(fromIso, toIso) {
   return Math.round((b - a) / 86400000);
 }
 
-// The install date decides the month. The Omega invoice date is only a fallback
+// The install date decides the month. The invoice date is only a fallback
 // so a record without an install date still shows up somewhere (flagged).
 export function billingMonthFor(invoice) {
   if (isValidMonth(invoice.monthOverride)) return invoice.monthOverride;
@@ -98,7 +98,7 @@ export function skuKey(sku) {
   return String(sku ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
-// A line matches by explicit pick, then by SKU. While one Omega SKU still covers
+// A line matches by explicit pick, then by SKU. While one SKU still covers
 // several glass sizes, the billed price decides which size it is.
 export function matchLine(line, items) {
   const quantity = parseQuantity(line.quantity);
@@ -159,11 +159,11 @@ export function summarizeInvoice(invoice, config) {
 
   if (isValidDate(invoice.installDate) && isValidDate(invoice.omegaDate)) {
     const days = daysBetween(invoice.installDate, invoice.omegaDate);
-    if (days < 0) warnings.push('Install date is after the Omega invoice date');
+    if (days < 0) warnings.push('Install date is after the invoice date');
     else if (days > MAX_DAYS_INSTALL_BEFORE_INVOICE) warnings.push(`Installed ${days} days before it was invoiced; check the install date`);
   }
   if (Number.isInteger(invoice.omegaTaxCents) && Math.abs(invoice.omegaTaxCents - expectedTax) > 1) {
-    warnings.push(`Omega tax ${formatMoney(invoice.omegaTaxCents)} differs from ${settings.taxRate}% of parts (${formatMoney(expectedTax)})`);
+    warnings.push(`Invoice tax ${formatMoney(invoice.omegaTaxCents)} differs from ${settings.taxRate}% of parts (${formatMoney(expectedTax)})`);
   }
   if (isValidMonth(invoice.monthOverride) && isValidDate(invoice.installDate) && invoice.monthOverride !== invoice.installDate.slice(0, 7)) {
     warnings.push(`Billing month set by hand; install date is in ${invoice.installDate.slice(0, 7)}`);

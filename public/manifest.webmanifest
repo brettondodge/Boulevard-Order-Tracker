@@ -2,7 +2,7 @@
   "name": "Boulevard Glass Order Tracker",
   "short_name": "Boulevard Tracker",
   "description": "Internal office tracking app for glass orders and supplier activity.",
-  "start_url": "/app",
+  "start_url": "/",
   "display": "standalone",
   "background_color": "#f4f6f8",
   "theme_color": "#2d5f9f",

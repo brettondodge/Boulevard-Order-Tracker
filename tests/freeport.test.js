@@ -65,7 +65,7 @@ test('money, quantity and tax math is exact and rounds half up', () => {
   assert.equal(centsToDecimal(29928), '299.28');
 });
 
-test('billing month comes from the install date, not the Omega invoice date', () => {
+test('billing month comes from the install date, not the invoice date', () => {
   assert.equal(billingMonthFor({ installDate: '2026-09-29', omegaDate: '2026-10-06' }), '2026-09');
   assert.equal(billingMonthFor({ installDate: '', omegaDate: '2026-10-06' }), '2026-10');
   assert.equal(billingMonthFor({ installDate: '2026-09-29', omegaDate: '2026-10-06', monthOverride: '2026-08' }), '2026-08');
@@ -100,13 +100,13 @@ test('invoice summary separates blockers from warnings', () => {
 
   const odd = summarizeInvoice(invoice({ installDate: '2026-09-10', omegaDate: '2026-09-04', omegaTaxCents: 9999 }), config);
   assert.deepEqual(odd.blockers, []);
-  assert.ok(odd.warnings.includes('Install date is after the Omega invoice date'));
-  assert.ok(odd.warnings.some(text => text.startsWith('Omega tax $99.99 differs')));
+  assert.ok(odd.warnings.includes('Install date is after the invoice date'));
+  assert.ok(odd.warnings.some(text => text.startsWith('Invoice tax $99.99 differs')));
   assert.equal(odd.tax, 9999);
 
   const late = summarizeInvoice(invoice({ installDate: '2026-07-01', omegaDate: '2026-09-04' }), config);
   assert.ok(late.warnings.some(text => /Installed 65 days before/.test(text)));
-  // A one-cent rounding difference between Omega and 9.1% is not flagged.
+  // A one-cent rounding difference between the invoice and 9.1% is not flagged.
   assert.deepEqual(summarizeInvoice(invoice({ omegaTaxCents: taxOnParts(31778, '9.1') + 1 }), config).warnings, []);
 });
 
@@ -208,7 +208,7 @@ test('Freeport invoice records save, validate and persist', { timeout: 60000 }, 
     assert.equal(config.settings.poNumber, 'ZD00000669');
     assert.ok(config.items.some(item => item.sku === 'Labor' && item.priceCents === 12500));
 
-    // Created by install date: Omega dated October, billed in September.
+    // Created by install date: invoice dated October, billed in September.
     const created = await request('/api/freeport/invoices', { method: 'POST', body: newInvoice() });
     assert.equal(created.status, 201, JSON.stringify(created.body));
     assert.equal(created.body.billingMonth, '2026-09');
