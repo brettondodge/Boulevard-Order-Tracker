@@ -325,6 +325,12 @@ export function flagOmegaInvoice(number, expectedVersion, snapshot, actor) {
   });
 }
 
+// Records Omega's current values for an invoice saved before snapshots existed,
+// without changing the invoice itself.
+export function saveOmegaSnapshot(number, snapshot) {
+  return transaction(tx => saveSnapshot(tx, number, snapshot));
+}
+
 export async function findInvoiceNumbers(numbers) {
   if (!numbers.length) return new Set();
   const rows = await transaction(tx => tx.all(`SELECT invoice_number FROM freeport_invoices WHERE invoice_number IN (${numbers.map(() => '?').join(', ')})`, numbers));

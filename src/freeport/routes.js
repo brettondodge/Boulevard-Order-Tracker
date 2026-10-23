@@ -2,7 +2,7 @@ import express from 'express';
 import { isValidMonth, summarizeMonth } from '../../public/freeport-billing.js';
 import { buildSpreadsheet } from './spreadsheet.js';
 import { buildConsolidatedInvoice, buildInvoicePages } from './pdf.js';
-import { applyImport, omegaConnected, openWorkOrders, previewImport } from './omega.js';
+import { applyImport, monthCheck, omegaConnected, previewImport } from './omega.js';
 import {
   FreeportError,
   normalizeAccountsInput,
@@ -65,9 +65,9 @@ export function freeportRouter({ requireStaffAuth, requireAdminAuth }) {
     res.json(await applyImport({ from: req.body?.from, to: req.body?.to, numbers: req.body?.numbers }, await getConfig(), actor(req)));
   }));
 
-  router.get('/omega/work-orders', route(async (req, res) => {
+  router.get('/omega/month-check', route(async (req, res) => {
     if (!isValidMonth(req.query.month)) throw new FreeportError(400, 'Choose a month like 2026-09.');
-    res.json(await openWorkOrders(req.query.month, await getConfig()));
+    res.json(await monthCheck(req.query.month, await getConfig()));
   }));
 
   // Month-end files are only built once every invoice is Ready, so an

@@ -11,7 +11,7 @@ import {
 } from '../../public/freeport-billing.js';
 import { todayPhoenixString } from '../utils.js';
 import { FreeportError, normalizeInvoiceInput } from './validate.js';
-import { createInvoice, findInvoiceNumbers, flagOmegaInvoice, getInvoice, updateInvoice } from './store.js';
+import { createInvoice, findInvoiceNumbers, flagOmegaInvoice, getInvoice, listInvoices, saveOmegaSnapshot, updateInvoice } from './store.js';
 
 // Read-only client for the Omega EDI API (GET requests only). The key lives in
 // the server environment (OMEGA_API_KEY), never in the database or the browser.
@@ -20,13 +20,14 @@ const PAGE_SIZE = 100;
 const MAX_PAGES = 30;
 const MAX_RANGE_DAYS = 124;
 const WORK_ORDER_LOOKBACK_MONTHS = 4;
+const MAX_RECHECKS = 200;
 const INVOICED = new Set(['IN', 'CL']); // invoices and archived invoices
 const WORK_ORDER = 'WO';
 const STATUS_NAMES = { WO: 'a work order', QO: 'a quote', LE: 'a lead', VO: 'void' };
 
 export const omegaConnected = () => Boolean(process.env.OMEGA_API_KEY);
 
-async function omegaGet(path) {
+async function omegaGet(path, { allowNotFound = false } = {}) {
   const key = process.env.OMEGA_API_KEY;
   if (!key) throw new FreeportError(503, "Omega isn't connected. Add OMEGA_API_KEY to the server settings.");
   let response;
@@ -38,6 +39,7 @@ async function omegaGet(path) {
   } catch {
     throw new FreeportError(502, "Couldn't reach Omega. Try again in a minute.");
   }
+  if (response.status === 404 && allowNotFound) return null;
   if (response.status === 401 || response.status === 403) throw new FreeportError(502, 'Omega rejected the API key. Check OMEGA_API_KEY.');
   if (response.status === 429) throw new FreeportError(502, 'Omega is limiting requests right now. Wait a minute and try again.');
   if (!response.ok) throw new FreeportError(502, `Omega returned an error (${response.status}). Try again in a minute.`);
@@ -64,6 +66,19 @@ async function listJobs(from, to) {
 const omegaDate = value => (isValidDate(String(value ?? '').slice(0, 10)) ? String(value).slice(0, 10) : '');
 const labelKey = label => String(label ?? '').toLowerCase().replace(/[^a-z]/g, '');
 const isFreeport = (job, settings) => String(job.account_company ?? '').trim().toLowerCase() === String(settings.omegaAccountName ?? '').trim().toLowerCase();
+
+function nextMonth(month) {
+  const [year, number] = month.split('-').map(Number);
+  return number === 12 ? `${year + 1}-01` : `${year}-${String(number + 1).padStart(2, '0')}`;
+}
+
+// Why an Omega job (list row or invoice detail) can't be billed to Freeport, or ''.
+function notBillableReason(job, settings) {
+  if (!isFreeport(job, settings)) return 'No longer billed to Freeport in Omega';
+  const status = String(job.job_status);
+  if (INVOICED.has(status)) return '';
+  return status === 'VO' ? 'Voided in Omega' : `Now ${STATUS_NAMES[status] || status} in Omega`;
+}
 
 function daysBetween(from, to) {
   return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000);
@@ -155,14 +170,11 @@ const SNAPSHOT_FIELDS = [
 ];
 const INVOICE_FIELDS = new Set(['omegaDate', 'installDate', 'orderNumber', 'accountCode', 'omegaTaxCents']);
 
-// For invoices saved before snapshots existed, the record stands in for one.
-function recordSnapshot(record) {
-  return {
-    omegaDate: record.omegaDate, installDate: record.installDate, orderNumber: record.orderNumber, accountCode: record.accountCode,
-    omegaTaxCents: record.omegaTaxCents, subtotalCents: null,
-    lines: record.lines.map(line => ({ sku: line.sku, description: line.description, quantity: line.quantity, rateCents: line.rateCents })),
-    flag: record.omegaFlag || ''
-  };
+// Lines Omega didn't change keep the app's version (item picked, description
+// typed); only added or changed lines are mapped fresh.
+function mergeLines(beforeLines, afterLines, appLines, mappedLines) {
+  const sameShape = appLines.length === beforeLines.length;
+  return mappedLines.map((line, index) => (sameShape && JSON.stringify(beforeLines[index]) === JSON.stringify(afterLines[index]) ? appLines[index] : line));
 }
 
 // What Omega changed since the last import. Edits made in the app are not
@@ -173,14 +185,14 @@ function omegaChanges(before, after) {
 
 // Starts from the saved invoice and applies only what Omega changed. An empty
 // Omega value never blanks something filled in on the app.
-function mergeImport(existing, mapped, changes) {
+function mergeImport(existing, before, mapped, changes) {
   const body = {
     number: existing.number, omegaDate: existing.omegaDate, installDate: existing.installDate, monthOverride: existing.monthOverride,
     orderNumber: existing.orderNumber, accountCode: existing.accountCode, omegaTaxCents: existing.omegaTaxCents,
     driveLink: existing.driveLink, notes: existing.notes, lines: existing.lines, status: 'Needs review'
   };
   for (const [field] of changes) {
-    if (field === 'lines') body.lines = mapped.invoice.lines;
+    if (field === 'lines') body.lines = mergeLines(before.lines || [], mapped.snapshot.lines, existing.lines, mapped.invoice.lines);
     else if (INVOICE_FIELDS.has(field) && mapped.invoice[field] !== '' && mapped.invoice[field] !== null) body[field] = mapped.invoice[field];
   }
   return body;
@@ -219,10 +231,15 @@ async function planInvoice(job, config) {
     return { invoice, snapshot: mapped.snapshot, row: previewRow('new', preview, config, { notes: mapped.notes }) };
   }
 
-  const before = existing.omegaSnapshot || recordSnapshot(existing);
+  if (!existing.omegaSnapshot) {
+    // Saved before the app kept Omega's values: take today's as the baseline
+    // (saved at import) without changing the invoice.
+    return { adopt: true, existing, snapshot: mapped.snapshot, row: previewRow('unchanged', existing, config, { notes: mapped.notes }) };
+  }
+  const before = existing.omegaSnapshot;
   const changes = omegaChanges(before, mapped.snapshot);
   if (!changes.length) return { row: previewRow('unchanged', existing, config, { notes: mapped.notes }) };
-  const invoice = normalizeInvoiceInput(mergeImport(existing, mapped, changes), config, stored);
+  const invoice = normalizeInvoiceInput(mergeImport(existing, before, mapped, changes), config, stored);
   const notes = existing.status === 'Ready' ? [...mapped.notes, 'Was Ready; goes back to Needs review'] : mapped.notes;
   const preview = { ...invoice, omegaSubtotalCents: mapped.snapshot.subtotalCents };
   return { invoice, existing, snapshot: mapped.snapshot, row: previewRow('update', preview, config, { notes, changes: changes.map(([, label]) => label) }) };
@@ -245,19 +262,34 @@ async function buildImport({ from, to }, config) {
 
   // Invoices already imported that Omega has since voided, turned back into
   // something else, or moved off the Freeport account.
+  const planned = new Set(plan.map(entry => entry.row.number));
+  const flagEntry = (existing, flag) => (existing.omegaFlag === flag
+    ? { row: previewRow('unchanged', existing, config, { reason: flag }) }
+    : { existing, snapshot: { ...existing.omegaSnapshot, flag }, row: previewRow('flag', existing, config, { reason: flag }) });
   const others = jobs.filter(job => !billable(job));
   const known = await findInvoiceNumbers(others.map(job => String(job.id)));
   for (const job of others.filter(candidate => known.has(String(candidate.id)))) {
     const existing = await getInvoice(String(job.id));
     if (!existing?.omegaSnapshot) continue; // entered by hand, not from Omega
-    const flag = !isFreeport(job, config.settings)
-      ? 'No longer billed to Freeport in Omega'
-      : `${job.job_status === 'VO' ? 'Voided' : `Now ${STATUS_NAMES[job.job_status] || job.job_status}`} in Omega`;
-    if (existing.omegaFlag === flag) {
-      plan.push({ row: previewRow('unchanged', existing, config, { reason: flag }) });
-      continue;
+    planned.add(existing.number);
+    plan.push(flagEntry(existing, notBillableReason(job, config.settings)));
+  }
+
+  // A voided invoice is often re-issued with a later invoice date, outside this
+  // range, while both bill the same month. So every month this import touches
+  // has its other imported invoices re-checked directly in Omega.
+  const months = new Set(plan.map(entry => entry.row.billingMonth).filter(Boolean));
+  for (let month = from.slice(0, 7); month <= to.slice(0, 7); month = nextMonth(month)) months.add(month);
+  let rechecks = 0;
+  for (const month of [...months].sort()) {
+    for (const existing of await listInvoices(month)) {
+      if (planned.has(existing.number) || !existing.omegaSnapshot || existing.omegaFlag) continue;
+      if (++rechecks > MAX_RECHECKS) break;
+      planned.add(existing.number);
+      const detail = await omegaGet(`/Invoices/${encodeURIComponent(existing.number)}`, { allowNotFound: true });
+      const flag = detail ? notBillableReason(detail, config.settings) : 'Deleted in Omega';
+      if (flag) plan.push(flagEntry(existing, flag));
     }
-    plan.push({ existing, snapshot: { ...existing.omegaSnapshot, flag }, row: previewRow('flag', existing, config, { reason: flag }) });
   }
 
   plan.sort((a, b) => (a.row.installDate || a.row.omegaDate).localeCompare(b.row.installDate || b.row.omegaDate) || a.row.number.localeCompare(b.row.number));
@@ -276,6 +308,7 @@ export async function applyImport({ from, to, numbers }, config, actor) {
   for (const entry of await buildImport({ from, to }, config)) {
     const { row } = entry;
     if (row.action === 'unchanged') {
+      if (entry.adopt) await saveOmegaSnapshot(entry.existing.number, entry.snapshot);
       result.unchanged++;
       continue;
     }
@@ -303,17 +336,28 @@ export async function applyImport({ from, to, numbers }, config, actor) {
   return result;
 }
 
-// Freeport jobs installed in the month that are still work orders (not yet
-// invoiced). Work orders are found by the day they were written up, so the
-// search looks back several months and says how far it looked.
-export async function openWorkOrders(month, config) {
+// Month close checks against Omega (read-only):
+// - Freeport jobs installed in the month that are still work orders. Work
+//   orders are found by the day they were written up, so the search covers the
+//   four months before the month through its last day, and says so.
+// - This month's imported invoices that Omega has since voided or moved.
+export async function monthCheck(month, config) {
   const [year, monthNumber] = month.split('-').map(Number);
   const checkedFrom = new Date(Date.UTC(year, monthNumber - 1 - WORK_ORDER_LOOKBACK_MONTHS, 1)).toISOString().slice(0, 10);
+  const monthEnd = new Date(Date.UTC(year, monthNumber, 0)).toISOString().slice(0, 10);
   const today = todayPhoenixString();
-  const jobs = await listJobs(checkedFrom, today > checkedFrom ? today : checkedFrom);
+  const checkedTo = today < monthEnd ? (today > checkedFrom ? today : checkedFrom) : monthEnd;
+  const jobs = await listJobs(checkedFrom, checkedTo);
   const workOrders = jobs
     .filter(job => isFreeport(job, config.settings) && String(job.job_status) === WORK_ORDER && omegaDate(job.appointment_scheduled_date).startsWith(month))
     .map(job => ({ number: String(job.id), scheduledDate: omegaDate(job.appointment_scheduled_date) }))
     .sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate));
-  return { workOrders, checkedFrom };
+
+  const notBillable = [];
+  for (const invoice of (await listInvoices(month)).filter(candidate => candidate.omegaSnapshot && !candidate.omegaFlag).slice(0, MAX_RECHECKS)) {
+    const detail = await omegaGet(`/Invoices/${encodeURIComponent(invoice.number)}`, { allowNotFound: true });
+    const reason = detail ? notBillableReason(detail, config.settings) : 'Deleted in Omega';
+    if (reason) notBillable.push({ number: invoice.number, reason });
+  }
+  return { workOrders, checkedFrom, checkedTo, notBillable };
 }

@@ -478,6 +478,7 @@ function omegaFixtures() {
       job('10220', 'IN', '2026-10-20', '2026-10-20', '0000-00-00', { invoice_tax: '0.00', invoice_amount: '535.00' }),
       job('10230', 'IN', '2026-10-21', '2026-10-21', '2026-10-20', { invoice_tax: '0.00', invoice_amount: '40.00' }),
       job('10231', 'IN', '2026-10-21', '2026-10-21', '2026-10-19', { invoice_tax: '0.00', invoice_amount: '999.00' }),
+      job('10232', 'IN', '2026-10-21', '2026-10-21', '2026-10-18', { invoice_tax: '0.00', invoice_amount: '250.00' }),
       job('10244', 'IN', '2026-10-22', '2026-10-22', '2026-10-23', { account_company: 'Another Customer', invoice_tax: '57.47', invoice_amount: '1107.50' }),
       // A work order written up in August for an October install.
       job('10250', 'WO', '0000-00-00', '2026-08-15', '2026-10-23'),
@@ -502,7 +503,8 @@ function omegaFixtures() {
         InvoiceCustomFields: [{ id: '1', label: 'ORDER NO.', currentValue: null }]
       },
       10230: { id: '10230', date: '2026-10-21', invoice_amount: '40.00', Items: [omegaItem('Urethane', 'Return', '-1.00', '85.00'), omegaItem('Labor', 'Per Man', '1.00', '125.00', 'LABOR')], InvoiceCustomFields: [] },
-      10231: { id: '10231', date: '2026-10-21', invoice_amount: '999.00', Items: [omegaItem('Labor', 'Per Man', '2.00', '125.00', 'LABOR')], InvoiceCustomFields: [{ id: '1', label: 'ORDER NO.', currentValue: '100000999031' }, { id: '5', label: 'ACCOUNT NO.', currentValue: '1060401328 - Mine Maintenance - Truck' }] }
+      10231: { id: '10231', date: '2026-10-21', invoice_amount: '999.00', Items: [omegaItem('Labor', 'Per Man', '2.00', '125.00', 'LABOR')], InvoiceCustomFields: [{ id: '1', label: 'ORDER NO.', currentValue: '100000999031' }, { id: '5', label: 'ACCOUNT NO.', currentValue: '1060401328 - Mine Maintenance - Truck' }] },
+      10232: { id: '10232', date: '2026-10-21', invoice_amount: '250.00', Items: [omegaItem('Labor', 'Per Man', '2.00', '125.00', 'LABOR')], InvoiceCustomFields: [{ id: '1', label: 'ORDER NO.', currentValue: '100000999032' }] }
     }
   };
 }
@@ -522,7 +524,7 @@ async function startFakeOmega(fixtures) {
       const jobs = fixtures.jobs.filter(job => (!from || job.document_date >= from) && (!to || job.document_date <= to));
       return send(200, url.searchParams.get('page') === '1' ? jobs : []);
     }
-    if (detail && fixtures.details[detail[1]]) return send(200, fixtures.details[detail[1]]);
+    if (detail && fixtures.details[detail[1]]) return send(200, { ...fixtures.jobs.find(job => job.id === detail[1]), ...fixtures.details[detail[1]] });
     return send(404, { error: 'not found' });
   });
   await new Promise(resolve => server.listen(OMEGA_PORT, '127.0.0.1', resolve));
@@ -549,16 +551,20 @@ test('Omega import keeps app corrections, follows Omega changes and flags voided
     };
     assert.equal((await request('/api/freeport/omega/preview', { method: 'POST', body: { from: '2026-10-31', to: '2026-10-01' } })).status, 400);
 
+    // 10232 was saved in the app before Omega snapshots existed.
+    const legacy = await request('/api/freeport/invoices', { method: 'POST', body: { number: '10232', omegaDate: '2026-10-21', installDate: '2026-10-18', orderNumber: '100000999032', accountCode: '1060401328', lines: [{ sku: 'Labor', quantity: '2', rateCents: 12500 }] } });
+    assert.equal(legacy.status, 201);
+
     // Preview: Freeport invoices only; credits can't import; nothing is saved yet.
     const rows = await preview();
-    assert.deepEqual(rows.map(row => [row.number, row.action]), [['10216', 'new'], ['10231', 'new'], ['10220', 'new'], ['10230', 'skip']]);
+    assert.deepEqual(rows.map(row => [row.number, row.action]), [['10216', 'new'], ['10232', 'unchanged'], ['10231', 'new'], ['10220', 'new'], ['10230', 'skip']]);
     const byNumber = Object.fromEntries(rows.map(row => [row.number, row]));
     assert.equal(byNumber['10216'].installDate, '2026-10-02');
     assert.equal(byNumber['10216'].orderNumber, '100000956581');
     assert.equal(byNumber['10216'].totalCents, 232972);
     assert.match(byNumber['10230'].reason, /Credits and returns/);
     assert.deepEqual(byNumber['10220'].notes, ['Skipped Omega line 3 (Labor, quantity 0.00)', 'No scheduled (install) date in Omega', 'No ORDER NO. in Omega']);
-    assert.equal((await request('/api/freeport/months')).body.length, 0, 'preview saves nothing');
+    assert.equal((await request('/api/freeport/invoices?month=2026-10')).body.length, 1, 'preview saves nothing');
 
     const imported = await importNumbers(['10216', '10220', '10231']);
     assert.deepEqual(imported.body.created.sort(), ['10216', '10220', '10231']);
@@ -584,6 +590,24 @@ test('Omega import keeps app corrections, follows Omega changes and flags voided
     assert.equal(kept.installDate, '2026-09-29');
     assert.equal(kept.lines[0].itemId, windshieldItem.id);
 
+    // Omega changes only the labor line: the windshield pick on the other line stays.
+    fixtures.details[10220].Items[1].quantity = '3.00';
+    fixtures.details[10220].invoice_amount = '660.00';
+    const laborRow = (await preview()).find(row => row.number === '10220');
+    assert.deepEqual(laborRow.changes, ['subtotal', 'line items']);
+    await importNumbers(['10220']);
+    const merged = (await request('/api/freeport/invoices/10220')).body;
+    assert.equal(merged.lines[0].itemId, windshieldItem.id);
+    assert.equal(merged.lines[0].description, 'DW02153GTYN Windshield');
+    assert.equal(merged.lines[1].quantity, '3');
+    assert.equal(merged.installDate, '2026-09-29');
+    assert.equal(merged.status, 'Needs review');
+
+    // The older invoice got its Omega baseline at that import, so a later Omega change shows.
+    fixtures.details[10232].Items[0].quantity = '3.00';
+    fixtures.details[10232].invoice_amount = '375.00';
+    assert.deepEqual((await preview()).find(row => row.number === '10232').changes, ['subtotal', 'line items']);
+
     // ACCOUNT NO. filled in Omega after the first import comes through.
     assert.equal((await request('/api/freeport/invoices/10216')).body.accountCode, '');
     fixtures.details[10216].InvoiceCustomFields[1].currentValue = '1060401328 - Mine Maintenance - Truck';
@@ -608,12 +632,20 @@ test('Omega import keeps app corrections, follows Omega changes and flags voided
     assert.equal(after.accountCode, '1060401328');
     assert.equal((await saveReady('10216')).status, 200);
 
-    // Voided in Omega: flagged, can't be Ready, and blocks the month's files.
+    // Voided in Omega and re-issued in November for the same October install:
+    // importing November flags the voided October invoice, so it isn't billed twice.
     fixtures.jobs[0].job_status = 'VO';
-    const voided = (await preview()).find(row => row.number === '10216');
-    assert.equal(voided.action, 'flag');
-    assert.equal(voided.reason, 'Voided in Omega');
-    assert.deepEqual((await importNumbers(['10216'])).body.flagged, ['10216']);
+    fixtures.jobs.push({ ...fixtures.jobs[0], id: '10260', job_status: 'IN', date: '2026-11-03', document_date: '2026-11-03' });
+    fixtures.details[10260] = { ...fixtures.details[10216], id: '10260', date: '2026-11-03' };
+    const october_check = (await request('/api/freeport/omega/month-check?month=2026-10')).body;
+    assert.deepEqual(october_check.notBillable, [{ number: '10216', reason: 'Voided in Omega' }], 'Month close spots it too');
+    const november = { from: '2026-11-01', to: '2026-11-30' };
+    const novemberRows = (await request('/api/freeport/omega/preview', { method: 'POST', body: november })).body.rows;
+    assert.deepEqual(novemberRows.filter(row => row.action !== 'unchanged').map(row => [row.number, row.action, row.reason]), [['10216', 'flag', 'Voided in Omega'], ['10260', 'new', '']]);
+    assert.equal(novemberRows.find(row => row.number === '10260').billingMonth, '2026-10');
+    const novemberImport = (await request('/api/freeport/omega/import', { method: 'POST', body: { ...november, numbers: ['10216', '10260'] } })).body;
+    assert.deepEqual(novemberImport.flagged, ['10216']);
+    assert.deepEqual(novemberImport.created, ['10260']);
     const flagged = (await request('/api/freeport/invoices/10216')).body;
     assert.equal(flagged.status, 'Needs review');
     assert.equal(flagged.omegaFlag, 'Voided in Omega');
@@ -623,10 +655,13 @@ test('Omega import keeps app corrections, follows Omega changes and flags voided
     assert.equal((await request('/api/freeport/months/2026-10/consolidated-invoice.pdf')).status, 409);
     assert.equal((await preview()).find(row => row.number === '10216').action, 'unchanged', 'an already-flagged invoice is not flagged again');
 
-    // Month close: a work order written up in August for an October install is found.
-    const workOrders = (await request('/api/freeport/omega/work-orders?month=2026-10')).body;
-    assert.deepEqual(workOrders.workOrders, [{ number: '10250', scheduledDate: '2026-10-23' }]);
-    assert.equal(workOrders.checkedFrom, '2026-06-01');
+    // Month close: a work order written up in August for an October install is found;
+    // the already-flagged invoice isn't listed again.
+    const monthCheck = (await request('/api/freeport/omega/month-check?month=2026-10')).body;
+    assert.deepEqual(monthCheck.workOrders, [{ number: '10250', scheduledDate: '2026-10-23' }]);
+    assert.equal(monthCheck.checkedFrom, '2026-06-01');
+    assert.ok(monthCheck.checkedTo <= '2026-10-31', 'the work-order search ends with the month');
+    assert.deepEqual(monthCheck.notBillable, []);
 
     assert.deepEqual([...omega.seen.keys], ['test-omega-key']);
     assert.deepEqual([...omega.seen.methods], ['GET'], 'the app only reads from Omega');

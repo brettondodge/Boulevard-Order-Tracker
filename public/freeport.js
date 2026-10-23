@@ -398,9 +398,16 @@ function lineRowHtml(line, index, matched, config) {
     </tr>`;
 }
 
+// The editor's review includes what was stored from Omega (voided flag,
+// Omega's subtotal), which isn't part of the editable draft.
+function editorSummary() {
+  const { draft, config, original } = state.editor;
+  return summarizeInvoice({ ...invoiceFromDraft(draft), omegaFlag: original.omegaFlag, omegaSubtotalCents: original.omegaSubtotalCents }, config);
+}
+
 function renderLines() {
   const { draft, config } = state.editor;
-  const summary = summarizeInvoice(invoiceFromDraft(draft), config);
+  const summary = editorSummary();
   screen.querySelector('#lines').innerHTML = draft.lines.length
     ? draft.lines.map((line, index) => lineRowHtml(line, index, summary.lines[index], config)).join('')
     : '<tr><td colspan="8" class="empty">No line items yet.</td></tr>';
@@ -409,7 +416,7 @@ function renderLines() {
 
 function updateDerived() {
   const { draft, config, original } = state.editor;
-  const summary = summarizeInvoice(invoiceFromDraft(draft), config);
+  const summary = editorSummary();
   summary.lines.forEach((line, index) => {
     const row = screen.querySelector(`tr[data-row="${index}"]`);
     if (!row) return;
@@ -746,7 +753,7 @@ async function renderClose(params, isCurrent) {
           ${taxDifference ? `· ${money(Math.abs(taxDifference))} difference` : '· matches'}
         </li>
         ${summary.unmatched ? `<li class="todo">${money(summary.unmatched)} of line items aren't matched to the item list, so they're left out of the totals above</li>` : ''}
-        ${config.omegaConnected ? '<li class="info" id="workOrders">Checking Omega for Freeport jobs that aren\'t invoiced yet…</li>' : ''}
+        ${config.omegaConnected ? '<li class="info" id="omegaCheck">Checking Omega…</li>' : ''}
       </ul>
     </section>
 
@@ -783,25 +790,30 @@ async function renderClose(params, isCurrent) {
         ${summary.invoices.map(invoice => `<li><strong>${esc(invoice.number)}</strong> · installed ${formatDate(invoice.installDate)} · ${money(invoice.total)}</li>`).join('')}
       </ol>
     </section>`;
-  if (config.omegaConnected) checkWorkOrders(month, isCurrent);
+  if (config.omegaConnected) checkOmega(month, isCurrent);
 }
 
-// Jobs installed this month that are still work orders in Omega would be left
-// out of the package, so Month close lists them.
-async function checkWorkOrders(month, isCurrent) {
-  const item = screen.querySelector('#workOrders');
+// Two read-only Omega checks for the package: jobs installed this month that are
+// still work orders (they'd be left out), and this month's imported invoices
+// that Omega has since voided or moved (they'd be billed wrongly).
+async function checkOmega(month, isCurrent) {
+  const item = screen.querySelector('#omegaCheck');
   if (!item) return;
   try {
-    const { workOrders, checkedFrom } = await api(`/freeport/omega/work-orders?month=${encodeURIComponent(month)}`);
+    const { workOrders, checkedFrom, checkedTo, notBillable } = await api(`/freeport/omega/month-check?month=${encodeURIComponent(month)}`);
     if (!isCurrent() || !item.isConnected) return;
-    item.className = workOrders.length ? 'todo' : 'done';
-    item.textContent = workOrders.length
-      ? `${workOrders.length} Freeport job${workOrders.length === 1 ? '' : 's'} installed in ${formatMonth(month)} ${workOrders.length === 1 ? 'is' : 'are'} still a work order in Omega (not invoiced yet): ${workOrders.map(order => `#${order.number} (${formatDate(order.scheduledDate)})`).join(', ')}`
-      : `No Freeport jobs installed in ${formatMonth(month)} are waiting to be invoiced in Omega (checked work orders written up since ${formatDate(checkedFrom)})`;
+    const plural = (count, one, many) => (count === 1 ? one : many);
+    const workOrderItem = workOrders.length
+      ? `<li class="todo">${workOrders.length} Freeport job${plural(workOrders.length, '', 's')} installed in ${formatMonth(month)} ${plural(workOrders.length, 'is', 'are')} still a work order in Omega (not invoiced yet): ${workOrders.map(order => `#${esc(order.number)} (${formatDate(order.scheduledDate)})`).join(', ')}</li>`
+      : `<li class="done">No Freeport jobs installed in ${formatMonth(month)} are waiting to be invoiced in Omega (checked work orders written up ${formatDate(checkedFrom)} to ${formatDate(checkedTo)})</li>`;
+    const billableItem = notBillable.length
+      ? `<li class="todo">Not billable any more in Omega: ${notBillable.map(entry => `<a href="/freeport/invoices/${encodeURIComponent(entry.number)}">${esc(entry.number)}</a> (${esc(entry.reason)})`).join(', ')}. Run Import from Omega to flag ${plural(notBillable.length, 'it', 'them')}, then delete or fix.</li>`
+      : '<li class="done">Every imported invoice this month is still a Freeport invoice in Omega</li>';
+    item.outerHTML = workOrderItem + billableItem;
   } catch (error) {
     if (!item.isConnected) return;
     item.className = 'info';
-    item.textContent = `Couldn't check Omega for jobs not yet invoiced: ${error.message}`;
+    item.textContent = `Couldn't check Omega: ${error.message}`;
   }
 }
 
