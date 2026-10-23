@@ -171,10 +171,17 @@ const SNAPSHOT_FIELDS = [
 const INVOICE_FIELDS = new Set(['omegaDate', 'installDate', 'orderNumber', 'accountCode', 'omegaTaxCents']);
 
 // Lines Omega didn't change keep the app's version (item picked, description
-// typed); only added or changed lines are mapped fresh.
+// typed); only added or changed lines are mapped fresh. Lines are matched by
+// content, so a line Omega inserted or removed elsewhere doesn't shift the rest.
 function mergeLines(beforeLines, afterLines, appLines, mappedLines) {
-  const sameShape = appLines.length === beforeLines.length;
-  return mappedLines.map((line, index) => (sameShape && JSON.stringify(beforeLines[index]) === JSON.stringify(afterLines[index]) ? appLines[index] : line));
+  if (appLines.length !== beforeLines.length) return mappedLines;
+  const unused = beforeLines.map((line, index) => ({ key: JSON.stringify(line), index }));
+  return mappedLines.map((line, index) => {
+    const match = unused.findIndex(entry => entry.key === JSON.stringify(afterLines[index]));
+    if (match < 0) return line;
+    const [{ index: oldIndex }] = unused.splice(match, 1);
+    return appLines[oldIndex];
+  });
 }
 
 // What Omega changed since the last import. Edits made in the app are not
@@ -344,9 +351,10 @@ export async function applyImport({ from, to, numbers }, config, actor) {
 export async function monthCheck(month, config) {
   const [year, monthNumber] = month.split('-').map(Number);
   const checkedFrom = new Date(Date.UTC(year, monthNumber - 1 - WORK_ORDER_LOOKBACK_MONTHS, 1)).toISOString().slice(0, 10);
-  const monthEnd = new Date(Date.UTC(year, monthNumber, 0)).toISOString().slice(0, 10);
   const today = todayPhoenixString();
-  const checkedTo = today < monthEnd ? (today > checkedFrom ? today : checkedFrom) : monthEnd;
+  // Work orders are sometimes written up a little after the install.
+  const searchEnd = new Date(Date.UTC(year, monthNumber, 15)).toISOString().slice(0, 10);
+  const checkedTo = today < searchEnd ? (today > checkedFrom ? today : checkedFrom) : searchEnd;
   const jobs = await listJobs(checkedFrom, checkedTo);
   const workOrders = jobs
     .filter(job => isFreeport(job, config.settings) && String(job.job_status) === WORK_ORDER && omegaDate(job.appointment_scheduled_date).startsWith(month))

@@ -602,6 +602,12 @@ test('Omega import keeps app corrections, follows Omega changes and flags voided
     assert.equal(merged.lines[1].quantity, '3');
     assert.equal(merged.installDate, '2026-09-29');
     assert.equal(merged.status, 'Needs review');
+    fixtures.details[10220].Items.unshift(omegaItem('Primer', 'Equipment with Glue Set Flat Glass', '1.00', '25.00'));
+    fixtures.details[10220].invoice_amount = '685.00';
+    await importNumbers(['10220']);
+    const shifted = (await request('/api/freeport/invoices/10220')).body;
+    assert.equal(shifted.lines[1].itemId, windshieldItem.id, 'a line Omega inserted ahead does not lose the pick');
+    assert.equal(shifted.lines.length, 3);
 
     // The older invoice got its Omega baseline at that import, so a later Omega change shows.
     fixtures.details[10232].Items[0].quantity = '3.00';
@@ -660,7 +666,7 @@ test('Omega import keeps app corrections, follows Omega changes and flags voided
     const monthCheck = (await request('/api/freeport/omega/month-check?month=2026-10')).body;
     assert.deepEqual(monthCheck.workOrders, [{ number: '10250', scheduledDate: '2026-10-23' }]);
     assert.equal(monthCheck.checkedFrom, '2026-06-01');
-    assert.ok(monthCheck.checkedTo <= '2026-10-31', 'the work-order search ends with the month');
+    assert.ok(monthCheck.checkedTo <= '2026-11-15', 'the work-order search ends shortly after the month');
     assert.deepEqual(monthCheck.notBillable, []);
 
     assert.deepEqual([...omega.seen.keys], ['test-omega-key']);

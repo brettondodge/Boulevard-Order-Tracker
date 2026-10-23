@@ -62,6 +62,7 @@ First check for an existing tracker web service. Reuse it if present. If none ex
 | ADMIN_PASSWORD | Strong separate Master Lists password, entered directly |
 | CF_ACCESS_TEAM_DOMAIN | Zero Trust team hostname, no https:// or trailing slash |
 | CF_ACCESS_AUD | Exact Access application AUD tag |
+| OMEGA_API_KEY | Omega EDI API key for Freeport's read-only invoice import, entered directly (added October 22, 2026). Without it the import button is disabled; replace it here and in local `.env` if the key is ever regenerated |
 
 render.yaml has one web service and one scheduled backup job; it has no database provisioning block. Do not apply a Blueprint if that would duplicate an existing web service. Production startup fails without database, Access and session/admin configuration. It creates no sample staff account or demo orders. Import before first startup if the database must remain empty for import. The migration command only creates the schema.
 
