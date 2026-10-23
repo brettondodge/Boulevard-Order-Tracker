@@ -7,7 +7,10 @@ const WIDTH = 612;
 const HEIGHT = 792;
 const MARGIN = 54;
 const RIGHT = WIDTH - MARGIN;
-const FOOTER_TOP = 96;
+const FOOTER_MIN_TOP = 96;
+const FOOTER_MAX_NOTE_LINES = 5;
+const HEADER_TEXT_WIDTH = 270;
+const META_VALUE_WIDTH = 120;
 const INK = rgb(0.13, 0.2, 0.29);
 const MUTED = rgb(0.42, 0.47, 0.53);
 const RULE = rgb(0.84, 0.87, 0.9);
@@ -105,19 +108,34 @@ class Sheet {
 // Returns the y just below the taller of the two.
 function drawHeader(sheet, settings, title, meta) {
   let left = HEIGHT - MARGIN - 14;
-  sheet.text(settings.businessName, MARGIN, left, { size: 15, bold: true });
-  left -= 17;
-  for (const line of [...settings.businessAddress.split('\n'), settings.businessPhone].filter(Boolean)) {
-    sheet.text(line, MARGIN, left, { size: 9.5, color: MUTED });
-    left -= 12.5;
+  for (const line of wrapText(sheet.fonts.bold, settings.businessName, 15, HEADER_TEXT_WIDTH)) {
+    sheet.text(line, MARGIN, left, { size: 15, bold: true });
+    left -= 17;
+  }
+  for (const part of [...settings.businessAddress.split('\n'), settings.businessPhone].filter(Boolean)) {
+    for (const line of wrapText(sheet.fonts.regular, part, 9.5, HEADER_TEXT_WIDTH)) {
+      sheet.text(line, MARGIN, left, { size: 9.5, color: MUTED });
+      left -= 12.5;
+    }
   }
 
   let right = HEIGHT - MARGIN - 16;
   sheet.right(title, RIGHT, right, { size: 20, bold: true });
   right -= 24;
+  const valueWidth = (value, size) => sheet.fonts.bold.widthOfTextAtSize(printable(sheet.fonts.bold, value), size);
   for (const [label, value] of meta) {
-    sheet.right(label, RIGHT - 128, right, { size: 8.5, color: MUTED });
-    sheet.right(value, RIGHT, right, { size: 10, bold: true });
+    // A long invoice or order number shrinks a little; if it still doesn't fit
+    // beside its label, it moves to its own line underneath.
+    let size = 10;
+    while (size > 8 && valueWidth(value, size) > META_VALUE_WIDTH) size -= 0.5;
+    if (valueWidth(value, size) <= META_VALUE_WIDTH) {
+      sheet.right(label, RIGHT - META_VALUE_WIDTH - 8, right, { size: 8.5, color: MUTED });
+    } else {
+      sheet.right(label, RIGHT, right, { size: 8.5, color: MUTED });
+      right -= 12;
+      while (size > 6 && valueWidth(value, size) > RIGHT - MARGIN - HEADER_TEXT_WIDTH - 20) size -= 0.5;
+    }
+    sheet.right(value, RIGHT, right, { size, bold: true });
     right -= 15;
   }
   return Math.min(left, right) - 6;
@@ -129,12 +147,15 @@ function drawParties(sheet, top, columns) {
   let lowest = top;
   columns.forEach(([label, lines], index) => {
     const x = index === 0 ? MARGIN : WIDTH / 2 + 20;
+    const width = index === 0 ? WIDTH / 2 + 20 - MARGIN - 14 : RIGHT - x;
     let y = top - 18;
     sheet.text(label, x, y, { size: 8, bold: true, color: MUTED });
     y -= 15;
-    for (const line of lines.filter(Boolean)) {
-      sheet.text(line, x, y, { size: 10 });
-      y -= 13;
+    for (const part of lines.filter(Boolean)) {
+      for (const line of wrapText(sheet.fonts.regular, part, 10, width)) {
+        sheet.text(line, x, y, { size: 10 });
+        y -= 13;
+      }
     }
     lowest = Math.min(lowest, y);
   });
@@ -157,14 +178,20 @@ function drawTotals(sheet, top, rows) {
   return y;
 }
 
-function drawFooter(sheet, settings, { left = '', right = '' } = {}) {
-  sheet.rule(FOOTER_TOP);
-  let y = FOOTER_TOP - 14;
-  sheet.text(`LICENSED-INSURED-BONDED AZ ROC# ${settings.rocNumber} ---- AZ Procure Vendor ID # ${settings.vendorId}`, MARGIN, y, { size: 8.5, color: MUTED });
-  if (settings.footerNote) {
-    y -= 11;
-    sheet.text(settings.footerNote, MARGIN, y, { size: 8.5, color: MUTED });
-  }
+// The license line plus the footer note, wrapped to the page and kept above the
+// page-number line. The footer grows upward when the note is long.
+function footerLayout(fonts, settings) {
+  const wrap = text => wrapText(fonts.regular, text, 8.5, RIGHT - MARGIN);
+  const license = wrap(`LICENSED-INSURED-BONDED AZ ROC# ${settings.rocNumber} ---- AZ Procure Vendor ID # ${settings.vendorId}`);
+  let note = String(settings.footerNote || '').split(/\r?\n/).filter(part => part.trim()).flatMap(wrap);
+  if (note.length > FOOTER_MAX_NOTE_LINES) note = [...note.slice(0, FOOTER_MAX_NOTE_LINES - 1), `${note[FOOTER_MAX_NOTE_LINES - 1]}…`];
+  const lines = [...license, ...note];
+  return { lines, top: Math.max(FOOTER_MIN_TOP, 70 + 11 * (lines.length - 1)) };
+}
+
+function drawFooter(sheet, footer, { left = '', right = '' } = {}) {
+  sheet.rule(footer.top);
+  footer.lines.forEach((line, index) => sheet.text(line, MARGIN, footer.top - 14 - index * 11, { size: 8.5, color: MUTED }));
   if (left || right) {
     sheet.text(left, MARGIN, 44, { size: 8, color: MUTED });
     sheet.right(right, RIGHT, 44, { size: 8, color: MUTED });
@@ -208,7 +235,7 @@ export async function buildConsolidatedInvoice(summary, config) {
     { label: 'Invoice Total', cents: summary.total, strong: true, ruleAbove: true },
     { label: 'Amount Due', cents: summary.total, strong: true }
   ]);
-  drawFooter(sheet, settings);
+  drawFooter(sheet, footerLayout(fonts, settings));
   return pdf.save();
 }
 
@@ -247,6 +274,7 @@ export async function buildInvoicePages(summary, config) {
   const label = monthLabel(summary.month);
   const { pdf, fonts } = await createDocument(`${summary.packageNumber} Invoices`, settings);
   const totalsHeight = 96;
+  const footer = footerLayout(fonts, settings);
   const sheets = [];
 
   for (const invoice of summary.invoices) {
@@ -254,7 +282,7 @@ export async function buildInvoicePages(summary, config) {
     for (const line of invoice.lines) {
       const wrapped = wrapText(fonts.regular, lineDescription(line), LINE_SIZE, DESCRIPTION_WIDTH);
       const rowHeight = 8 + wrapped.length * 12;
-      if (y - rowHeight < FOOTER_TOP + 16) ({ sheet, y } = startInvoicePage(pdf, fonts, settings, invoice, true, sheets));
+      if (y - rowHeight < footer.top + 16) ({ sheet, y } = startInvoicePage(pdf, fonts, settings, invoice, true, sheets));
       const baseline = y - 12;
       sheet.right(displayQuantity(line.quantity), COLUMNS.quantity, baseline, { size: LINE_SIZE });
       sheet.text(line.item?.unit ?? '', COLUMNS.unit, baseline, { size: LINE_SIZE });
@@ -264,7 +292,7 @@ export async function buildInvoicePages(summary, config) {
       y -= rowHeight;
       sheet.rule(y);
     }
-    if (y - totalsHeight < FOOTER_TOP + 10) ({ sheet, y } = startInvoicePage(pdf, fonts, settings, invoice, true, sheets));
+    if (y - totalsHeight < footer.top + 10) ({ sheet, y } = startInvoicePage(pdf, fonts, settings, invoice, true, sheets));
     drawTotals(sheet, y - 22, [
       { label: 'Parts', cents: invoice.parts },
       { label: 'Labor', cents: invoice.labor },
@@ -275,8 +303,8 @@ export async function buildInvoicePages(summary, config) {
   }
 
   // Footers go on last, once the page count is known.
-  sheets.forEach((sheet, index) => drawFooter(sheet, settings, {
-    left: `${summary.packageNumber} - invoices installed in ${label}`,
+  sheets.forEach((sheet, index) => drawFooter(sheet, footer, {
+    left: `${summary.packageNumber} - ${label} invoices`,
     right: `Page ${index + 1} of ${sheets.length}`
   }));
   return pdf.save();

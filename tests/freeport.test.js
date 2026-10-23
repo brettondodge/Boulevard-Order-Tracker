@@ -208,6 +208,23 @@ test('merged invoice PDF continues long invoices onto extra pages', async () => 
   assert.ok(text.includes('$7,518.50'), 'totals land after the last line');
 });
 
+test('PDF text wraps to the page: footer note lines, long Bill To lines', async () => {
+  const pdfConfig = {
+    ...config,
+    settings: {
+      ...config.settings, businessName: 'Synthetic Glass', businessAddress: '1 Test Rd', businessPhone: '', contractNumber: 'C-1', rocNumber: '1', vendorId: '2',
+      billTo: 'Synthetic Customer Safford Operations - Accounts Payable Department\nPO Box 1',
+      footerNote: '1.5% Late Fee will be applied against all balances past due.\nThank you for your business!'
+    }
+  };
+  const month = summarizeMonth('2026-09', [invoice({ status: 'Ready', orderNumber: '1000009001010000000000000000000000000000' })], pdfConfig);
+  const text = pdfText(await buildInvoicePages(month, pdfConfig));
+  assert.ok(text.split('\n').includes('Thank you for your business!'), 'each footer note line is printed on its own');
+  assert.ok(!text.includes('?Thank'), 'a line break is never printed as ?');
+  assert.ok(!text.split('\n').includes('Synthetic Customer Safford Operations - Accounts Payable Department'), 'a long Bill To line wraps');
+  assert.ok(text.includes('FMI-2026-09 - September 2026 invoices'), 'footer names the billing month, not an install month');
+});
+
 // ---------- API ----------
 
 const PORT = 4120;
