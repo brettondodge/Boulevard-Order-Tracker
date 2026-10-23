@@ -42,7 +42,7 @@ function cents(value, label, { nullable = false } = {}) {
   return value;
 }
 
-export function normalizeInvoiceInput(body = {}, config) {
+export function normalizeInvoiceInput(body = {}, config, stored = {}) {
   const number = text(body.number, 'Invoice number', 30, { required: true });
   if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(number)) throw invalid('Invoice number can only use letters, numbers and dashes.');
 
@@ -100,7 +100,7 @@ export function normalizeInvoiceInput(body = {}, config) {
   if (!invoice.billingMonth) throw invalid('Enter the install date so the invoice lands in a billing month.');
 
   if (invoice.status === 'Ready') {
-    const { blockers } = summarizeInvoice(invoice, config);
+    const { blockers } = summarizeInvoice({ ...invoice, omegaFlag: stored?.omegaFlag, omegaSubtotalCents: stored?.omegaSubtotalCents }, config);
     if (blockers.length) throw invalid('Fix these before marking the invoice ready.', { blockers });
   }
   return invoice;

@@ -67,7 +67,7 @@ export function freeportRouter({ requireStaffAuth, requireAdminAuth }) {
 
   router.get('/omega/work-orders', route(async (req, res) => {
     if (!isValidMonth(req.query.month)) throw new FreeportError(400, 'Choose a month like 2026-09.');
-    res.json({ workOrders: await openWorkOrders(req.query.month, await getConfig()) });
+    res.json(await openWorkOrders(req.query.month, await getConfig()));
   }));
 
   // Month-end files are only built once every invoice is Ready, so an
@@ -118,7 +118,7 @@ export function freeportRouter({ requireStaffAuth, requireAdminAuth }) {
 
   router.put('/invoices/:number', route(async (req, res) => {
     const version = expectedVersion(req.body?.version);
-    const invoice = normalizeInvoiceInput(req.body, await getConfig());
+    const invoice = normalizeInvoiceInput(req.body, await getConfig(), await getInvoice(req.params.number));
     res.json(await updateInvoice(req.params.number, version, invoice, actor(req)));
   }));
 

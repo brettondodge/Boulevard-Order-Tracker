@@ -221,15 +221,21 @@ function omegaDialogHtml() {
 const OMEGA_ROW_STATUS = {
   new: ['New', 'ok'],
   update: ['Update', 'info'],
+  flag: ['Not billable', 'review'],
   unchanged: ['No change', ''],
   skip: ["Can't import", 'review']
 };
+const OMEGA_IMPORTABLE = new Set(['new', 'update', 'flag']);
 
-function omegaPreviewHtml(rows, importable) {
+function omegaPreviewHtml(rows) {
   if (!rows.length) return '<p class="empty">No Freeport invoices in Omega for those dates.</p>';
   const count = action => rows.filter(row => row.action === action).length;
+  const importable = rows.filter(row => OMEGA_IMPORTABLE.has(row.action)).length;
   const body = rows.map(row => {
     const [label, badge] = OMEGA_ROW_STATUS[row.action];
+    const pick = OMEGA_IMPORTABLE.has(row.action)
+      ? `<input type="checkbox" class="omega-pick" value="${esc(row.number)}" checked aria-label="Import ${esc(row.number)}">`
+      : '';
     const notes = [
       ...(row.changes.length ? [`Changed in Omega: ${row.changes.join(', ')}`] : []),
       ...row.notes,
@@ -237,6 +243,7 @@ function omegaPreviewHtml(rows, importable) {
       ...(row.blockers && row.action !== 'unchanged' ? [`${row.blockers} thing${row.blockers === 1 ? '' : 's'} to fix after import (e.g. account code)`] : [])
     ];
     return `<tr>
+      <td class="center">${pick}</td>
       <td><span class="badge ${badge}">${label}</span></td>
       <td><strong>${esc(row.number)}</strong></td>
       <td>${formatDate(row.installDate)}${row.billingMonth ? `<small class="block">Billed in ${formatMonth(row.billingMonth)}</small>` : ''}</td>
@@ -248,50 +255,64 @@ function omegaPreviewHtml(rows, importable) {
     </tr>`;
   }).join('');
   return `
-    <p><strong>${count('new')} new</strong> · ${count('update')} to update · ${count('unchanged')} unchanged${count('skip') ? ` · <span class="warn">${count('skip')} can't import</span>` : ''}</p>
+    <p><strong>${count('new')} new</strong> · ${count('update')} to update${count('flag') ? ` · <span class="warn">${count('flag')} not billable any more</span>` : ''} · ${count('unchanged')} unchanged${count('skip') ? ` · <span class="warn">${count('skip')} can't import</span>` : ''}</p>
     <div class="scroll"><table class="omega-table">
-      <thead><tr><th>Status</th><th>Invoice #</th><th>Install date</th><th>Invoice date</th><th>Order #</th><th class="num">Lines</th><th class="num">Total</th><th>Notes</th></tr></thead>
+      <thead><tr><th><span class="sr-only">Import</span></th><th>Status</th><th>Invoice #</th><th>Install date</th><th>Invoice date</th><th>Order #</th><th class="num">Lines</th><th class="num">Total</th><th>Notes</th></tr></thead>
       <tbody>${body}</tbody>
     </table></div>
     <div class="bar">${importable
-      ? `<button type="button" class="primary" data-action="omega-import">Import ${importable} invoice${importable === 1 ? '' : 's'}</button>`
+      ? '<button type="button" class="primary" data-action="omega-import">Import ticked invoices</button>'
       : '<span class="muted">Nothing new to import.</span>'}</div>`;
 }
 
+// The previewed range is kept on the dialog, and only the newest preview for a
+// dialog that is still on screen counts, so Import always matches what's shown.
 async function previewOmega(dialog) {
   const box = dialog.querySelector('#omegaResult');
   const button = dialog.querySelector('[data-action="omega-preview"]');
   const range = { from: dialog.querySelector('#omegaFrom').value, to: dialog.querySelector('#omegaTo').value };
+  const request = (dialog.previewRequest = (dialog.previewRequest || 0) + 1);
+  dialog.previewRange = null;
   button.disabled = true;
   box.innerHTML = '<p class="muted">Checking Omega…</p>';
   try {
     const { rows } = await api('/freeport/omega/preview', { method: 'POST', body: range });
-    const numbers = rows.filter(row => row.action === 'new' || row.action === 'update').map(row => row.number);
-    state.omegaImport = { ...range, numbers };
-    box.innerHTML = omegaPreviewHtml(rows, numbers.length);
+    if (request !== dialog.previewRequest || !dialog.isConnected) return;
+    dialog.previewRange = range;
+    box.innerHTML = omegaPreviewHtml(rows);
   } catch (error) {
-    box.innerHTML = messageHtml(error);
+    if (request === dialog.previewRequest && dialog.isConnected) box.innerHTML = messageHtml(error);
   } finally {
-    button.disabled = false;
+    if (request === dialog.previewRequest) button.disabled = false;
   }
 }
 
 async function importOmega(dialog) {
   const box = dialog.querySelector('#omegaResult');
   const button = dialog.querySelector('[data-action="omega-import"]');
+  const numbers = [...dialog.querySelectorAll('.omega-pick:checked')].map(input => input.value);
+  if (!dialog.previewRange || !numbers.length) {
+    box.insertAdjacentHTML('afterbegin', messageHtml(new Error('Tick at least one invoice to import.')));
+    return;
+  }
   button.disabled = true;
   button.textContent = 'Importing…';
   try {
-    const result = await api('/freeport/omega/import', { method: 'POST', body: state.omegaImport });
+    const result = await api('/freeport/omega/import', { method: 'POST', body: { ...dialog.previewRange, numbers } });
     dialog.dataset.imported = '1';
     box.innerHTML = `
-      <div class="alert success" role="status">Imported ${result.created.length} new and updated ${result.updated.length} invoice${result.updated.length === 1 ? '' : 's'}. ${result.unchanged} unchanged. Each needs its account code checked and marking Ready.</div>
+      <div class="alert success" role="status">Imported ${result.created.length} new and updated ${result.updated.length}${result.flagged.length ? `; marked ${result.flagged.length} not billable` : ''}. ${result.unchanged} unchanged. Check each one and mark it Ready.</div>
       ${result.skipped.length ? `<div class="alert error">Not imported:<ul>${result.skipped.map(entry => `<li>${esc(entry.number)}: ${esc(entry.reason)}</li>`).join('')}</ul></div>` : ''}
       <div class="bar"><button type="button" class="primary" data-action="omega-close">Done</button></div>`;
   } catch (error) {
+    // Some invoices may already be saved, so the month refreshes when the dialog closes.
+    dialog.dataset.imported = '1';
     box.insertAdjacentHTML('afterbegin', messageHtml(error));
     button.disabled = false;
     button.textContent = 'Try import again';
+  } finally {
+    // If the dialog was closed while importing, refresh now.
+    if (!dialog.open && dialog.isConnected) render();
   }
 }
 
@@ -771,12 +792,12 @@ async function checkWorkOrders(month, isCurrent) {
   const item = screen.querySelector('#workOrders');
   if (!item) return;
   try {
-    const { workOrders } = await api(`/freeport/omega/work-orders?month=${encodeURIComponent(month)}`);
+    const { workOrders, checkedFrom } = await api(`/freeport/omega/work-orders?month=${encodeURIComponent(month)}`);
     if (!isCurrent() || !item.isConnected) return;
     item.className = workOrders.length ? 'todo' : 'done';
     item.textContent = workOrders.length
       ? `${workOrders.length} Freeport job${workOrders.length === 1 ? '' : 's'} installed in ${formatMonth(month)} ${workOrders.length === 1 ? 'is' : 'are'} still a work order in Omega (not invoiced yet): ${workOrders.map(order => `#${order.number} (${formatDate(order.scheduledDate)})`).join(', ')}`
-      : `No Freeport jobs installed in ${formatMonth(month)} are waiting to be invoiced in Omega`;
+      : `No Freeport jobs installed in ${formatMonth(month)} are waiting to be invoiced in Omega (checked work orders written up since ${formatDate(checkedFrom)})`;
   } catch (error) {
     if (!item.isConnected) return;
     item.className = 'info';

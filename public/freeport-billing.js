@@ -172,6 +172,11 @@ export function summarizeInvoice(invoice, config) {
     if (line.issue) blockers.push(`Line ${index + 1}: ${line.issue}`);
     if (line.warning) warnings.push(`Line ${index + 1}: ${line.warning}`);
   });
+  // Imported invoices must still be billable in Omega and add up to Omega's subtotal.
+  if (invoice.omegaFlag) blockers.push(`${invoice.omegaFlag}: delete this invoice, or fix it in Omega and import again`);
+  if (Number.isInteger(invoice.omegaSubtotalCents) && parts + labor + unmatched !== invoice.omegaSubtotalCents) {
+    blockers.push(`Lines add up to ${formatMoney(parts + labor + unmatched)}, but Omega's subtotal is ${formatMoney(invoice.omegaSubtotalCents)}`);
+  }
 
   if (isValidDate(invoice.installDate) && isValidDate(invoice.omegaDate)) {
     const days = daysBetween(invoice.installDate, invoice.omegaDate);

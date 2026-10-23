@@ -3,6 +3,8 @@
 -- Money is stored in integer cents; quantities as canonical decimal text.
 -- Items with custom_description take their spreadsheet description from each
 -- invoice line (e.g. a windshield part number) instead of the item list.
+-- omega_snapshot keeps what Omega said at the last import (JSON), so a later
+-- import only overwrites fields Omega itself changed.
 
 CREATE TABLE IF NOT EXISTS freeport_settings (
   id TEXT PRIMARY KEY,
@@ -48,6 +50,7 @@ CREATE TABLE IF NOT EXISTS freeport_invoices (
   omega_tax_cents INTEGER,
   drive_link TEXT,
   notes TEXT,
+  omega_snapshot TEXT,
   status TEXT NOT NULL DEFAULT 'Needs review',
   version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,

@@ -72,6 +72,7 @@ export async function initializeFreeport({ includePreviewInvoices = false } = {}
     const hasColumn = (table, column) => db.prepare(`SELECT COUNT(*) AS count FROM pragma_table_info('${table}') WHERE name = ?`).get(column).count > 0;
     if (!hasColumn('freeport_items', 'custom_description')) db.exec('ALTER TABLE freeport_items ADD COLUMN custom_description INTEGER NOT NULL DEFAULT 0');
     if (!hasColumn('freeport_invoice_lines', 'description')) db.exec('ALTER TABLE freeport_invoice_lines ADD COLUMN description TEXT');
+    if (!hasColumn('freeport_invoices', 'omega_snapshot')) db.exec('ALTER TABLE freeport_invoices ADD COLUMN omega_snapshot TEXT');
   }
 
   await transaction(async tx => {
@@ -175,7 +176,16 @@ export function saveItems(items, actor) {
 
 // ---------- Invoices ----------
 
+function parseSnapshot(value) {
+  try {
+    return value ? JSON.parse(value) : null;
+  } catch {
+    return null;
+  }
+}
+
 function invoiceFromRow(row, lines) {
+  const snapshot = parseSnapshot(row.omega_snapshot);
   return {
     id: row.id,
     number: row.invoice_number,
@@ -189,6 +199,10 @@ function invoiceFromRow(row, lines) {
     driveLink: row.drive_link || '',
     notes: row.notes || '',
     status: row.status,
+    // What Omega said at the last import; its flag and subtotal feed the review checks.
+    omegaSnapshot: snapshot,
+    omegaFlag: snapshot?.flag || '',
+    omegaSubtotalCents: Number.isInteger(snapshot?.subtotalCents) ? snapshot.subtotalCents : null,
     version: Number(row.version),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -257,11 +271,14 @@ export function getInvoice(number) {
   return transaction(tx => readInvoice(tx, number));
 }
 
-export async function createInvoice(invoice, actor) {
+const saveSnapshot = (tx, number, snapshot) => tx.run('UPDATE freeport_invoices SET omega_snapshot = ? WHERE invoice_number = ?', [JSON.stringify(snapshot), number]);
+
+export async function createInvoice(invoice, actor, { omegaSnapshot } = {}) {
   try {
     return await transaction(async tx => {
       if (await tx.get('SELECT id FROM freeport_invoices WHERE invoice_number = ?', [invoice.number])) throw duplicateNumber(invoice.number);
       await insertInvoice(tx, invoice, actor);
+      if (omegaSnapshot) await saveSnapshot(tx, invoice.number, omegaSnapshot);
       return readInvoice(tx, invoice.number);
     });
   } catch (error) {
@@ -269,7 +286,7 @@ export async function createInvoice(invoice, actor) {
   }
 }
 
-export async function updateInvoice(currentNumber, expectedVersion, invoice, actor) {
+export async function updateInvoice(currentNumber, expectedVersion, invoice, actor, { omegaSnapshot } = {}) {
   try {
     return await transaction(async tx => {
       const existing = await tx.get('SELECT id FROM freeport_invoices WHERE invoice_number = ?', [currentNumber]);
@@ -286,11 +303,32 @@ export async function updateInvoice(currentNumber, expectedVersion, invoice, act
       if (!updated) throw new FreeportError(409, 'Someone else saved this invoice while you were editing. Reload to see their changes.');
       await tx.run('DELETE FROM freeport_invoice_lines WHERE invoice_id = ?', [existing.id]);
       await insertLines(tx, existing.id, invoice.lines);
+      if (omegaSnapshot) await saveSnapshot(tx, invoice.number, omegaSnapshot);
       return readInvoice(tx, invoice.number);
     });
   } catch (error) {
     throw isUniqueViolation(error) ? duplicateNumber(invoice.number) : error;
   }
+}
+
+// Marks an imported invoice that Omega voided or moved off Freeport: its flag
+// blocks Ready until someone deletes it or fixes it in Omega.
+export function flagOmegaInvoice(number, expectedVersion, snapshot, actor) {
+  return transaction(async tx => {
+    const updated = await tx.run(
+      `UPDATE freeport_invoices SET omega_snapshot = ?, status = 'Needs review', version = version + 1, updated_at = ?, updated_by = ?
+       WHERE invoice_number = ? AND version = ?`,
+      [JSON.stringify(snapshot), isoNow(), actor, number, expectedVersion]
+    );
+    if (!updated) throw new FreeportError(409, `Invoice ${number} changed in the app while importing. Check Omega again.`);
+    return readInvoice(tx, number);
+  });
+}
+
+export async function findInvoiceNumbers(numbers) {
+  if (!numbers.length) return new Set();
+  const rows = await transaction(tx => tx.all(`SELECT invoice_number FROM freeport_invoices WHERE invoice_number IN (${numbers.map(() => '?').join(', ')})`, numbers));
+  return new Set(rows.map(row => row.invoice_number));
 }
 
 export function deleteInvoice(number, expectedVersion) {

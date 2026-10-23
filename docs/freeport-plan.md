@@ -208,11 +208,13 @@ Each step is a small commit you can look at before the next.
    date range (Omega invoice date) → preview of New / Update / No change /
    Can't import → Import. Freeport invoices only (billing account set in
    Admin); install date from the scheduled appointment, order number from the
-   ORDER NO. custom field, account code from an ACCOUNT CODE custom field if
-   Omega has one. Lines match by SKU, then by Omega's description (older
-   invoices share one glass SKU). Re-imports update Omega's fields, keep the
-   app's (account, Drive link, notes, month override) and send changed
-   invoices back to review. Month close lists Freeport jobs installed in the
+   ORDER NO. custom field, account code from the ACCOUNT NO. dropdown custom
+   field (its leading 10-digit code). Lines match by SKU, then by Omega's description (older
+   invoices share one glass SKU). Each import saves what Omega said; a later import only
+   overwrites fields Omega itself changed since then, so corrections made in
+   the app stay. Invoices voided or moved off Freeport in Omega are flagged and
+   can't be marked Ready. Credit/negative lines can't be imported yet, and an
+   imported invoice must add up to Omega's subtotal before it can be Ready. Month close lists Freeport jobs installed in the
    month that are still work orders in Omega.
 8. *Later:* Google Drive uploads for work orders and photos; automatic import
    through Omega's event webhook.
