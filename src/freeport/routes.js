@@ -2,6 +2,7 @@ import express from 'express';
 import { isValidMonth, summarizeMonth } from '../../public/freeport-billing.js';
 import { buildSpreadsheet } from './spreadsheet.js';
 import { buildConsolidatedInvoice, buildInvoicePages } from './pdf.js';
+import { applyImport, omegaConnected, openWorkOrders, previewImport } from './omega.js';
 import {
   FreeportError,
   normalizeAccountsInput,
@@ -35,21 +36,39 @@ export function freeportRouter({ requireStaffAuth, requireAdminAuth }) {
   const router = express.Router();
   router.use(requireStaffAuth);
 
-  router.get('/config', route(async (req, res) => res.json(await getConfig())));
+  // Every config response says whether Omega is connected, so the browser knows
+  // whether to offer the import.
+  const withOmega = config => ({ ...config, omegaConnected: omegaConnected() });
+
+  router.get('/config', route(async (req, res) => res.json(withOmega(await getConfig()))));
 
   router.put('/settings', requireAdminAuth, route(async (req, res) => {
-    res.json(await saveSettings(normalizeSettingsInput(req.body), actor(req)));
+    res.json(withOmega(await saveSettings(normalizeSettingsInput(req.body), actor(req))));
   }));
 
   router.put('/accounts', requireAdminAuth, route(async (req, res) => {
-    res.json(await saveAccounts(normalizeAccountsInput(req.body), actor(req)));
+    res.json(withOmega(await saveAccounts(normalizeAccountsInput(req.body), actor(req))));
   }));
 
   router.put('/items', requireAdminAuth, route(async (req, res) => {
-    res.json(await saveItems(normalizeItemsInput(req.body), actor(req)));
+    res.json(withOmega(await saveItems(normalizeItemsInput(req.body), actor(req))));
   }));
 
   router.get('/months', route(async (req, res) => res.json(await listMonths())));
+
+  // Omega import: preview first, then import the invoices the person saw.
+  router.post('/omega/preview', route(async (req, res) => {
+    res.json(await previewImport({ from: req.body?.from, to: req.body?.to }, await getConfig()));
+  }));
+
+  router.post('/omega/import', route(async (req, res) => {
+    res.json(await applyImport({ from: req.body?.from, to: req.body?.to, numbers: req.body?.numbers }, await getConfig(), actor(req)));
+  }));
+
+  router.get('/omega/work-orders', route(async (req, res) => {
+    if (!isValidMonth(req.query.month)) throw new FreeportError(400, 'Choose a month like 2026-09.');
+    res.json({ workOrders: await openWorkOrders(req.query.month, await getConfig()) });
+  }));
 
   // Month-end files are only built once every invoice is Ready, so an
   // incomplete package can't be sent to Freeport by accident.

@@ -120,7 +120,8 @@ export function normalizeSettingsInput(body = {}) {
     rocNumber: text(body.rocNumber, 'AZ ROC #', 40),
     vendorId: text(body.vendorId, 'AZ Procure Vendor ID', 40),
     billTo: text(body.billTo, 'Bill to', 300, { required: true }),
-    footerNote: text(body.footerNote, 'Footer note', 500)
+    footerNote: text(body.footerNote, 'Footer note', 500),
+    omegaAccountName: text(body.omegaAccountName, 'Omega billing account', 120, { required: true })
   };
   if (parseTaxRate(settings.taxRate) === null) throw invalid('Tax rate must be a percent like 9.1');
   return settings;

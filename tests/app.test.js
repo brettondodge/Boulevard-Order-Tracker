@@ -45,7 +45,9 @@ function startServer() {
     APP_PORT: '4100',
     NODE_ENV: 'test',
     RENDER: 'false',
-    SQLITE_DATA_DIR: mkdtempSync(path.join(tmpdir(), 'boulevard-test-'))
+    SQLITE_DATA_DIR: mkdtempSync(path.join(tmpdir(), 'boulevard-test-')),
+    // Never reach the real Omega API from tests, even with a key in the local .env.
+    OMEGA_API_KEY: ''
   };
   // Explicit master-list fixtures for order tests. Runtime order creation must
   // never provision suppliers implicitly.

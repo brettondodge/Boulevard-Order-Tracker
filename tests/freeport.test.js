@@ -4,6 +4,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import http from 'node:http';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import ExcelJS from 'exceljs';
@@ -230,13 +231,16 @@ test('PDF text wraps to the page: footer note lines, long Bill To lines', async 
 const PORT = 4120;
 const BASE = `http://127.0.0.1:${PORT}`;
 
-async function startServer(dataDir, preview = false) {
+// Tests never reach the real Omega API: the key is blank unless a test passes
+// its own, and the address points at a local fake.
+async function startServer(dataDir, preview = false, extraEnv = {}) {
   const child = spawn(process.execPath, ['src/server.js'], {
     cwd: process.cwd(),
     env: {
       ...process.env, NODE_ENV: 'test', RENDER: 'false', SESSION_SECRET: 'test-secret', APP_PORT: String(PORT),
       PREVIEW_MODE: preview ? 'true' : 'false', SQLITE_DATA_DIR: dataDir,
-      DEMO_STAFF_PASSWORD: 'staff-test', ADMIN_USERNAME: 'admin', ADMIN_PASSWORD: 'admin-test'
+      DEMO_STAFF_PASSWORD: 'staff-test', ADMIN_USERNAME: 'admin', ADMIN_PASSWORD: 'admin-test',
+      OMEGA_API_KEY: '', OMEGA_API_BASE: 'http://127.0.0.1:9/api/2.0', ...extraEnv
     },
     stdio: ['ignore', 'ignore', 'pipe']
   });
@@ -295,6 +299,8 @@ test('Freeport invoice records save, validate and persist', { timeout: 60000 }, 
     const config = (await request('/api/freeport/config')).body;
     assert.equal(config.accounts.length, 14);
     assert.equal(config.settings.poNumber, 'ZD00000669');
+    assert.equal(config.omegaConnected, false);
+    assert.equal((await request('/api/freeport/omega/preview', { method: 'POST', body: { from: '2026-10-01', to: '2026-10-31' } })).status, 503);
     assert.ok(config.items.some(item => item.sku === 'Labor' && item.priceCents === 12500));
     assert.ok(config.items.some(item => item.sku === 'Windshield' && item.customDescription && item.priceCents === 28500));
     assert.ok(config.items.some(item => item.sku === '36 x 48 (.090 Clr Lami)' && !item.customDescription));
@@ -455,5 +461,140 @@ test('preview databases get sample Freeport invoices', { timeout: 30000 }, async
     assert.equal(months[0].needsReview, 2);
   } finally {
     await stopServer(server);
+  }
+});
+
+// ---------- Omega import against a fake Omega API ----------
+
+const OMEGA_PORT = 4131;
+const omegaItem = (sku, description, quantity, price, costType = 'PART') => ({ sku, description, quantity, price, unit_of_measure: costType === 'LABOR' ? 'hr' : 'ea', cost_type: costType });
+
+function omegaFixtures() {
+  const freeport = 'Freeport McMoRan - Safford';
+  return {
+    jobs: [
+      { id: '10216', account_company: freeport, job_status: 'IN', date: '2026-10-15', appointment_scheduled_date: '2026-10-02', invoice_tax: '55.44', invoice_amount: '2274.28' },
+      { id: '10220', account_company: freeport, job_status: 'IN', date: '2026-10-20', appointment_scheduled_date: '0000-00-00', invoice_tax: '0.00', invoice_amount: '535.00' },
+      { id: '10244', account_company: 'Another Customer', job_status: 'IN', date: '2026-10-22', appointment_scheduled_date: '2026-10-23', invoice_tax: '57.47', invoice_amount: '1107.50' },
+      { id: '10250', account_company: freeport, job_status: 'WO', date: '0000-00-00', appointment_scheduled_date: '2026-10-23' },
+      { id: '10251', account_company: freeport, job_status: 'VO', date: '2026-10-10', appointment_scheduled_date: '2026-10-09' }
+    ],
+    details: {
+      10216: {
+        id: '10216', date: '2026-10-15', invoice_tax: '55.44', invoice_amount: '2274.28',
+        Items: [
+          omegaItem('.090 Clear Laminate', '36 x 48 (.090 Clr Lami)', '1.00', '299.28'),
+          omegaItem('Urethane', 'Equipment with Glue Set Flat Glass', '1.00', '85.00'),
+          omegaItem('Primer', 'Equipment with Glue Set Flat Glass', '1.00', '25.00'),
+          omegaItem('After Hours', 'Call Out Fee', '1.00', '200.00'),
+          omegaItem('Overtime Labor', 'Per Man', '4.50', '185.00', 'LABOR'),
+          omegaItem('Overtime Labor', 'Per Man', '4.50', '185.00', 'LABOR')
+        ],
+        InvoiceCustomFields: [{ id: '1', label: 'ORDER NO.', currentValue: '100000956581' }, { id: '4', label: 'Account Code', currentValue: '1060401328' }]
+      },
+      10220: {
+        id: '10220', date: '2026-10-20', invoice_tax: '0.00', invoice_amount: '535.00',
+        Items: [omegaItem('DW02153GTYN', 'Windshield', '1.00', '285.00'), omegaItem('Labor', 'Per Man', '2.00', '125.00', 'LABOR'), omegaItem('Labor', 'Info only', '0.00', '0.00', 'LABOR')],
+        InvoiceCustomFields: [{ id: '1', label: 'ORDER NO.', currentValue: null }]
+      }
+    }
+  };
+}
+
+async function startFakeOmega(fixtures) {
+  const seen = { keys: new Set(), methods: new Set() };
+  const server = http.createServer((req, res) => {
+    seen.keys.add(req.headers.api_key);
+    seen.methods.add(req.method);
+    const send = (status, body) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+    if (fixtures.rejectKey || req.headers.api_key !== 'test-omega-key') return send(401, { error: 'bad key' });
+    const url = new URL(req.url, 'http://omega.test');
+    const detail = url.pathname.match(/^\/api\/2\.0\/Invoices\/(\d+)$/);
+    if (url.pathname === '/api/2.0/Invoices') return send(200, url.searchParams.get('page') === '1' ? fixtures.jobs : []);
+    if (detail && fixtures.details[detail[1]]) return send(200, fixtures.details[detail[1]]);
+    return send(404, { error: 'not found' });
+  });
+  await new Promise(resolve => server.listen(OMEGA_PORT, '127.0.0.1', resolve));
+  return { seen, close: () => new Promise(resolve => server.close(resolve)) };
+}
+
+test('Omega import previews, imports, keeps app fields and spots changes', { timeout: 60000 }, async () => {
+  const fixtures = omegaFixtures();
+  const omega = await startFakeOmega(fixtures);
+  const server = await startServer(mkdtempSync(path.join(tmpdir(), 'boulevard-freeport-omega-')), false, {
+    OMEGA_API_KEY: 'test-omega-key', OMEGA_API_BASE: `http://127.0.0.1:${OMEGA_PORT}/api/2.0`
+  });
+  try {
+    const request = client();
+    await request('/api/login', { method: 'POST', body: { username: 'mary', password: 'staff-test' } });
+    const config = (await request('/api/freeport/config')).body;
+    assert.equal(config.omegaConnected, true);
+    const october = { from: '2026-10-01', to: '2026-10-31' };
+    assert.equal((await request('/api/freeport/omega/preview', { method: 'POST', body: { from: '2026-10-31', to: '2026-10-01' } })).status, 400);
+
+    // Preview: Freeport invoices only (not other customers, work orders or voids); nothing saved yet.
+    const preview = await request('/api/freeport/omega/preview', { method: 'POST', body: october });
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    assert.deepEqual(preview.body.rows.map(row => [row.number, row.action]), [['10216', 'new'], ['10220', 'new']]);
+    const [first, second] = preview.body.rows;
+    assert.equal(first.installDate, '2026-10-02');
+    assert.equal(first.omegaDate, '2026-10-15');
+    assert.equal(first.billingMonth, '2026-10');
+    assert.equal(first.orderNumber, '100000956581');
+    assert.equal(first.lineCount, 6);
+    assert.equal(first.totalCents, 232972);
+    assert.equal(first.blockers, 0, 'the old glass SKU matches by its description and the account code comes from Omega');
+    assert.deepEqual(second.notes, ['Skipped Omega line 3 (Labor, quantity 0.00)', 'No scheduled (install) date in Omega', 'No ORDER NO. in Omega']);
+    assert.equal((await request('/api/freeport/months')).body.length, 0, 'preview saves nothing');
+    assert.deepEqual([...omega.seen.keys], ['test-omega-key']);
+    assert.deepEqual([...omega.seen.methods], ['GET'], 'the app only reads from Omega');
+
+    // Import only what was chosen.
+    const imported = await request('/api/freeport/omega/import', { method: 'POST', body: { ...october, numbers: ['10216'] } });
+    assert.deepEqual(imported.body.created, ['10216']);
+    const invoice = (await request('/api/freeport/invoices/10216')).body;
+    assert.equal(invoice.status, 'Needs review');
+    assert.equal(invoice.accountCode, '1060401328');
+    assert.equal(invoice.omegaTaxCents, 5544);
+    assert.equal(invoice.lines[0].sku, '36 x 48 (.090 Clr Lami)', 'matched lines take the item list SKU');
+    assert.equal(invoice.lines[0].itemId, config.items.find(item => item.sku === '36 x 48 (.090 Clr Lami)').id);
+    assert.equal(invoice.lines[4].quantity, '4.5');
+    assert.equal((await request('/api/freeport/invoices/10220')).status, 404);
+
+    await request('/api/freeport/omega/import', { method: 'POST', body: { ...october, numbers: ['10220'] } });
+    const windshield = (await request('/api/freeport/invoices/10220')).body;
+    assert.equal(windshield.billingMonth, '2026-10', 'no install date yet, so the invoice date places it');
+    assert.equal(windshield.lines[0].description, 'DW02153GTYN Windshield', 'unmatched parts keep part number and name for a per-line item');
+    assert.equal(windshield.lines.length, 2);
+
+    // Mark ready; an unchanged re-import leaves it alone.
+    assert.equal((await request('/api/freeport/invoices/10216', { method: 'PUT', body: { ...invoice, status: 'Ready', driveLink: 'https://drive.google.com/x' } })).status, 200);
+    assert.deepEqual((await request('/api/freeport/omega/preview', { method: 'POST', body: october })).body.rows.map(row => row.action), ['unchanged', 'unchanged']);
+
+    // A change in Omega updates Omega's fields, keeps the app's, and sends it back to review.
+    fixtures.details[10216].Items[4].quantity = '5.00';
+    fixtures.details[10216].invoice_amount = '2366.78';
+    const changed = (await request('/api/freeport/omega/preview', { method: 'POST', body: october })).body.rows.find(row => row.number === '10216');
+    assert.equal(changed.action, 'update');
+    assert.deepEqual(changed.changes, ['line items']);
+    assert.ok(changed.notes.includes('Was Ready; goes back to Needs review'));
+    const updated = await request('/api/freeport/omega/import', { method: 'POST', body: { ...october, numbers: ['10216'] } });
+    assert.deepEqual(updated.body.updated, ['10216']);
+    const after = (await request('/api/freeport/invoices/10216')).body;
+    assert.equal(after.status, 'Needs review');
+    assert.equal(after.lines[4].quantity, '5');
+    assert.equal(after.driveLink, 'https://drive.google.com/x');
+    assert.equal(after.accountCode, '1060401328');
+
+    // Month close: Freeport jobs installed in the month that are still work orders.
+    assert.deepEqual((await request('/api/freeport/omega/work-orders?month=2026-10')).body.workOrders, [{ number: '10250', scheduledDate: '2026-10-23' }]);
+
+    fixtures.rejectKey = true;
+    const rejected = await request('/api/freeport/omega/preview', { method: 'POST', body: october });
+    assert.equal(rejected.status, 502);
+    assert.match(rejected.body.error, /rejected the API key/);
+  } finally {
+    await stopServer(server);
+    await omega.close();
   }
 });

@@ -1,6 +1,6 @@
 # Freeport Billing — Rebuild Plan
 
-Status: **in progress** — steps 1–5 done. This replaced most of the first
+Status: **in progress** — steps 1–5 and 7 done; step 6 (Mark sent) remains. This replaced most of the first
 Freeport build; the Tools dashboard and login stayed.
 
 ## The problem
@@ -203,16 +203,19 @@ Each step is a small commit you can look at before the next.
    order, showing the install date (not the invoice date), order #, account,
    lines and totals; long invoices continue onto extra pages.
 6. **Month close** — Sent lock and revisions.
-7. **Omega import** — preferably through the **Omega API**
-   (https://app.omegaedi.com/api/docs/): API key auth, `GET /Invoices` with
-   date filters, CSV export, combined-PDF print, and an event webhook that
-   could pull new Freeport invoices automatically. First, a test call to confirm
-   it returns line items, scheduled date and the ORDER NO. custom field (the
-   docs don't show them). If it doesn't, fall back to the ItemsReportDrilldown
-   .xlsx plus entering the missing fields. Either way: match SKUs to the master
-   list and flag anything unknown. The API key lives in local `.env` / hosting
-   secrets only. The app reads from Omega; it never changes Omega invoices.
-8. *Later:* Google Drive uploads for work orders and photos.
+7. ✅ **Omega import** — through the Omega API (read-only GETs; key in the
+   server environment as `OMEGA_API_KEY`). Month view → Import from Omega →
+   date range (Omega invoice date) → preview of New / Update / No change /
+   Can't import → Import. Freeport invoices only (billing account set in
+   Admin); install date from the scheduled appointment, order number from the
+   ORDER NO. custom field, account code from an ACCOUNT CODE custom field if
+   Omega has one. Lines match by SKU, then by Omega's description (older
+   invoices share one glass SKU). Re-imports update Omega's fields, keep the
+   app's (account, Drive link, notes, month override) and send changed
+   invoices back to review. Month close lists Freeport jobs installed in the
+   month that are still work orders in Omega.
+8. *Later:* Google Drive uploads for work orders and photos; automatic import
+   through Omega's event webhook.
 
 ## Resolved questions
 

@@ -468,6 +468,14 @@ input[readonly] {
   margin: 12px 0 0;
 }
 
+.omega-dialog {
+  width: min(1100px, 96vw);
+}
+
+.omega-table td {
+  vertical-align: top;
+}
+
 /* Consolidated invoice preview, styled like a printed page. */
 .paper {
   max-width: 760px;

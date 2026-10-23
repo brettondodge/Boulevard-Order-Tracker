@@ -51,6 +51,12 @@ function monthEnd(month) {
   return `${month}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
+function phoenixToday() {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Phoenix', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+  const part = type => parts.find(entry => entry.type === type).value;
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
 function phoenixMonth() {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Phoenix', year: 'numeric', month: '2-digit' }).formatToParts(new Date());
   return `${parts.find(part => part.type === 'year').value}-${parts.find(part => part.type === 'month').value}`;
@@ -160,7 +166,9 @@ async function renderMonth(params, isCurrent) {
         </div>
       </div>
       <div class="actions">
-        ${stepButton(7, 'Import from Omega')}
+        ${config.omegaConnected
+          ? '<button type="button" data-action="omega-open">Import from Omega</button>'
+          : '<button type="button" disabled title="Omega isn\'t connected yet (OMEGA_API_KEY)">Import from Omega</button>'}
         <a class="button" href="/freeport/invoices/new?month=${month}">Add invoice</a>
         <a class="button primary" href="/freeport/close?month=${month}">Month close →</a>
       </div>
@@ -186,7 +194,118 @@ async function renderMonth(params, isCurrent) {
             <tbody>${rows}</tbody>
           </table>
         </div>` : `<p class="empty">No invoices installed in ${formatMonth(month)} yet. <a href="/freeport/invoices/new?month=${month}">Add one</a></p>`}
-    </section>`;
+    </section>
+    ${config.omegaConnected ? omegaDialogHtml() : ''}`;
+  // After an import, closing the dialog (Done or Esc) refreshes the month.
+  screen.querySelector('#omegaDialog')?.addEventListener('close', event => {
+    if (event.target.dataset.imported) render();
+  });
+}
+
+// ---------- Omega import ----------
+
+function omegaDialogHtml() {
+  return `
+    <dialog id="omegaDialog" class="omega-dialog">
+      <div class="editor-head"><h2>Import from Omega</h2><button type="button" data-action="omega-close">Close</button></div>
+      <p class="muted">Finds Freeport invoices by their Omega invoice date. Each one lands in the month of its install date. Nothing is saved until you click Import.</p>
+      <div class="bar">
+        <label>From<input type="date" id="omegaFrom" value="${shiftMonth(phoenixMonth(), -1)}-01"></label>
+        <label>To<input type="date" id="omegaTo" value="${phoenixToday()}"></label>
+        <button type="button" class="primary" data-action="omega-preview">Check Omega</button>
+      </div>
+      <div id="omegaResult"></div>
+    </dialog>`;
+}
+
+const OMEGA_ROW_STATUS = {
+  new: ['New', 'ok'],
+  update: ['Update', 'info'],
+  unchanged: ['No change', ''],
+  skip: ["Can't import", 'review']
+};
+
+function omegaPreviewHtml(rows, importable) {
+  if (!rows.length) return '<p class="empty">No Freeport invoices in Omega for those dates.</p>';
+  const count = action => rows.filter(row => row.action === action).length;
+  const body = rows.map(row => {
+    const [label, badge] = OMEGA_ROW_STATUS[row.action];
+    const notes = [
+      ...(row.changes.length ? [`Changed in Omega: ${row.changes.join(', ')}`] : []),
+      ...row.notes,
+      ...(row.reason ? [row.reason] : []),
+      ...(row.blockers && row.action !== 'unchanged' ? [`${row.blockers} thing${row.blockers === 1 ? '' : 's'} to fix after import (e.g. account code)`] : [])
+    ];
+    return `<tr>
+      <td><span class="badge ${badge}">${label}</span></td>
+      <td><strong>${esc(row.number)}</strong></td>
+      <td>${formatDate(row.installDate)}${row.billingMonth ? `<small class="block">Billed in ${formatMonth(row.billingMonth)}</small>` : ''}</td>
+      <td>${formatDate(row.omegaDate)}</td>
+      <td>${esc(row.orderNumber) || '—'}</td>
+      <td class="num">${row.lineCount}</td>
+      <td class="num">${row.action === 'skip' ? '' : money(row.totalCents)}</td>
+      <td>${notes.map(note => `<small class="block">${esc(note)}</small>`).join('')}</td>
+    </tr>`;
+  }).join('');
+  return `
+    <p><strong>${count('new')} new</strong> · ${count('update')} to update · ${count('unchanged')} unchanged${count('skip') ? ` · <span class="warn">${count('skip')} can't import</span>` : ''}</p>
+    <div class="scroll"><table class="omega-table">
+      <thead><tr><th>Status</th><th>Invoice #</th><th>Install date</th><th>Invoice date</th><th>Order #</th><th class="num">Lines</th><th class="num">Total</th><th>Notes</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>
+    <div class="bar">${importable
+      ? `<button type="button" class="primary" data-action="omega-import">Import ${importable} invoice${importable === 1 ? '' : 's'}</button>`
+      : '<span class="muted">Nothing new to import.</span>'}</div>`;
+}
+
+async function previewOmega(dialog) {
+  const box = dialog.querySelector('#omegaResult');
+  const button = dialog.querySelector('[data-action="omega-preview"]');
+  const range = { from: dialog.querySelector('#omegaFrom').value, to: dialog.querySelector('#omegaTo').value };
+  button.disabled = true;
+  box.innerHTML = '<p class="muted">Checking Omega…</p>';
+  try {
+    const { rows } = await api('/freeport/omega/preview', { method: 'POST', body: range });
+    const numbers = rows.filter(row => row.action === 'new' || row.action === 'update').map(row => row.number);
+    state.omegaImport = { ...range, numbers };
+    box.innerHTML = omegaPreviewHtml(rows, numbers.length);
+  } catch (error) {
+    box.innerHTML = messageHtml(error);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function importOmega(dialog) {
+  const box = dialog.querySelector('#omegaResult');
+  const button = dialog.querySelector('[data-action="omega-import"]');
+  button.disabled = true;
+  button.textContent = 'Importing…';
+  try {
+    const result = await api('/freeport/omega/import', { method: 'POST', body: state.omegaImport });
+    dialog.dataset.imported = '1';
+    box.innerHTML = `
+      <div class="alert success" role="status">Imported ${result.created.length} new and updated ${result.updated.length} invoice${result.updated.length === 1 ? '' : 's'}. ${result.unchanged} unchanged. Each needs its account code checked and marking Ready.</div>
+      ${result.skipped.length ? `<div class="alert error">Not imported:<ul>${result.skipped.map(entry => `<li>${esc(entry.number)}: ${esc(entry.reason)}</li>`).join('')}</ul></div>` : ''}
+      <div class="bar"><button type="button" class="primary" data-action="omega-close">Done</button></div>`;
+  } catch (error) {
+    box.insertAdjacentHTML('afterbegin', messageHtml(error));
+    button.disabled = false;
+    button.textContent = 'Try import again';
+  }
+}
+
+const OMEGA_ACTIONS = ['omega-open', 'omega-close', 'omega-preview', 'omega-import'];
+
+function handleOmegaClick(event) {
+  const action = event.target.closest('[data-action]')?.dataset.action;
+  const dialog = screen.querySelector('#omegaDialog');
+  if (!OMEGA_ACTIONS.includes(action) || !dialog) return false;
+  if (action === 'omega-open') dialog.showModal();
+  else if (action === 'omega-close') dialog.close();
+  else if (action === 'omega-preview') previewOmega(dialog);
+  else importOmega(dialog);
+  return true;
 }
 
 // ---------- Invoice editor ----------
@@ -606,6 +725,7 @@ async function renderClose(params, isCurrent) {
           ${taxDifference ? `· ${money(Math.abs(taxDifference))} difference` : '· matches'}
         </li>
         ${summary.unmatched ? `<li class="todo">${money(summary.unmatched)} of line items aren't matched to the item list, so they're left out of the totals above</li>` : ''}
+        ${config.omegaConnected ? '<li class="info" id="workOrders">Checking Omega for Freeport jobs that aren\'t invoiced yet…</li>' : ''}
       </ul>
     </section>
 
@@ -642,6 +762,26 @@ async function renderClose(params, isCurrent) {
         ${summary.invoices.map(invoice => `<li><strong>${esc(invoice.number)}</strong> · installed ${formatDate(invoice.installDate)} · ${money(invoice.total)}</li>`).join('')}
       </ol>
     </section>`;
+  if (config.omegaConnected) checkWorkOrders(month, isCurrent);
+}
+
+// Jobs installed this month that are still work orders in Omega would be left
+// out of the package, so Month close lists them.
+async function checkWorkOrders(month, isCurrent) {
+  const item = screen.querySelector('#workOrders');
+  if (!item) return;
+  try {
+    const { workOrders } = await api(`/freeport/omega/work-orders?month=${encodeURIComponent(month)}`);
+    if (!isCurrent() || !item.isConnected) return;
+    item.className = workOrders.length ? 'todo' : 'done';
+    item.textContent = workOrders.length
+      ? `${workOrders.length} Freeport job${workOrders.length === 1 ? '' : 's'} installed in ${formatMonth(month)} ${workOrders.length === 1 ? 'is' : 'are'} still a work order in Omega (not invoiced yet): ${workOrders.map(order => `#${order.number} (${formatDate(order.scheduledDate)})`).join(', ')}`
+      : `No Freeport jobs installed in ${formatMonth(month)} are waiting to be invoiced in Omega`;
+  } catch (error) {
+    if (!item.isConnected) return;
+    item.className = 'info';
+    item.textContent = `Couldn't check Omega for jobs not yet invoiced: ${error.message}`;
+  }
 }
 
 // Downloads go through fetch so a refusal shows as a message, not a broken file.
@@ -700,7 +840,8 @@ const ADMIN_TABS = [['items', 'Item master list'], ['accounts', 'Account codes']
 const SETTINGS_FIELDS = [
   ['poNumber', 'PO number'], ['contractNumber', 'Contract number'], ['companyCode', 'Company code'],
   ['taxRate', 'Tax rate (% of parts)'], ['partsExpense', 'Parts expense element'], ['laborExpense', 'Labor expense element'],
-  ['businessName', 'Business name'], ['businessPhone', 'Phone'], ['rocNumber', 'AZ ROC #'], ['vendorId', 'AZ Procure Vendor ID']
+  ['businessName', 'Business name'], ['businessPhone', 'Phone'], ['rocNumber', 'AZ ROC #'], ['vendorId', 'AZ Procure Vendor ID'],
+  ['omegaAccountName', 'Omega billing account (Freeport)']
 ];
 const SETTINGS_AREAS = [['businessAddress', 'Business address'], ['billTo', 'Bill to'], ['footerNote', 'Footer note']];
 
@@ -916,7 +1057,7 @@ function navigate(href, { replace = false } = {}) {
 }
 
 document.addEventListener('click', event => {
-  if (handleEditorClick(event) || handleAdminClick(event) || handleCloseClick(event)) return;
+  if (handleEditorClick(event) || handleAdminClick(event) || handleCloseClick(event) || handleOmegaClick(event)) return;
   if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey) return;
   const link = event.target.closest('a[href^="/freeport"]');
   const row = !link && event.target.closest('tr[data-href]');

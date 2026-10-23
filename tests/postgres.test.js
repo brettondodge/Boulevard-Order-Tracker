@@ -27,7 +27,7 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     const preload = path.join(directory, 'jwks.mjs');
     // Only this test child intercepts Cloudflare JWKS; production has no bypass setting.
     await writeFile(preload, `const original=globalThis.fetch; globalThis.fetch=(url, options)=>String(url)==='https://test-team.cloudflareaccess.com/cdn-cgi/access/certs' ? Promise.resolve(new Response(${JSON.stringify(JSON.stringify({ keys: [jwk] }))}, {headers:{'content-type':'application/json'}})) : original(url,options);`);
-    const env = { ...process.env, NODE_ENV: 'production', RENDER: 'false', DATABASE_URL: connection, SESSION_SECRET: 'synthetic-test-secret-longer-than-32-characters', ADMIN_USERNAME: 'office-admin', ADMIN_PASSWORD: 'synthetic-admin-password', CF_ACCESS_TEAM_DOMAIN: 'test-team.cloudflareaccess.com', CF_ACCESS_AUD: 'test-audience', PREVIEW_MODE: 'false', APP_PORT: '4209' };
+    const env = { ...process.env, NODE_ENV: 'production', RENDER: 'false', DATABASE_URL: connection, SESSION_SECRET: 'synthetic-test-secret-longer-than-32-characters', ADMIN_USERNAME: 'office-admin', ADMIN_PASSWORD: 'synthetic-admin-password', CF_ACCESS_TEAM_DOMAIN: 'test-team.cloudflareaccess.com', CF_ACCESS_AUD: 'test-audience', PREVIEW_MODE: 'false', APP_PORT: '4209', OMEGA_API_KEY: '' };
     async function start() {
       let output = '';
       server = spawn(process.execPath, ['--import', preload, 'src/server.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });

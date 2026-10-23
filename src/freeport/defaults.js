@@ -14,7 +14,8 @@ export const defaultSettings = {
   rocNumber: '216266',
   vendorId: '000019814',
   billTo: 'Freeport McMoRan - Safford\nAccounts Payable\nP.O. Box 25109\nPhoenix, AZ 85002-5109',
-  footerNote: '1.5% Late Fee will be applied against all balances past due.'
+  footerNote: '1.5% Late Fee will be applied against all balances past due.',
+  omegaAccountName: 'Freeport McMoRan - Safford'
 };
 
 export const defaultAccounts = [
