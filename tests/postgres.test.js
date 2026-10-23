@@ -78,6 +78,11 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     const sheet = await fetch('http://127.0.0.1:4209/api/freeport/months/2026-09/spreadsheet.xlsx', { headers: { Host: 'tools.blvdglass.com', 'X-Forwarded-Host': 'tools.blvdglass.com', 'X-Forwarded-Proto': 'https', 'Cf-Access-Jwt-Assertion': token, Cookie: cookie } });
     assert.equal(sheet.status, 200);
     assert.match(sheet.headers.get('content-type'), /spreadsheetml/);
+    for (const file of ['consolidated-invoice.pdf', 'invoices.pdf']) {
+      const pdf = await fetch(`http://127.0.0.1:4209/api/freeport/months/2026-09/${file}`, { headers: { Host: 'tools.blvdglass.com', 'X-Forwarded-Host': 'tools.blvdglass.com', 'X-Forwarded-Proto': 'https', 'Cf-Access-Jwt-Assertion': token, Cookie: cookie } });
+      assert.equal(pdf.status, 200, file);
+      assert.equal(pdf.headers.get('content-type'), 'application/pdf');
+    }
     const fingerprint = await recordFingerprint(pool);
     assert.equal(fingerprint.freeport_invoices.count, 1);
     assert.equal(fingerprint.freeport_accounts.count, 14);

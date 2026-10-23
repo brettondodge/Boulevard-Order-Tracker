@@ -1,6 +1,6 @@
 # Freeport Billing — Rebuild Plan
 
-Status: **in progress** — steps 1–3 done. This replaced most of the first
+Status: **in progress** — steps 1–5 done. This replaced most of the first
 Freeport build; the Tools dashboard and login stayed.
 
 ## The problem
@@ -196,8 +196,12 @@ Each step is a small commit you can look at before the next.
 3. ✅ **Spreadsheet export** — the 15-column .xlsx, one sheet named like the
    Google Sheet tabs ("September 2026"); code columns are numbers. Downloads only
    once every invoice in the month is Ready.
-4. **Consolidated invoice PDF.**
-5. **Merged invoice PDF** (app-generated invoice pages).
+4. ✅ **Consolidated invoice PDF** — one page: FMI number, month-end date, PO,
+   contract, "Attn: Month Year", Parts / Labor / Subtotal / Tax / Total, ROC#,
+   Vendor ID and footer note.
+5. ✅ **Merged invoice PDF** — one app-made page per invoice in install-date
+   order, showing the install date (not the invoice date), order #, account,
+   lines and totals; long invoices continue onto extra pages.
 6. **Month close** — Sent lock and revisions.
 7. **Omega import** — preferably through the **Omega API**
    (https://app.omegaedi.com/api/docs/): API key auth, `GET /Invoices` with

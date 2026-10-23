@@ -566,6 +566,10 @@ async function renderClose(params, isCurrent) {
   if (!isCurrent()) return;
   const summary = summarizeMonth(month, invoices, config);
   const rowCount = spreadsheetRows(summary, config).length;
+  const ready = summary.invoices.length > 0 && !summary.needsReview.length;
+  const downloadButton = (file, label) => ready
+    ? `<button type="button" class="primary" data-action="download" data-file="/api/freeport/months/${month}/${file}">${label}</button>`
+    : `<button type="button" disabled title="Every invoice must be Ready first">${label}</button>`;
   const taxDifference = summary.tax - summary.invoiceTaxTotal;
   // Each row opens its invoice on screen; the .xlsx gets plain text.
   // A divider starts each invoice; hovering any line highlights that whole invoice.
@@ -608,19 +612,18 @@ async function renderClose(params, isCurrent) {
     <section class="panel">
       <div class="section-head">
         <div><h2>1. Consolidated invoice</h2><p class="muted">The invoice Freeport writes the check from.</p></div>
-        ${stepButton(4, 'Download PDF')}
+        ${downloadButton('consolidated-invoice.pdf', 'Download PDF')}
       </div>
+      <div class="download-message"></div>
       ${renderConsolidatedInvoice(summary, config.settings)}
     </section>
 
     <section class="panel">
       <div class="section-head">
         <div><h2>2. Line-item spreadsheet</h2><p class="muted">${rowCount} rows · replaces the Google Sheet · click a row to open its invoice</p></div>
-        ${summary.invoices.length && !summary.needsReview.length
-          ? `<button type="button" class="primary" data-action="download-xlsx" data-month="${month}">Download .xlsx</button>`
-          : '<button type="button" disabled title="Every invoice must be Ready first">Download .xlsx</button>'}
+        ${downloadButton('spreadsheet.xlsx', 'Download .xlsx')}
       </div>
-      <div id="sheetMessage"></div>
+      <div class="download-message"></div>
       <div class="scroll sheet">
         <table>
           <thead><tr>${SPREADSHEET_COLUMNS.map(column => `<th>${esc(column)}</th>`).join('')}</tr></thead>
@@ -632,34 +635,35 @@ async function renderClose(params, isCurrent) {
     <section class="panel">
       <div class="section-head">
         <div><h2>3. Merged invoice PDF</h2><p class="muted">One app-generated page per invoice, in install-date order.</p></div>
-        ${stepButton(5, 'Download PDF')}
+        ${downloadButton('invoices.pdf', 'Download PDF')}
       </div>
+      <div class="download-message"></div>
       <ol class="pages">
         ${summary.invoices.map(invoice => `<li><strong>${esc(invoice.number)}</strong> · installed ${formatDate(invoice.installDate)} · ${money(invoice.total)}</li>`).join('')}
       </ol>
     </section>`;
 }
 
-// The download goes through fetch so a refusal shows as a message, not a broken file.
+// Downloads go through fetch so a refusal shows as a message, not a broken file.
 function handleCloseClick(event) {
-  const button = event.target.closest('[data-action="download-xlsx"]');
+  const button = event.target.closest('[data-action="download"]');
   if (!button) return false;
-  downloadSpreadsheet(button);
+  downloadFile(button);
   return true;
 }
 
-async function downloadSpreadsheet(button) {
-  const box = screen.querySelector('#sheetMessage');
+async function downloadFile(button) {
+  const box = button.closest('section').querySelector('.download-message');
   button.disabled = true;
   try {
-    const response = await fetch(`/api/freeport/months/${encodeURIComponent(button.dataset.month)}/spreadsheet.xlsx`);
+    const response = await fetch(button.dataset.file);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      const error = new Error(body.error || 'The spreadsheet could not be downloaded. Try again.');
+      const error = new Error(body.error || 'The file could not be downloaded. Try again.');
       error.body = body;
       throw error;
     }
-    const filename = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') || '')?.[1] || 'Line Items.xlsx';
+    const filename = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') || '')?.[1] || 'download';
     const url = URL.createObjectURL(await response.blob());
     const link = Object.assign(document.createElement('a'), { href: url, download: filename });
     document.body.append(link);

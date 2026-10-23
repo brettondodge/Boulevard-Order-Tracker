@@ -7,6 +7,9 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import ExcelJS from 'exceljs';
+import { PDFDocument } from 'pdf-lib';
+import { inflateSync } from 'node:zlib';
+import { buildInvoicePages } from '../src/freeport/pdf.js';
 import {
   SPREADSHEET_COLUMNS,
   billingMonthFor,
@@ -167,6 +170,44 @@ test('per-line description items take the spreadsheet description from the line'
   assert.equal(spreadsheetRows(undescribed, withParts)[0].flagged, true, 'a line with a problem is highlighted in the preview');
 });
 
+// Reads back the text a pdf-lib file prints: inflates each content stream and
+// decodes its hex-encoded text operators.
+function pdfText(bytes) {
+  const raw = Buffer.from(bytes);
+  const latin = raw.toString('latin1');
+  const texts = [];
+  let from = 0;
+  for (;;) {
+    const start = latin.indexOf('stream\n', from);
+    if (start < 0) break;
+    const end = latin.indexOf('\nendstream', start + 7);
+    if (end < 0) break;
+    try {
+      const content = inflateSync(raw.subarray(start + 7, end)).toString('latin1');
+      for (const match of content.matchAll(/<([0-9A-Fa-f]*)>\s*Tj/g)) texts.push(Buffer.from(match[1], 'hex').toString('latin1'));
+    } catch {}
+    from = end + 10;
+  }
+  return texts.join('\n');
+}
+
+test('merged invoice PDF continues long invoices onto extra pages', async () => {
+  const pdfConfig = {
+    ...config,
+    settings: { ...config.settings, businessName: 'Synthetic Glass ✓', businessAddress: '1 Test Rd', businessPhone: '', billTo: 'Synthetic Customer', contractNumber: 'C-1', rocNumber: '1', vendorId: '2', footerNote: '' }
+  };
+  const labor = Array.from({ length: 60 }, () => ({ sku: 'Labor', itemId: 'labor', description: '', quantity: '1', rateCents: 12500 }));
+  const month = summarizeMonth('2026-09', [invoice({ status: 'Ready', lines: [...labor, { sku: 'Silicone', itemId: 'silicone', description: '', quantity: '1', rateCents: 1850 }] })], pdfConfig);
+  const bytes = await buildInvoicePages(month, pdfConfig);
+  const pdf = await PDFDocument.load(bytes);
+  assert.ok(pdf.getPageCount() >= 2);
+  const text = pdfText(bytes);
+  assert.ok(text.includes('INVOICE (continued)'));
+  assert.ok(text.includes(`Page 1 of ${pdf.getPageCount()}`));
+  assert.ok(text.includes('Synthetic Glass ?'), 'characters the PDF font lacks print as ?');
+  assert.ok(text.includes('$7,518.50'), 'totals land after the last line');
+});
+
 // ---------- API ----------
 
 const PORT = 4120;
@@ -285,6 +326,8 @@ test('Freeport invoice records save, validate and persist', { timeout: 60000 }, 
     const refused = await request('/api/freeport/months/2026-09/spreadsheet.xlsx');
     assert.equal(refused.status, 409);
     assert.deepEqual(refused.body.invoices, ['91002']);
+    assert.equal((await request('/api/freeport/months/2026-09/consolidated-invoice.pdf')).status, 409);
+    assert.equal((await request('/api/freeport/months/2026-09/invoices.pdf')).status, 409);
     assert.equal((await request(`/api/freeport/invoices/91002?version=${pending.body.version}`, { method: 'DELETE' })).status, 200);
     assert.equal((await request('/api/freeport/months/2026-10/spreadsheet.xlsx')).status, 409);
     assert.equal((await request('/api/freeport/months/2026-9/spreadsheet.xlsx')).status, 400);
@@ -304,6 +347,31 @@ test('Freeport invoice records save, validate and persist', { timeout: 60000 }, 
     assert.deepEqual(cells(2), labor);
     assert.deepEqual(cells(3), labor); // one row per technician
     assert.equal(sheet.getRow(2).getCell(8).numFmt, '0', 'order numbers show every digit in Excel');
+
+    // Consolidated invoice and merged invoice pages.
+    const consolidated = await request.raw('/api/freeport/months/2026-09/consolidated-invoice.pdf');
+    assert.equal(consolidated.status, 200);
+    assert.equal(consolidated.headers.get('content-type'), 'application/pdf');
+    assert.equal(consolidated.headers.get('content-disposition'), 'attachment; filename="FMI-2026-09 Consolidated Invoice.pdf"');
+    const consolidatedBytes = Buffer.from(await consolidated.arrayBuffer());
+    const consolidatedPdf = await PDFDocument.load(consolidatedBytes);
+    assert.equal(consolidatedPdf.getPageCount(), 1);
+    assert.equal(consolidatedPdf.getTitle(), 'FMI-2026-09 Consolidated Invoice');
+    const consolidatedText = pdfText(consolidatedBytes);
+    for (const expected of ['FMI-2026-09', 'September 30, 2026', 'ZD00000669', 'Contract No. 33282200158-001', 'Attn: September 2026', 'Labor - September 2026', '$500.00', 'Amount Due']) {
+      assert.ok(consolidatedText.includes(expected), `consolidated invoice shows ${expected}`);
+    }
+
+    const merged = await request.raw('/api/freeport/months/2026-09/invoices.pdf');
+    assert.equal(merged.status, 200);
+    assert.equal(merged.headers.get('content-disposition'), 'attachment; filename="FMI-2026-09 Invoices.pdf"');
+    const mergedBytes = Buffer.from(await merged.arrayBuffer());
+    assert.equal((await PDFDocument.load(mergedBytes)).getPageCount(), 1);
+    const mergedText = pdfText(mergedBytes);
+    for (const expected of ['91001-A', 'September 29, 2026', '100000910001', '1060401328', 'Tech Labor - Straight', '$250.00', 'Page 1 of 1']) {
+      assert.ok(mergedText.includes(expected), `invoice page shows ${expected}`);
+    }
+    assert.ok(!mergedText.includes('October 6, 2026'), 'the invoice date from another month is not printed');
 
     // Admin changes need the separate admin unlock.
     assert.equal((await request('/api/freeport/settings', { method: 'PUT', body: config.settings })).status, 401);
