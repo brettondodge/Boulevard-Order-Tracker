@@ -4,6 +4,7 @@ import {
   SPREADSHEET_COLUMNS,
   billingMonthFor,
   formatMoney as money,
+  hasListPrice,
   isValidMonth,
   matchLine,
   parseMoney,
@@ -420,8 +421,10 @@ function readField(target) {
     line.itemId = item?.id || '';
     if (item) {
       line.sku = item.sku;
-      // Fill the list price unless someone already typed a different billed rate.
-      if (item.priceCents && (!line.rate.trim() || (previous && parseMoney(line.rate) === previous.priceCents))) line.rate = centsToInput(item.priceCents);
+      // Replace a blank or auto-filled rate with the new item's list price. Items
+      // priced on each line get a blank rate, so the old item's price can't carry over.
+      const autoFilled = !line.rate.trim() || (previous && parseMoney(line.rate) === previous.priceCents);
+      if (autoFilled) line.rate = hasListPrice(item) ? centsToInput(item.priceCents) : '';
     }
     renderLines();
     return;
@@ -570,7 +573,7 @@ async function renderClose(params, isCurrent) {
     const href = `/freeport/invoices/${encodeURIComponent(invoice.number)}`;
     return spreadsheetRows({ invoices: [invoice] }, config).map((row, lineIndex) => {
       const [description, ...rest] = row.cells;
-      return `<tr class="clickable ${lineIndex === 0 ? 'invoice-start' : ''} ${row.unmatched ? 'flagged' : ''}" data-href="${href}" data-invoice="${esc(invoice.number)}">
+      return `<tr class="clickable ${lineIndex === 0 ? 'invoice-start' : ''} ${row.flagged ? 'flagged' : ''}" data-href="${href}" data-invoice="${esc(invoice.number)}">
         <td><a href="${href}" title="Open invoice ${esc(invoice.number)}">${esc(description)}</a></td>${rest.map(cell => `<td>${esc(cell)}</td>`).join('')}
       </tr>`;
     }).join('');
@@ -706,9 +709,9 @@ function itemRowHtml(item, disabled) {
     <td><input data-name="sku" value="${esc(item.sku)}" ${disabled}></td>
     <td><input data-name="description" value="${esc(item.description)}" class="wide" ${disabled}></td>
     <td>${select('unit', ITEM_UNITS, item.unit, disabled)}</td>
-    <td>${select('type', ITEM_TYPES, item.type, disabled)}</td>
+    <td>${select('type', ITEM_TYPES, item.type, item.inUse ? 'disabled title="Already on saved invoices"' : disabled)}</td>
     <td><input data-name="price" value="${esc(item.customDescription && !item.priceCents ? '' : centsToInput(item.priceCents))}" inputmode="decimal" class="short" ${disabled}></td>
-    <td class="center"><input type="checkbox" data-name="customDescription" ${item.customDescription ? 'checked' : ''} ${disabled} aria-label="Description typed on each line"></td>
+    <td class="center"><input type="checkbox" data-name="customDescription" ${item.customDescription ? 'checked' : ''} ${item.inUse ? 'disabled title="Already on saved invoices"' : disabled} aria-label="Description typed on each line"></td>
     <td class="center"><input type="checkbox" data-name="active" ${item.active ? 'checked' : ''} ${disabled} aria-label="Active"></td>
   </tr>`;
 }
@@ -734,7 +737,7 @@ async function renderAdmin(params, isCurrent) {
 
   const bodies = {
     items: `
-      <p class="muted">Only these items can be billed to Freeport. Invoice lines match by SKU (ELMO or Omega); when one SKU covers several sizes, the billed price picks the size. Billed prices are never changed. "Per-line description" items (windshields, special-order parts) get their spreadsheet description typed on each invoice line; leave the list price blank if it varies.</p>
+      <p class="muted">Only these items can be billed to Freeport. Invoice lines match by SKU (ELMO or Omega); when one SKU covers several sizes, the billed price picks the size. Billed prices are never changed. "Per-line description" items (windshields, special-order parts) get their spreadsheet description typed on each invoice line; leave the list price blank if it varies. Once an item is on saved invoices its type and per-line setting are fixed; add a new item instead.</p>
       <div class="scroll"><table class="admin-table">
         <thead><tr><th>SKU</th><th>Freeport description (spreadsheet)</th><th>Unit</th><th>Type</th><th>List price</th><th title="The description is typed on each invoice line, e.g. a windshield part number">Per-line description</th><th>Active</th></tr></thead>
         <tbody id="adminRows">${config.items.map(item => itemRowHtml(item, disabled)).join('')}</tbody>

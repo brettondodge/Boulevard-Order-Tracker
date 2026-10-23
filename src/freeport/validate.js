@@ -75,8 +75,15 @@ export function normalizeInvoiceInput(body = {}, config) {
     };
   });
 
+  // Only per-line description items keep a typed description, so a leftover
+  // hidden one can't be stored against a normal item.
+  const pinned = pinMatchedItems(lines, config.items).map(line => {
+    const item = config.items.find(candidate => candidate.id === line.itemId);
+    return item && !item.customDescription ? { ...line, description: '' } : line;
+  });
+
   const invoice = {
-    lines: pinMatchedItems(lines, config.items),
+    lines: pinned,
     number,
     omegaDate: optionalDate(body.omegaDate, 'Invoice date'),
     installDate: optionalDate(body.installDate, 'Install date'),

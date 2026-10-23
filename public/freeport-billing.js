@@ -98,15 +98,20 @@ export function skuKey(sku) {
   return String(sku ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+// Per-line description items with a list price of 0 have their price entered on each line.
+export function hasListPrice(item) {
+  return !(item.customDescription && item.priceCents === 0);
+}
+
 // A line matches by explicit pick, then by SKU. While one SKU still covers
-// several glass sizes, the billed price decides which size it is.
+// several glass sizes, the billed price decides which size it is. The item is
+// found before quantity and rate are checked, so the screen can show its unit,
+// type and description box while those are still being typed.
 export function matchLine(line, items) {
   const quantity = parseQuantity(line.quantity);
-  const total = quantity && Number.isInteger(line.rateCents) ? lineTotal(quantity, line.rateCents) : 0;
+  const hasRate = Number.isInteger(line.rateCents);
+  const total = quantity && hasRate ? lineTotal(quantity, line.rateCents) : 0;
   const result = { ...line, total, item: null, issue: '', warning: '' };
-
-  if (!quantity) return { ...result, issue: 'Quantity must be a number above zero' };
-  if (!Number.isInteger(line.rateCents)) return { ...result, issue: 'Rate is missing' };
 
   let item = line.itemId ? items.find(candidate => candidate.id === line.itemId) : null;
   if (!item) {
@@ -114,17 +119,17 @@ export function matchLine(line, items) {
     if (!candidates.length) {
       return { ...result, issue: line.sku ? `SKU "${line.sku}" is not on the item master list` : 'Pick an item' };
     }
-    item = candidates.length === 1 ? candidates[0] : candidates.find(candidate => candidate.priceCents === line.rateCents);
-    if (!item) return { ...result, issue: `Price matches no "${line.sku}" size; pick one` };
+    item = candidates.length === 1 ? candidates[0] : candidates.find(candidate => hasRate && candidate.priceCents === line.rateCents);
+    if (!item) return { ...result, issue: hasRate ? `Price matches no "${line.sku}" size; pick one` : 'Rate is missing' };
   }
 
-  // Per-line description items (windshields, special-order parts) carry their
-  // own description; a list price of 0 means the price is entered on each line.
+  if (!quantity) return { ...result, item, issue: 'Quantity must be a number above zero' };
+  if (!hasRate) return { ...result, item, issue: 'Rate is missing' };
+  // Per-line description items (windshields, special-order parts) carry their own description.
   if (item.customDescription && !String(line.description ?? '').trim()) {
     return { ...result, item, issue: 'Type the description for the spreadsheet' };
   }
-  const hasListPrice = !(item.customDescription && item.priceCents === 0);
-  const warning = !hasListPrice || item.priceCents === line.rateCents ? '' : `Billed ${formatMoney(line.rateCents)}, list price ${formatMoney(item.priceCents)}`;
+  const warning = !hasListPrice(item) || item.priceCents === line.rateCents ? '' : `Billed ${formatMoney(line.rateCents)}, list price ${formatMoney(item.priceCents)}`;
   return { ...result, item, warning };
 }
 
@@ -221,7 +226,7 @@ export function summarizeMonth(month, invoices, config) {
 export function spreadsheetRows(monthSummary, config) {
   const { settings } = config;
   return monthSummary.invoices.flatMap(invoice => invoice.lines.map(line => ({
-    unmatched: !line.item,
+    flagged: !line.item || Boolean(line.issue),
     cells: [
       lineDescription(line),
       '',

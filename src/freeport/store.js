@@ -109,12 +109,15 @@ export async function initializeFreeport({ includePreviewInvoices = false } = {}
 const accountFromRow = row => ({ code: row.code, name: row.name, group: row.area_group, usingAreaName: row.using_area_name, active: Boolean(row.active) });
 const itemFromRow = row => ({ id: row.id, sku: row.sku, description: row.description, unit: row.unit, type: row.item_type, priceCents: Number(row.price_cents), customDescription: Boolean(row.custom_description), active: Boolean(row.active) });
 
+const usedItemIds = async tx => new Set((await tx.all('SELECT DISTINCT item_id FROM freeport_invoice_lines WHERE item_id IS NOT NULL')).map(row => row.item_id));
+
 async function readConfig(tx) {
   const settingsRow = await tx.get('SELECT data FROM freeport_settings WHERE id = ?', [SETTINGS_ID]);
+  const used = await usedItemIds(tx);
   return {
     settings: { ...defaultSettings, ...(settingsRow ? JSON.parse(settingsRow.data) : {}) },
     accounts: (await tx.all('SELECT * FROM freeport_accounts ORDER BY sort_order, code')).map(accountFromRow),
-    items: (await tx.all('SELECT * FROM freeport_items ORDER BY sort_order, sku')).map(itemFromRow)
+    items: (await tx.all('SELECT * FROM freeport_items ORDER BY sort_order, sku')).map(row => ({ ...itemFromRow(row), inUse: used.has(row.id) }))
   };
 }
 
@@ -146,6 +149,16 @@ export function saveAccounts(accounts, actor) {
 export function saveItems(items, actor) {
   return transaction(async tx => {
     const now = isoNow();
+    // Type and the per-line setting decide totals and spreadsheet text, so they
+    // can't change under invoices already saved with the item.
+    const used = await usedItemIds(tx);
+    const current = new Map((await tx.all('SELECT id, item_type, custom_description FROM freeport_items')).map(row => [row.id, row]));
+    for (const item of items.filter(candidate => candidate.id && used.has(candidate.id))) {
+      const before = current.get(item.id);
+      if (before && (before.item_type !== item.type || Boolean(before.custom_description) !== item.customDescription)) {
+        throw new FreeportError(400, `"${item.description}" is already on saved invoices, so its type and per-line description setting can't change. Add a new item and make this one inactive.`);
+      }
+    }
     for (const [index, item] of items.entries()) {
       const params = [item.sku, item.description, item.unit, item.type, item.priceCents, item.customDescription ? 1 : 0, item.active ? 1 : 0, index, now, actor];
       const updated = item.id

@@ -159,6 +159,12 @@ test('per-line description items take the spreadsheet description from the line'
   const month = summarizeMonth('2026-09', [invoice({ lines: [{ sku: 'Windshield', itemId: '', description: 'DW02153GTYN Windshield', quantity: '1', rateCents: 28500 }] })], withParts);
   assert.equal(month.parts, 28500);
   assert.equal(spreadsheetRows(month, withParts)[0].cells[0], 'DW02153GTYN Windshield');
+  // The item is known before a rate is typed, so the screen can show its description box.
+  const noRate = matchLine({ sku: 'Special-order part', quantity: '1', rateCents: null }, items);
+  assert.equal(noRate.item.id, 'special');
+  assert.equal(noRate.issue, 'Rate is missing');
+  const undescribed = summarizeMonth('2026-09', [invoice({ lines: [{ sku: 'Windshield', itemId: '', description: '', quantity: '1', rateCents: 28500 }] })], withParts);
+  assert.equal(spreadsheetRows(undescribed, withParts)[0].flagged, true, 'a line with a problem is highlighted in the preview');
 });
 
 // ---------- API ----------
@@ -316,6 +322,25 @@ test('Freeport invoice records save, validate and persist', { timeout: 60000 }, 
     const accounts = await request('/api/freeport/accounts', { method: 'PUT', body: { accounts: config.accounts.map(account => (account.code === '2500001328' ? { ...account, usingAreaName: 'Leaching' } : account)) } });
     assert.equal(accounts.status, 200);
     assert.equal(accounts.body.accounts.find(account => account.code === '2500001328').usingAreaName, 'Leaching');
+
+    // Items on saved invoices keep their type and per-line setting; normal items never keep a typed description.
+    const usingWindshield = await request('/api/freeport/invoices', { method: 'POST', body: newInvoice({ number: '91004', installDate: '2026-07-15', lines: [
+      { sku: 'Windshield', description: 'DW02153GTYN Windshield', quantity: '1', rateCents: 28500 },
+      { sku: 'Urethane', description: 'left over from a windshield line', quantity: '1', rateCents: 8500 }
+    ] }) });
+    assert.equal(usingWindshield.status, 201, JSON.stringify(usingWindshield.body));
+    assert.equal(usingWindshield.body.lines[0].description, 'DW02153GTYN Windshield');
+    assert.equal(usingWindshield.body.lines[1].description, '');
+    const inUse = (await request('/api/freeport/config')).body.items;
+    assert.equal(inUse.find(item => item.sku === 'Windshield').inUse, true);
+    assert.equal(inUse.find(item => item.sku === 'Freight / crating').inUse, false);
+    const changeItem = changes => inUse.map(item => (item.sku === 'Windshield' ? { ...item, ...changes } : item));
+    const flipped = await request('/api/freeport/items', { method: 'PUT', body: { items: changeItem({ customDescription: false }) } });
+    assert.equal(flipped.status, 400);
+    assert.match(flipped.body.error, /already on saved invoices/);
+    assert.equal((await request('/api/freeport/items', { method: 'PUT', body: { items: changeItem({ type: 'Labor' }) } })).status, 400);
+    assert.equal((await request('/api/freeport/items', { method: 'PUT', body: { items: changeItem({ priceCents: 29500 }) } })).status, 200, 'other fields can still change');
+    assert.equal((await request('/api/freeport/invoices/91004?version=1', { method: 'DELETE' })).status, 200);
 
     await stopServer(server);
     server = await startServer(dataDir);
