@@ -206,7 +206,10 @@ export function summarizeInvoice(invoice, config) {
   };
 }
 
-export function summarizeMonth(month, invoices, config) {
+// FMI-2026-09 for the first package, FMI-2026-09-R1, -R2... for corrections.
+export const packageNumberFor = (month, revision = 0) => `FMI-${month}${revision ? `-R${revision}` : ''}`;
+
+export function summarizeMonth(month, invoices, config, revision = 0) {
   const summaries = invoices
     .map(invoice => summarizeInvoice(invoice, config))
     .sort((a, b) => (a.installDate || a.omegaDate || '').localeCompare(b.installDate || b.omegaDate || '') || a.number.localeCompare(b.number));
@@ -224,7 +227,7 @@ export function summarizeMonth(month, invoices, config) {
     total: parts + labor + tax,
     // A Ready invoice that has since picked up a blocker still needs review.
     needsReview: summaries.filter(invoice => invoice.status !== 'Ready' || invoice.blockers.length),
-    packageNumber: `FMI-${month}`
+    packageNumber: packageNumberFor(month, revision)
   };
 }
 

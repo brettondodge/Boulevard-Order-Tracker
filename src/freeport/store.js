@@ -68,6 +68,7 @@ export async function initializeFreeport({ includePreviewInvoices = false } = {}
     // Postgres gets these tables from the migration runner.
     const db = getDb();
     db.exec(fs.readFileSync(new URL('../../migrations/002-freeport.sql', import.meta.url), 'utf8'));
+    db.exec(fs.readFileSync(new URL('../../migrations/005-freeport-months.sql', import.meta.url), 'utf8'));
     // Local databases created before these columns existed.
     const hasColumn = (table, column) => db.prepare(`SELECT COUNT(*) AS count FROM pragma_table_info('${table}') WHERE name = ?`).get(column).count > 0;
     if (!hasColumn('freeport_items', 'custom_description')) db.exec('ALTER TABLE freeport_items ADD COLUMN custom_description INTEGER NOT NULL DEFAULT 0');
@@ -253,11 +254,110 @@ async function insertInvoice(tx, invoice, actor) {
 const duplicateNumber = number => new FreeportError(409, `Invoice ${number} already exists.`, { existing: number });
 
 export async function listMonths() {
-  const rows = await transaction(tx => tx.all(
-    `SELECT billing_month, COUNT(*) AS invoice_count, SUM(CASE WHEN status = 'Ready' THEN 0 ELSE 1 END) AS needs_review
-     FROM freeport_invoices GROUP BY billing_month ORDER BY billing_month DESC`
-  ));
-  return rows.map(row => ({ month: row.billing_month, invoices: Number(row.invoice_count), needsReview: Number(row.needs_review) }));
+  return transaction(async tx => {
+    const rows = await tx.all(
+      `SELECT billing_month, COUNT(*) AS invoice_count, SUM(CASE WHEN status = 'Ready' THEN 0 ELSE 1 END) AS needs_review
+       FROM freeport_invoices GROUP BY billing_month ORDER BY billing_month DESC`
+    );
+    const records = new Map((await tx.all('SELECT * FROM freeport_months')).map(row => [row.month, monthFromRow(row)]));
+    return rows.map(row => ({
+      month: row.billing_month,
+      invoices: Number(row.invoice_count),
+      needsReview: Number(row.needs_review),
+      status: records.get(row.billing_month)?.status ?? 'Open',
+      revision: records.get(row.billing_month)?.revision ?? 0
+    }));
+  });
+}
+
+// ---------- Month-end packages ----------
+
+const monthFromRow = row => ({ month: row.month, status: row.status, revision: Number(row.revision), correctionReason: row.correction_reason || '', updatedAt: row.updated_at, updatedBy: row.updated_by || '' });
+const monthLabel = month => new Date(`${month}-01T12:00:00Z`).toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+const SEND_FILES = { 'consolidated-invoice.pdf': 'consolidated_pdf', 'invoices.pdf': 'invoices_pdf', 'spreadsheet.xlsx': 'spreadsheet' };
+
+// Invoices in a sent month can't change until someone starts a correction.
+async function assertMonthOpen(tx, month) {
+  if (!month) return;
+  const row = await tx.get('SELECT status FROM freeport_months WHERE month = ?', [month]);
+  if (row?.status === 'Sent') {
+    throw new FreeportError(409, `${monthLabel(month)} was sent to Freeport, so its invoices are locked. Start a correction on Month close to change it.`, { lockedMonth: month });
+  }
+}
+
+const sendFromRow = row => ({
+  revision: Number(row.revision),
+  packageNumber: row.package_number,
+  reason: row.reason || '',
+  invoiceNumbers: JSON.parse(row.invoice_numbers),
+  totals: JSON.parse(row.totals),
+  sentAt: row.sent_at,
+  sentBy: row.sent_by
+});
+
+// Status of a month: 'Open' (never sent), 'Sent' (locked) or 'Correcting'
+// (reopened to send revision R1, R2...), plus every package sent so far.
+export function getMonthStatus(month) {
+  return transaction(async tx => {
+    const record = await tx.get('SELECT * FROM freeport_months WHERE month = ?', [month]);
+    const sends = await tx.all(
+      'SELECT revision, package_number, reason, invoice_numbers, totals, sent_at, sent_by FROM freeport_month_sends WHERE month = ? ORDER BY revision DESC',
+      [month]
+    );
+    return { month, status: 'Open', revision: 0, correctionReason: '', ...(record ? monthFromRow(record) : {}), sends: sends.map(sendFromRow) };
+  });
+}
+
+export async function lockedMonths() {
+  const rows = await transaction(tx => tx.all("SELECT month FROM freeport_months WHERE status = 'Sent'"));
+  return new Set(rows.map(row => row.month));
+}
+
+const invoiceVersions = async (tx, month) => (await tx.all('SELECT invoice_number, version FROM freeport_invoices WHERE billing_month = ? ORDER BY invoice_number', [month]))
+  .map(row => `${row.invoice_number}:${row.version}`).join(',');
+
+export async function monthInvoiceVersions(month) {
+  return transaction(tx => invoiceVersions(tx, month));
+}
+
+// Saves the package exactly as built and locks the month. `versions` is the
+// invoice list the files were built from; if anything changed since, nothing
+// is saved and the person tries again.
+export function markMonthSent(month, { revision, packageNumber, versions, invoiceNumbers, totals, files }, actor) {
+  return transaction(async tx => {
+    const record = await tx.get('SELECT * FROM freeport_months WHERE month = ?', [month]);
+    if (record?.status === 'Sent') throw new FreeportError(409, `${monthLabel(month)} was already marked sent.`);
+    const expectedRevision = record ? Number(record.revision) : 0;
+    if (expectedRevision !== revision) throw new FreeportError(409, 'This month changed while the package was being built. Try again.');
+    if (await invoiceVersions(tx, month) !== versions) throw new FreeportError(409, 'An invoice changed while the package was being built. Try again.');
+    const now = isoNow();
+    await tx.run(
+      `INSERT INTO freeport_month_sends (id, month, revision, package_number, reason, invoice_numbers, totals, consolidated_pdf, invoices_pdf, spreadsheet, sent_at, sent_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [newId('send'), month, revision, packageNumber, record?.correction_reason || null, JSON.stringify(invoiceNumbers), JSON.stringify(totals),
+        Buffer.from(files.consolidated).toString('base64'), Buffer.from(files.invoices).toString('base64'), Buffer.from(files.spreadsheet).toString('base64'), now, actor]
+    );
+    if (record) await tx.run("UPDATE freeport_months SET status = 'Sent', correction_reason = NULL, updated_at = ?, updated_by = ? WHERE month = ?", [now, actor, month]);
+    else await tx.run("INSERT INTO freeport_months (month, status, revision, updated_at, updated_by) VALUES (?, 'Sent', 0, ?, ?)", [month, now, actor]);
+  });
+}
+
+export function startCorrection(month, reason, actor) {
+  return transaction(async tx => {
+    const record = await tx.get('SELECT * FROM freeport_months WHERE month = ?', [month]);
+    if (record?.status !== 'Sent') throw new FreeportError(409, `${monthLabel(month)} isn't marked sent, so there's nothing to correct.`);
+    await tx.run(
+      "UPDATE freeport_months SET status = 'Correcting', revision = revision + 1, correction_reason = ?, updated_at = ?, updated_by = ? WHERE month = ?",
+      [reason, isoNow(), actor, month]
+    );
+  });
+}
+
+export async function getSentFile(month, revision, file) {
+  const column = SEND_FILES[file];
+  if (!column) return null;
+  const row = await transaction(tx => tx.get(`SELECT package_number, ${column} AS data FROM freeport_month_sends WHERE month = ? AND revision = ?`, [month, revision]));
+  return row ? { packageNumber: row.package_number, bytes: Buffer.from(row.data, 'base64') } : null;
 }
 
 export function listInvoices(month) {
@@ -282,6 +382,7 @@ export async function createInvoice(invoice, actor, { omegaSnapshot } = {}) {
   try {
     return await transaction(async tx => {
       if (await tx.get('SELECT id FROM freeport_invoices WHERE invoice_number = ?', [invoice.number])) throw duplicateNumber(invoice.number);
+      await assertMonthOpen(tx, invoice.billingMonth);
       await insertInvoice(tx, invoice, actor);
       if (omegaSnapshot) await saveSnapshot(tx, invoice.number, omegaSnapshot);
       return readInvoice(tx, invoice.number);
@@ -294,8 +395,10 @@ export async function createInvoice(invoice, actor, { omegaSnapshot } = {}) {
 export async function updateInvoice(currentNumber, expectedVersion, invoice, actor, { omegaSnapshot } = {}) {
   try {
     return await transaction(async tx => {
-      const existing = await tx.get('SELECT id FROM freeport_invoices WHERE invoice_number = ?', [currentNumber]);
+      const existing = await tx.get('SELECT id, billing_month FROM freeport_invoices WHERE invoice_number = ?', [currentNumber]);
       if (!existing) throw new FreeportError(404, `Invoice ${currentNumber} was not found.`);
+      await assertMonthOpen(tx, existing.billing_month);
+      await assertMonthOpen(tx, invoice.billingMonth);
       if (invoice.number !== currentNumber && await tx.get('SELECT id FROM freeport_invoices WHERE invoice_number = ?', [invoice.number])) {
         throw duplicateNumber(invoice.number);
       }
@@ -321,6 +424,7 @@ export async function updateInvoice(currentNumber, expectedVersion, invoice, act
 // blocks Ready until someone deletes it or fixes it in Omega.
 export function flagOmegaInvoice(number, expectedVersion, snapshot, actor) {
   return transaction(async tx => {
+    await assertMonthOpen(tx, (await tx.get('SELECT billing_month FROM freeport_invoices WHERE invoice_number = ?', [number]))?.billing_month);
     const updated = await tx.run(
       `UPDATE freeport_invoices SET omega_snapshot = ?, status = 'Needs review', version = version + 1, updated_at = ?, updated_by = ?
        WHERE invoice_number = ? AND version = ?`,
@@ -334,7 +438,10 @@ export function flagOmegaInvoice(number, expectedVersion, snapshot, actor) {
 // Records Omega's current values for an invoice saved before snapshots existed,
 // without changing the invoice itself.
 export function saveOmegaSnapshot(number, snapshot) {
-  return transaction(tx => saveSnapshot(tx, number, snapshot));
+  return transaction(async tx => {
+    await assertMonthOpen(tx, (await tx.get('SELECT billing_month FROM freeport_invoices WHERE invoice_number = ?', [number]))?.billing_month);
+    await saveSnapshot(tx, number, snapshot);
+  });
 }
 
 export async function findInvoiceNumbers(numbers) {
@@ -345,8 +452,9 @@ export async function findInvoiceNumbers(numbers) {
 
 export function deleteInvoice(number, expectedVersion) {
   return transaction(async tx => {
-    const existing = await tx.get('SELECT id FROM freeport_invoices WHERE invoice_number = ?', [number]);
+    const existing = await tx.get('SELECT id, billing_month FROM freeport_invoices WHERE invoice_number = ?', [number]);
     if (!existing) throw new FreeportError(404, `Invoice ${number} was not found.`);
+    await assertMonthOpen(tx, existing.billing_month);
     // The version check is part of the DELETE so a save committed meanwhile can't be lost.
     const removed = await tx.run('DELETE FROM freeport_invoices WHERE id = ? AND version = ?', [existing.id, expectedVersion]);
     if (!removed) throw new FreeportError(409, 'This invoice changed since you opened it. Reload before deleting.');

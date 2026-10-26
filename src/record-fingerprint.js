@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 export const businessTables = ['users', 'suppliers', 'staff_names', 'job_drafts', 'orders'];
 // Freeport tables are fingerprinted only where they exist, so manifests taken
 // before the Freeport migration still verify.
-const freeportTables = { freeport_settings: 'id', freeport_accounts: 'code', freeport_items: 'id', freeport_invoices: 'id', freeport_invoice_lines: 'id' };
+const freeportTables = { freeport_settings: 'id', freeport_accounts: 'code', freeport_items: 'id', freeport_invoices: 'id', freeport_invoice_lines: 'id', freeport_months: 'month', freeport_month_sends: 'id' };
 export async function recordFingerprint(client) {
   const result = {};
   const tables = businessTables.map(table => [table, 'id']);

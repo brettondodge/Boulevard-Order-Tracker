@@ -34,6 +34,9 @@ test('a database that ran the first 002-freeport.sql gets every newer Freeport c
     for (const name of added) assert.equal(await column(name), 1, name);
     await migratePostgres(pool); // running again changes nothing
     for (const name of added) assert.equal(await column(name), 1, name);
+    const table = async name => (await pool.query('SELECT to_regclass($1) AS name', [name])).rows[0].name;
+    assert.equal(await table('freeport_months'), 'freeport_months');
+    assert.equal(await table('freeport_month_sends'), 'freeport_month_sends');
   } finally {
     await pool?.end();
     await cluster.stop();

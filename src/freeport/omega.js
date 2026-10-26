@@ -11,7 +11,8 @@ import {
 } from '../../public/freeport-billing.js';
 import { todayPhoenixString } from '../utils.js';
 import { FreeportError, normalizeInvoiceInput } from './validate.js';
-import { createInvoice, findInvoiceNumbers, flagOmegaInvoice, getInvoice, listInvoices, saveOmegaSnapshot, updateInvoice } from './store.js';
+import { createInvoice, findInvoiceNumbers, flagOmegaInvoice, getInvoice, listInvoices, lockedMonths, saveOmegaSnapshot, updateInvoice } from './store.js';
+import { spreadsheetSheetName as monthLabel } from './spreadsheet.js';
 
 // Read-only client for the Omega EDI API (GET requests only). The key lives in
 // the server environment (OMEGA_API_KEY), never in the database or the browser.
@@ -311,8 +312,20 @@ async function buildImport({ from, to }, config) {
     }
   }
 
-  plan.sort((a, b) => (a.row.installDate || a.row.omegaDate).localeCompare(b.row.installDate || b.row.omegaDate) || a.row.number.localeCompare(b.row.number));
-  return plan;
+  // Nothing is written into a month already sent to Freeport; those rows say
+  // to start a correction first.
+  const locked = await lockedMonths();
+  const lockedMonth = entry => [entry.invoice?.billingMonth, entry.existing?.billingMonth].find(month => month && locked.has(month));
+  const guarded = plan.map(entry => {
+    const month = lockedMonth(entry);
+    if (!month || !(entry.adopt || ['new', 'update', 'flag'].includes(entry.row.action))) return entry;
+    if (entry.row.action === 'unchanged') return { row: entry.row };
+    const sent = `${monthLabel(month)} was sent to Freeport. Start a correction on Month close to bring this in.`;
+    return { row: { ...entry.row, action: 'locked', reason: entry.row.reason ? `${entry.row.reason}. ${sent}` : sent } };
+  });
+
+  guarded.sort((a, b) => (a.row.installDate || a.row.omegaDate).localeCompare(b.row.installDate || b.row.omegaDate) || a.row.number.localeCompare(b.row.number));
+  return guarded;
 }
 
 export async function previewImport(range, config) {
@@ -323,7 +336,7 @@ export async function previewImport(range, config) {
 // sends back. Only invoices the person ticked in the preview are imported.
 export async function applyImport({ from, to, numbers }, config, actor) {
   const chosen = new Set((Array.isArray(numbers) ? numbers : []).map(String));
-  const result = { created: [], updated: [], flagged: [], unchanged: 0, skipped: [] };
+  const result = { created: [], updated: [], flagged: [], unchanged: 0, skipped: [], locked: [] };
   for (const entry of await buildImport({ from, to }, config)) {
     const { row } = entry;
     if (row.action === 'unchanged') {
@@ -333,6 +346,10 @@ export async function applyImport({ from, to, numbers }, config, actor) {
     }
     if (row.action === 'skip') {
       result.skipped.push({ number: row.number, reason: row.reason });
+      continue;
+    }
+    if (row.action === 'locked') {
+      result.locked.push({ number: row.number, reason: row.reason });
       continue;
     }
     if (!chosen.has(row.number)) continue;

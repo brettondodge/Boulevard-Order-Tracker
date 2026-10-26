@@ -1,5 +1,10 @@
 /* Freeport billing screens. Builds on workspace.css. */
 
+/* Layout rules (e.g. flex on .actions) must not override the hidden attribute. */
+[hidden] {
+  display: none !important;
+}
+
 nav a.active {
   text-decoration: underline;
   text-underline-offset: 6px;

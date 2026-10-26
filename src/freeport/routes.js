@@ -1,6 +1,6 @@
 import express from 'express';
 import { isValidMonth, summarizeMonth } from '../../public/freeport-billing.js';
-import { buildSpreadsheet } from './spreadsheet.js';
+import { buildSpreadsheet, spreadsheetSheetName as monthLabel } from './spreadsheet.js';
 import { buildConsolidatedInvoice, buildInvoicePages } from './pdf.js';
 import { applyImport, monthCheck, omegaConnected, previewImport } from './omega.js';
 import {
@@ -13,6 +13,11 @@ import {
 import {
   createInvoice,
   deleteInvoice,
+  getMonthStatus,
+  getSentFile,
+  markMonthSent,
+  monthInvoiceVersions,
+  startCorrection,
   getConfig,
   getInvoice,
   listInvoices,
@@ -74,13 +79,13 @@ export function freeportRouter({ requireStaffAuth, requireAdminAuth }) {
   // incomplete package can't be sent to Freeport by accident.
   async function readyMonth(month) {
     if (!isValidMonth(month)) throw new FreeportError(400, 'Choose a month like 2026-09.');
-    const [config, invoices] = await Promise.all([getConfig(), listInvoices(month)]);
-    const summary = summarizeMonth(month, invoices, config);
+    const [config, invoices, status] = await Promise.all([getConfig(), listInvoices(month), getMonthStatus(month)]);
+    const summary = summarizeMonth(month, invoices, config, status.revision);
     if (!summary.invoices.length) throw new FreeportError(409, `There are no invoices in ${month} yet.`);
     if (summary.needsReview.length) {
       throw new FreeportError(409, 'Every invoice must be Ready before downloading month-end files.', { invoices: summary.needsReview.map(invoice => invoice.number) });
     }
-    return { config, summary };
+    return { config, summary, status };
   }
 
   function sendDownload(res, bytes, contentType, filename) {
@@ -93,12 +98,65 @@ export function freeportRouter({ requireStaffAuth, requireAdminAuth }) {
     ['consolidated-invoice.pdf', buildConsolidatedInvoice, 'application/pdf', 'Consolidated Invoice.pdf'],
     ['invoices.pdf', buildInvoicePages, 'application/pdf', 'Invoices.pdf']
   ];
+  const DOWNLOADS = Object.fromEntries(downloads.map(([file, , contentType, suffix]) => [file, { contentType, suffix }]));
+
+  // A sent month always downloads the exact files that were sent.
+  async function sendSaved(res, month, revision, file) {
+    const saved = await getSentFile(month, revision, file);
+    if (!saved) throw new FreeportError(404, 'That sent file was not found.');
+    sendDownload(res, saved.bytes, DOWNLOADS[file].contentType, `${saved.packageNumber} ${DOWNLOADS[file].suffix}`);
+  }
+
   for (const [file, build, contentType, suffix] of downloads) {
     router.get(`/months/:month/${file}`, route(async (req, res) => {
+      const status = isValidMonth(req.params.month) ? await getMonthStatus(req.params.month) : null;
+      if (status?.status === 'Sent') return sendSaved(res, req.params.month, status.revision, file);
       const { config, summary } = await readyMonth(req.params.month);
       sendDownload(res, await build(summary, config), contentType, `${summary.packageNumber} ${suffix}`);
     }));
   }
+
+  router.get('/months/:month/sends/:revision/:file', route(async (req, res) => {
+    const revision = Number(req.params.revision);
+    if (!isValidMonth(req.params.month) || !Number.isInteger(revision) || revision < 0 || !DOWNLOADS[req.params.file]) throw new FreeportError(404, 'That sent file was not found.');
+    await sendSaved(res, req.params.month, revision, req.params.file);
+  }));
+
+  router.get('/months/:month/status', route(async (req, res) => {
+    if (!isValidMonth(req.params.month)) throw new FreeportError(400, 'Choose a month like 2026-09.');
+    res.json(await getMonthStatus(req.params.month));
+  }));
+
+  // Mark sent: builds the package from Ready invoices, keeps an exact copy of
+  // the three files, and locks the month.
+  router.post('/months/:month/send', route(async (req, res) => {
+    const month = req.params.month;
+    const { config, summary, status } = await readyMonth(month);
+    if (status.status === 'Sent') throw new FreeportError(409, `${monthLabel(month)} was already marked sent.`);
+    const versions = await monthInvoiceVersions(month);
+    const [consolidated, invoices, spreadsheet] = await Promise.all([
+      buildConsolidatedInvoice(summary, config), buildInvoicePages(summary, config), buildSpreadsheet(summary, config)
+    ]);
+    await markMonthSent(month, {
+      revision: status.revision,
+      packageNumber: summary.packageNumber,
+      versions,
+      invoiceNumbers: summary.invoices.map(invoice => invoice.number),
+      totals: { invoices: summary.invoices.length, partsCents: summary.parts, laborCents: summary.labor, taxCents: summary.tax, totalCents: summary.total },
+      files: { consolidated, invoices, spreadsheet }
+    }, actor(req));
+    res.json(await getMonthStatus(month));
+  }));
+
+  router.post('/months/:month/correction', route(async (req, res) => {
+    const month = req.params.month;
+    if (!isValidMonth(month)) throw new FreeportError(400, 'Choose a month like 2026-09.');
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    if (!reason) throw new FreeportError(400, 'Say why the package needs a correction.');
+    if (reason.length > 500) throw new FreeportError(400, 'Keep the reason to 500 characters or fewer.');
+    await startCorrection(month, reason, actor(req));
+    res.json(await getMonthStatus(month));
+  }));
 
   router.get('/invoices', route(async (req, res) => {
     if (!isValidMonth(req.query.month)) throw new FreeportError(400, 'Choose a month like 2026-09.');

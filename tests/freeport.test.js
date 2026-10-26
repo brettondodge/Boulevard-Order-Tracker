@@ -359,7 +359,7 @@ test('Freeport invoice records save, validate and persist', { timeout: 60000 }, 
     assert.equal((await request('/api/freeport/invoices/91001')).status, 404);
     assert.equal((await request('/api/freeport/invoices/91001-A')).body.lines.length, 2);
 
-    assert.deepEqual((await request('/api/freeport/months')).body, [{ month: '2026-09', invoices: 1, needsReview: 0 }]);
+    assert.deepEqual((await request('/api/freeport/months')).body, [{ month: '2026-09', invoices: 1, needsReview: 0, status: 'Open', revision: 0 }]);
     assert.equal((await request('/api/freeport/invoices?month=2026-09')).body.length, 1);
     assert.equal((await request('/api/freeport/invoices?month=2026-10')).body.length, 0);
     assert.equal((await request('/api/freeport/invoices?month=bad')).status, 400);
@@ -466,6 +466,64 @@ test('Freeport invoice records save, validate and persist', { timeout: 60000 }, 
     assert.equal((await again(`/api/freeport/invoices/91001-A?version=1`, { method: 'DELETE' })).status, 409);
     assert.equal((await again(`/api/freeport/invoices/91001-A?version=${kept.body.version}`, { method: 'DELETE' })).status, 200);
     assert.equal((await again('/api/freeport/invoices/91001-A')).status, 404);
+  } finally {
+    await stopServer(server);
+  }
+});
+
+test('Mark sent keeps the exact files and locks the month until a correction', { timeout: 60000 }, async () => {
+  const server = await startServer(mkdtempSync(path.join(tmpdir(), 'boulevard-freeport-sent-')));
+  try {
+    const request = client();
+    await request('/api/login', { method: 'POST', body: { username: 'mary', password: 'staff-test' } });
+    const statusOf = async () => (await request('/api/freeport/months/2026-09/status')).body;
+    const pdfOf = async route => pdfText(Buffer.from(await (await request.raw(route)).arrayBuffer()));
+    assert.equal((await statusOf()).status, 'Open');
+
+    const first = (await request('/api/freeport/invoices', { method: 'POST', body: newInvoice({ number: 'S1', status: 'Ready' }) })).body;
+    const pending = (await request('/api/freeport/invoices', { method: 'POST', body: newInvoice({ number: 'S2', installDate: '2026-09-12' }) })).body;
+    assert.equal((await request('/api/freeport/months/2026-09/send', { method: 'POST' })).status, 409, 'not until every invoice is Ready');
+    await request('/api/freeport/invoices/S2', { method: 'PUT', body: { ...pending, status: 'Ready' } });
+
+    const sent = await request('/api/freeport/months/2026-09/send', { method: 'POST' });
+    assert.equal(sent.status, 200, JSON.stringify(sent.body));
+    assert.equal(sent.body.status, 'Sent');
+    assert.deepEqual(sent.body.sends.map(send => [send.revision, send.packageNumber, send.invoiceNumbers.sort(), send.sentBy]), [[0, 'FMI-2026-09', ['S1', 'S2'], 'mary']]);
+    assert.equal(sent.body.sends[0].totals.totalCents, 100000);
+    assert.equal((await request('/api/freeport/months/2026-09/send', { method: 'POST' })).status, 409);
+    assert.equal((await request('/api/freeport/months')).body.find(entry => entry.month === '2026-09').status, 'Sent');
+
+    // Locked: no edits, deletes or new invoices in the month.
+    const locked = await request('/api/freeport/invoices/S1', { method: 'PUT', body: { ...first, notes: 'late change' } });
+    assert.equal(locked.status, 409);
+    assert.match(locked.body.error, /was sent to Freeport/);
+    assert.equal((await request('/api/freeport/invoices', { method: 'POST', body: newInvoice({ number: 'S3', installDate: '2026-09-20' }) })).status, 409);
+    assert.equal((await request(`/api/freeport/invoices/S1?version=${first.version}`, { method: 'DELETE' })).status, 409);
+
+    // Downloads stay exactly as sent, even after settings change.
+    await request('/api/admin/login', { method: 'POST', body: { username: 'admin', password: 'admin-test' } });
+    const config = (await request('/api/freeport/config')).body;
+    await request('/api/freeport/settings', { method: 'PUT', body: { ...config.settings, poNumber: 'NEWPO-1' } });
+    const savedText = await pdfOf('/api/freeport/months/2026-09/consolidated-invoice.pdf');
+    assert.ok(savedText.includes('ZD00000669') && !savedText.includes('NEWPO-1'), 'the sent copy keeps its original PO');
+
+    // Correction: needs a reason, unlocks the month, and sends R1 while keeping the original.
+    assert.equal((await request('/api/freeport/months/2026-09/correction', { method: 'POST', body: { reason: '  ' } })).status, 400);
+    const correcting = (await request('/api/freeport/months/2026-09/correction', { method: 'POST', body: { reason: 'S1 labor hours were wrong' } })).body;
+    assert.deepEqual([correcting.status, correcting.revision, correcting.correctionReason], ['Correcting', 1, 'S1 labor hours were wrong']);
+    const fixed = await request('/api/freeport/invoices/S1', { method: 'PUT', body: { ...first, lines: [{ sku: 'Labor', quantity: '3', rateCents: 12500 }], status: 'Ready' } });
+    assert.equal(fixed.status, 200, JSON.stringify(fixed.body));
+    const draftText = await pdfOf('/api/freeport/months/2026-09/consolidated-invoice.pdf');
+    assert.ok(draftText.includes('FMI-2026-09-R1') && draftText.includes('NEWPO-1'));
+
+    const resent = (await request('/api/freeport/months/2026-09/send', { method: 'POST' })).body;
+    assert.deepEqual(resent.sends.map(send => [send.revision, send.packageNumber, send.reason]), [[1, 'FMI-2026-09-R1', 'S1 labor hours were wrong'], [0, 'FMI-2026-09', '']]);
+    assert.ok((await pdfOf('/api/freeport/months/2026-09/sends/0/consolidated-invoice.pdf')).includes('FMI-2026-09'));
+    assert.ok(!(await pdfOf('/api/freeport/months/2026-09/sends/0/consolidated-invoice.pdf')).includes('R1'), 'the original is kept as sent');
+    assert.ok((await pdfOf('/api/freeport/months/2026-09/sends/1/consolidated-invoice.pdf')).includes('FMI-2026-09-R1'));
+    const sheet = await request.raw('/api/freeport/months/2026-09/sends/1/spreadsheet.xlsx');
+    assert.equal(sheet.headers.get('content-disposition'), 'attachment; filename="FMI-2026-09-R1 Line Items.xlsx"');
+    assert.equal((await request('/api/freeport/months/2026-09/sends/7/invoices.pdf')).status, 404);
   } finally {
     await stopServer(server);
   }
@@ -691,6 +749,17 @@ test('Omega import keeps app corrections, follows Omega changes and flags voided
     assert.equal(monthCheck.checkedFrom, '2026-06-01');
     assert.ok(monthCheck.checkedTo <= '2026-11-15', 'the work-order search ends shortly after the month');
     assert.deepEqual(monthCheck.notBillable, []);
+
+    // September (10220) sent to Freeport: later Omega changes show as "Month sent" and aren't written.
+    assert.equal((await saveReady('10220')).status, 200);
+    assert.equal((await request('/api/freeport/months/2026-09/send', { method: 'POST' })).status, 200);
+    fixtures.details[10220].Items[2].quantity = '4.00';
+    fixtures.details[10220].invoice_amount = '810.00';
+    const lockedRow = (await preview()).find(row => row.number === '10220');
+    assert.equal(lockedRow.action, 'locked');
+    assert.match(lockedRow.reason, /September 2026 was sent to Freeport/);
+    assert.deepEqual((await importNumbers(['10220'])).body.locked.map(entry => entry.number), ['10220']);
+    assert.equal((await request('/api/freeport/invoices/10220')).body.lines[2].quantity, '3');
 
     assert.deepEqual([...omega.seen.keys], ['test-omega-key']);
     assert.deepEqual([...omega.seen.methods], ['GET'], 'the app only reads from Omega');

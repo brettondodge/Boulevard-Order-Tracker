@@ -1,6 +1,6 @@
 # Freeport Billing — Rebuild Plan
 
-Status: **in progress** — steps 1–5 and 7 done; step 6 (Mark sent) remains. This replaced most of the first
+Status: **in progress** — steps 1–7 done; Google Drive documents are a future project. This replaced most of the first
 Freeport build; the Tools dashboard and login stayed.
 
 ## The problem
@@ -202,7 +202,11 @@ Each step is a small commit you can look at before the next.
 5. ✅ **Merged invoice PDF** — one app-made page per invoice in install-date
    order, showing the install date (not the invoice date), order #, account,
    lines and totals; long invoices continue onto extra pages.
-6. **Month close** — Sent lock and revisions.
+6. ✅ **Mark sent and corrections** — Mark sent (once every invoice is Ready)
+   keeps an exact copy of the three files and locks the month: no edits,
+   deletes, new invoices or Omega imports into it, and downloads serve the
+   saved copy. Start correction (reason required) reopens it as R1, R2…;
+   every sent version stays downloadable under Sent packages.
 7. ✅ **Omega import** — through the Omega API (read-only GETs; key in the
    server environment as `OMEGA_API_KEY`). Month view → Import from Omega →
    date range (Omega invoice date) → preview of New / Update / No change /

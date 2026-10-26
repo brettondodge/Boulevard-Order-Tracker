@@ -88,7 +88,19 @@ async function loadConfig(force = false) {
 }
 
 const statusBadge = status => `<span class="badge ${status === 'Ready' ? 'ok' : 'review'}">${esc(status)}</span>`;
-const stepButton = (step, label) => `<button type="button" disabled title="Arrives in build step ${step}">${esc(label)}</button>`;
+// Month status: Open, Sent (locked) or Correcting (reopened for R1, R2...).
+function monthBadge(status) {
+  if (status.status === 'Sent') return `<span class="badge ok">Sent · ${esc(status.sends[0]?.packageNumber ?? '')}</span>`;
+  if (status.status === 'Correcting') return `<span class="badge review">Correction R${status.revision} in progress</span>`;
+  return '<span class="badge">Open</span>';
+}
+
+function monthStatusLine(status) {
+  const latest = status.sends[0];
+  if (status.status === 'Sent') return `Sent to Freeport ${formatDate(latest.sentAt.slice(0, 10))} by ${esc(latest.sentBy)} as <strong>${esc(latest.packageNumber)}</strong>. Its invoices are locked.`;
+  if (status.status === 'Correcting') return `Correction R${status.revision} in progress: ${esc(status.correctionReason)}. Fix the invoices, then mark it sent again.`;
+  return '';
+}
 
 function metric(label, value, note = '') {
   return `<div class="metric"><span>${esc(label)}</span><b>${value}</b>${note ? `<small>${note}</small>` : ''}</div>`;
@@ -130,12 +142,15 @@ async function monthParam(params) {
 
 async function renderMonth(params, isCurrent) {
   const month = await monthParam(params);
-  const [config, invoices, months] = await Promise.all([loadConfig(), api(`/freeport/invoices?month=${encodeURIComponent(month)}`), api('/freeport/months')]);
+  const [config, invoices, months, status] = await Promise.all([
+    loadConfig(), api(`/freeport/invoices?month=${encodeURIComponent(month)}`), api('/freeport/months'), api(`/freeport/months/${encodeURIComponent(month)}/status`)
+  ]);
   if (!isCurrent()) return;
-  const summary = summarizeMonth(month, invoices, config);
+  const summary = summarizeMonth(month, invoices, config, status.revision);
+  const sent = status.status === 'Sent';
   const chips = months.slice(0, 8).map(entry => `
     <a class="chip ${entry.month === month ? 'active' : ''}" href="/freeport?month=${entry.month}">
-      ${esc(formatMonth(entry.month))} · ${entry.invoices}${entry.needsReview ? ` <span class="warn">(${entry.needsReview} to review)</span>` : ''}
+      ${esc(formatMonth(entry.month))} · ${entry.invoices}${entry.status === 'Sent' ? ' · sent' : entry.needsReview ? ` <span class="warn">(${entry.needsReview} to review)</span>` : ''}
     </a>`).join('');
 
   const rows = summary.invoices.map(invoice => {
@@ -164,13 +179,15 @@ async function renderMonth(params, isCurrent) {
           <a class="button icon" href="/freeport?month=${shiftMonth(month, -1)}" aria-label="Previous month">‹</a>
           <h1>${formatMonth(month)}</h1>
           <a class="button icon" href="/freeport?month=${shiftMonth(month, 1)}" aria-label="Next month">›</a>
+          ${monthBadge(status)}
         </div>
+        ${status.status === 'Open' ? '' : `<p class="muted">${monthStatusLine(status)}</p>`}
       </div>
       <div class="actions">
         ${config.omegaConnected
           ? '<button type="button" data-action="omega-open">Import from Omega</button>'
           : '<button type="button" disabled title="Omega isn\'t connected yet (OMEGA_API_KEY)">Import from Omega</button>'}
-        <a class="button" href="/freeport/invoices/new?month=${month}">Add invoice</a>
+        ${sent ? '<button type="button" disabled title="This month was sent. Start a correction on Month close to add an invoice.">Add invoice</button>' : `<a class="button" href="/freeport/invoices/new?month=${month}">Add invoice</a>`}
         <a class="button primary" href="/freeport/close?month=${month}">Month close →</a>
       </div>
     </div>
@@ -223,6 +240,7 @@ const OMEGA_ROW_STATUS = {
   new: ['New', 'ok'],
   update: ['Update', 'info'],
   flag: ['Not billable', 'review'],
+  locked: ['Month sent', 'review'],
   unchanged: ['No change', ''],
   skip: ["Can't import", 'review']
 };
@@ -469,8 +487,10 @@ async function renderInvoice(number, params, isCurrent, loaded = null) {
   const invoice = isNew
     ? blankInvoice(isValidMonth(requestedMonth) ? requestedMonth : phoenixMonth())
     : draftFromInvoice(loaded ?? await api(`/freeport/invoices/${encodeURIComponent(number)}`));
+  const monthStatus = isNew ? null : await api(`/freeport/months/${encodeURIComponent(invoice.billingMonth)}/status`);
   if (!isCurrent()) return;
   const backMonth = isNew ? invoice.suggestedMonth : invoice.billingMonth;
+  const locked = monthStatus?.status === 'Sent';
   state.editor = { draft: structuredClone(invoice), original: structuredClone(invoice), config, isNew, error: null };
 
   const accountOptions = config.accounts
@@ -490,7 +510,7 @@ async function renderInvoice(number, params, isCurrent, loaded = null) {
           <h1>${isNew ? 'New invoice' : `Invoice ${esc(invoice.number)} ${statusBadge(invoice.status)}`}</h1>
           ${isNew ? '' : `<p class="muted">Last saved ${formatDate(invoice.updatedAt.slice(0, 10))} by ${esc(invoice.updatedBy)}</p>`}
         </div>
-        <div class="actions">
+        <div class="actions" ${locked ? 'hidden' : ''}>
           <span id="dirtyNote" class="warn"></span>
           ${isNew ? '' : '<button type="button" data-action="delete" class="danger">Delete</button>'}
           ${invoice.status === 'Ready' && !isNew ? '<button type="button" data-action="save-review">Move back to review</button>' : ''}
@@ -498,7 +518,7 @@ async function renderInvoice(number, params, isCurrent, loaded = null) {
           ${invoice.status === 'Ready' && !isNew ? '' : `<button type="button" class="primary" data-action="save-ready">${isNew ? 'Create and mark ready' : 'Save and mark ready'}</button>`}
         </div>
       </div>
-      <div id="formMessage"></div>
+      <div id="formMessage">${locked ? `<div class="notice">${formatMonth(backMonth)} was sent to Freeport as ${esc(monthStatus.sends[0]?.packageNumber ?? '')}, so this invoice is locked. To change it, start a correction on <a href="/freeport/close?month=${backMonth}">Month close</a>.</div>` : ''}</div>
 
       <section class="panel">
         <h2>Details</h2>
@@ -555,6 +575,7 @@ async function renderInvoice(number, params, isCurrent, loaded = null) {
     </form>`;
 
   renderLines();
+  if (locked) screen.querySelectorAll('#invoiceForm input, #invoiceForm select, #invoiceForm textarea, #invoiceForm button').forEach(field => { field.disabled = true; });
 }
 
 function readField(target) {
@@ -714,12 +735,15 @@ function renderConsolidatedInvoice(summary, settings) {
 
 async function renderClose(params, isCurrent) {
   const month = await monthParam(params);
-  const [config, invoices] = await Promise.all([loadConfig(), api(`/freeport/invoices?month=${encodeURIComponent(month)}`)]);
+  const [config, invoices, status] = await Promise.all([loadConfig(), api(`/freeport/invoices?month=${encodeURIComponent(month)}`), api(`/freeport/months/${encodeURIComponent(month)}/status`)]);
   if (!isCurrent()) return;
-  const summary = summarizeMonth(month, invoices, config);
+  const summary = summarizeMonth(month, invoices, config, status.revision);
+  const sent = status.status === 'Sent';
   const rowCount = spreadsheetRows(summary, config).length;
   const ready = summary.invoices.length > 0 && !summary.needsReview.length;
-  const downloadButton = (file, label) => ready
+  // A sent month downloads the saved copies, whatever the invoices look like now.
+  const canDownload = sent || ready;
+  const downloadButton = (file, label) => canDownload
     ? `<button type="button" class="primary" data-action="download" data-file="/api/freeport/months/${month}/${file}">${label}</button>`
     : `<button type="button" disabled title="Every invoice must be Ready first">${label}</button>`;
   const taxDifference = summary.tax - summary.invoiceTaxTotal;
@@ -740,11 +764,17 @@ async function renderClose(params, isCurrent) {
     <div class="page-head">
       <div>
         <p class="eyebrow">MONTH CLOSE</p>
-        <h1>${formatMonth(month)}</h1>
-        <p class="muted">Package invoice number <strong>${esc(summary.packageNumber)}</strong></p>
+        <h1>${formatMonth(month)} ${monthBadge(status)}</h1>
+        <p class="muted">${sent ? monthStatusLine(status) : `Package invoice number <strong>${esc(summary.packageNumber)}</strong>${status.status === 'Correcting' ? ` · ${monthStatusLine(status)}` : ''}`}</p>
       </div>
-      <div class="actions">${stepButton(6, 'Mark sent')}</div>
+      <div class="actions">
+        ${sent
+          ? `<button type="button" data-action="month-correct" data-month="${month}">Start correction</button>`
+          : `<button type="button" class="primary" data-action="month-send" data-month="${month}" data-package="${esc(summary.packageNumber)}" ${ready ? '' : 'disabled title="Every invoice must be Ready first"'}>Mark sent</button>`}
+      </div>
     </div>
+    <div id="monthMessage"></div>
+    ${sent ? `<p class="notice">The downloads below are the exact files sent as ${esc(status.sends[0].packageNumber)}. The previews show the invoices as they are now.</p>` : ''}
 
     ${monthSummaryHtml(summary, config)}
 
@@ -797,7 +827,31 @@ async function renderClose(params, isCurrent) {
         ${summary.invoices.map(invoice => `<li><strong>${esc(invoice.number)}</strong> · installed ${formatDate(invoice.installDate)} · ${money(invoice.total)}</li>`).join('')}
       </ol>
     </section>`;
-  if (config.omegaConnected) checkOmega(month, isCurrent);
+  if (status.sends.length) screen.insertAdjacentHTML('beforeend', sentHistoryHtml(month, status));
+  if (config.omegaConnected && !sent) checkOmega(month, isCurrent);
+  else screen.querySelector('#omegaCheck')?.remove();
+}
+
+function sentHistoryHtml(month, status) {
+  const files = [['consolidated-invoice.pdf', 'Consolidated PDF'], ['spreadsheet.xlsx', '.xlsx'], ['invoices.pdf', 'Merged PDF']];
+  const rows = status.sends.map(send => `
+    <tr>
+      <td><strong>${esc(send.packageNumber)}</strong>${send.reason ? `<small class="block">Correction: ${esc(send.reason)}</small>` : ''}</td>
+      <td>${formatDate(send.sentAt.slice(0, 10))}<small class="block">by ${esc(send.sentBy)}</small></td>
+      <td class="num">${send.totals.invoices}</td>
+      <td class="num">${money(send.totals.totalCents)}</td>
+      <td class="row-actions">${files.map(([file, label]) => `<button type="button" data-action="download" data-file="/api/freeport/months/${month}/sends/${send.revision}/${file}">${label}</button>`).join(' ')}</td>
+    </tr>`).join('');
+  return `
+    <section class="panel">
+      <h2>Sent packages</h2>
+      <p class="muted">Every version sent to Freeport, kept exactly as sent.</p>
+      <div class="download-message"></div>
+      <div class="scroll"><table>
+        <thead><tr><th>Package</th><th>Sent</th><th class="num">Invoices</th><th class="num">Total</th><th>Files</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+    </section>`;
 }
 
 // Screen-only overview for Month close; none of it goes into the downloads.
@@ -875,10 +929,40 @@ async function checkOmega(month, isCurrent) {
 
 // Downloads go through fetch so a refusal shows as a message, not a broken file.
 function handleCloseClick(event) {
-  const button = event.target.closest('[data-action="download"]');
+  const button = event.target.closest('[data-action="download"], [data-action="month-send"], [data-action="month-correct"]');
   if (!button) return false;
-  downloadFile(button);
+  if (button.dataset.action === 'download') downloadFile(button);
+  else if (button.dataset.action === 'month-send') markSent(button);
+  else startMonthCorrection(button);
   return true;
+}
+
+async function markSent(button) {
+  const { month, package: packageNumber } = button.dataset;
+  if (!confirm(`Mark ${formatMonth(month)} as sent to Freeport as ${packageNumber}?\n\nThe app keeps a copy of the three files and locks this month's invoices. You can start a correction later if something has to change.`)) return;
+  button.disabled = true;
+  try {
+    await api(`/freeport/months/${encodeURIComponent(month)}/send`, { method: 'POST' });
+    await render();
+    screen.querySelector('#monthMessage')?.insertAdjacentHTML('beforeend', `<div class="alert success" role="status">${formatMonth(month)} marked sent as ${esc(packageNumber)}.</div>`);
+  } catch (error) {
+    button.disabled = false;
+    screen.querySelector('#monthMessage').innerHTML = messageHtml(error);
+  }
+}
+
+async function startMonthCorrection(button) {
+  const { month } = button.dataset;
+  const reason = prompt(`Why does ${formatMonth(month)} need a correction? (For example: invoice 10216 was voided in Omega.)`);
+  if (reason === null) return;
+  button.disabled = true;
+  try {
+    await api(`/freeport/months/${encodeURIComponent(month)}/correction`, { method: 'POST', body: { reason } });
+    await render();
+  } catch (error) {
+    button.disabled = false;
+    screen.querySelector('#monthMessage').innerHTML = messageHtml(error);
+  }
 }
 
 async function downloadFile(button) {
