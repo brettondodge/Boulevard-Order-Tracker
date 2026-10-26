@@ -17,6 +17,7 @@ import {
   centsToDecimal,
   lineTotal,
   matchLine,
+  monthBreakdown,
   parseMoney,
   pinMatchedItems,
   parseQuantity,
@@ -224,6 +225,25 @@ test('PDF text wraps to the page: footer note lines, long Bill To lines', async 
   assert.ok(!text.includes('?Thank'), 'a line break is never printed as ?');
   assert.ok(!text.split('\n').includes('Synthetic Customer Safford Operations - Accounts Payable Department'), 'a long Bill To line wraps');
   assert.ok(text.includes('FMI-2026-09 - September 2026 invoices'), 'footer names the billing month, not an install month');
+});
+
+test('month breakdown totals billable technician-hours by type and work by account', () => {
+  const overtime = { id: 'ot', sku: 'Overtime Labor', description: 'Tech Labor - Overtime', unit: 'hr', type: 'Labor', priceCents: 18500, active: true };
+  const withOvertime = { ...config, accounts: [...config.accounts, { code: '1060201328', name: 'Mine Maintenance - Drill', usingAreaName: 'Mine Maintenance', active: true }], items: [...config.items, overtime] };
+  const month = summarizeMonth('2026-09', [
+    invoice(),
+    invoice({ number: '90002', accountCode: '1060201328', lines: [{ sku: 'Overtime Labor', itemId: '', quantity: '4.5', rateCents: 18500 }, { sku: 'Overtime Labor', itemId: '', quantity: '4.5', rateCents: 18500 }] })
+  ], withOvertime);
+  const breakdown = monthBreakdown(month);
+  assert.deepEqual(breakdown.laborByType, [
+    { label: 'Tech Labor - Overtime', hours: 9000, cents: 166500 },
+    { label: 'Tech Labor - Straight', hours: 4000, cents: 50000 }
+  ]);
+  assert.equal(breakdown.totalHours, 13000, 'two technicians at 4.5 hours count as 9 hours');
+  assert.deepEqual(breakdown.byAccount.map(account => [account.code, account.invoices, account.hours, account.parts + account.labor]), [
+    ['1060201328', 1, 9000, 166500],
+    ['1060401328', 1, 4000, 81778]
+  ]);
 });
 
 // ---------- API ----------

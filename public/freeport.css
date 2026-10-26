@@ -477,6 +477,28 @@ input[readonly] {
   white-space: nowrap;
 }
 
+.summary-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr);
+  gap: 28px;
+}
+
+.summary-grid h3 {
+  margin: 4px 0 8px;
+}
+
+.summary-grid tfoot th {
+  border-top: 2px solid #c9d6e2;
+  color: #20334a;
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .summary-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .omega-dialog {
   width: min(1100px, 96vw);
 }

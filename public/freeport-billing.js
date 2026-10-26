@@ -228,6 +228,35 @@ export function summarizeMonth(month, invoices, config) {
   };
 }
 
+// Month close summary: billable technician-hours by labor type, and work by
+// account. Two technicians on a job are two labor lines, so their hours add up.
+export function monthBreakdown(monthSummary) {
+  const laborByType = new Map();
+  const byAccount = new Map();
+  for (const invoice of monthSummary.invoices) {
+    const account = byAccount.get(invoice.accountCode) ?? { code: invoice.accountCode, name: invoice.account?.name ?? '', invoices: 0, hours: 0, parts: 0, labor: 0 };
+    account.invoices += 1;
+    account.parts += invoice.parts;
+    account.labor += invoice.labor;
+    for (const line of invoice.lines) {
+      if (line.item?.type !== 'Labor') continue;
+      const hours = parseQuantity(line.quantity) ?? 0;
+      const type = laborByType.get(line.item.description) ?? { label: line.item.description, hours: 0, cents: 0 };
+      type.hours += hours;
+      type.cents += line.total;
+      laborByType.set(line.item.description, type);
+      account.hours += hours;
+    }
+    byAccount.set(invoice.accountCode, account);
+  }
+  const types = [...laborByType.values()].sort((a, b) => b.hours - a.hours || a.label.localeCompare(b.label));
+  return {
+    laborByType: types,
+    totalHours: types.reduce((sum, type) => sum + type.hours, 0),
+    byAccount: [...byAccount.values()].sort((a, b) => (b.parts + b.labor) - (a.parts + a.labor) || a.code.localeCompare(b.code))
+  };
+}
+
 export function spreadsheetRows(monthSummary, config) {
   const { settings } = config;
   return monthSummary.invoices.flatMap(invoice => invoice.lines.map(line => ({

@@ -7,6 +7,7 @@ import {
   hasListPrice,
   isValidMonth,
   matchLine,
+  monthBreakdown,
   parseMoney,
   parseQuantity,
   spreadsheetRows,
@@ -741,6 +742,8 @@ async function renderClose(params, isCurrent) {
       <div class="actions">${stepButton(6, 'Mark sent')}</div>
     </div>
 
+    ${monthSummaryHtml(summary, config)}
+
     <section class="panel checklist">
       <h2>Ready to send?</h2>
       <ul>
@@ -791,6 +794,55 @@ async function renderClose(params, isCurrent) {
       </ol>
     </section>`;
   if (config.omegaConnected) checkOmega(month, isCurrent);
+}
+
+// Screen-only overview for Month close; none of it goes into the downloads.
+const hoursText = thousandths => `${(thousandths / 1000).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 3 })} hrs`;
+
+function monthSummaryHtml(summary, config) {
+  if (!summary.invoices.length) return '';
+  const breakdown = monthBreakdown(summary);
+  const laborRows = breakdown.laborByType.map(type => `
+    <tr><td>${esc(type.label)}</td><td class="num">${hoursText(type.hours)}</td><td class="num">${money(type.cents)}</td></tr>`).join('');
+  const accountRows = breakdown.byAccount.map(account => `
+    <tr>
+      <td>${esc(account.name || 'No account yet')}<small class="block">${esc(account.code)}</small></td>
+      <td class="num">${account.invoices}</td>
+      <td class="num">${hoursText(account.hours)}</td>
+      <td class="num">${money(account.parts)}</td>
+      <td class="num">${money(account.labor)}</td>
+      <td class="num">${money(account.parts + account.labor)}</td>
+    </tr>`).join('');
+  return `
+    <section class="panel">
+      <h2>Month summary</h2>
+      <div class="metrics-row">
+        ${metric('Invoices', summary.invoices.length)}
+        ${metric('Labor hours', hoursText(breakdown.totalHours), 'Billable technician-hours')}
+        ${metric('Parts', money(summary.parts))}
+        ${metric('Labor', money(summary.labor))}
+        ${metric(`Tax (${esc(config.settings.taxRate)}% of parts)`, money(summary.tax))}
+        ${metric('Month total', money(summary.total))}
+      </div>
+      <div class="summary-grid">
+        <div>
+          <h3>Labor hours by type</h3>
+          <table>
+            <thead><tr><th>Type</th><th class="num">Hours</th><th class="num">Amount</th></tr></thead>
+            <tbody>${laborRows || '<tr><td colspan="3" class="muted">No labor this month</td></tr>'}</tbody>
+            <tfoot><tr><th>Total</th><th class="num">${hoursText(breakdown.totalHours)}</th><th class="num">${money(summary.labor)}</th></tr></tfoot>
+          </table>
+        </div>
+        <div>
+          <h3>By account</h3>
+          <div class="scroll"><table>
+            <thead><tr><th>Account</th><th class="num">Invoices</th><th class="num">Labor hrs</th><th class="num">Parts</th><th class="num">Labor</th><th class="num">Subtotal</th></tr></thead>
+            <tbody>${accountRows}</tbody>
+          </table></div>
+          <p class="muted">Subtotals are before tax; tax is figured on the whole month's parts.</p>
+        </div>
+      </div>
+    </section>`;
 }
 
 // Two read-only Omega checks for the package: jobs installed this month that are
