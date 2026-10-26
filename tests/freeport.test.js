@@ -303,7 +303,7 @@ function client() {
 }
 
 const newInvoice = (overrides = {}) => ({
-  number: '91001', omegaDate: '2026-10-06', installDate: '2026-09-29', orderNumber: '100000910001', accountCode: '1060401328',
+  number: '91001', omegaDate: '2026-10-06', installDate: '2026-09-29', orderNumber: '100000910001', accountCode: '1060401328', equipmentNumber: 'EQ-9001',
   lines: [{ sku: 'Labor', quantity: '2', rateCents: 12500 }, { sku: 'Labor', quantity: '2', rateCents: 12500 }],
   ...overrides
 });
@@ -411,7 +411,7 @@ test('Freeport invoice records save, validate and persist', { timeout: 60000 }, 
     const mergedBytes = Buffer.from(await merged.arrayBuffer());
     assert.equal((await PDFDocument.load(mergedBytes)).getPageCount(), 1);
     const mergedText = pdfText(mergedBytes);
-    for (const expected of ['91001-A', 'September 29, 2026', '100000910001', '1060401328', 'Tech Labor - Straight', '$250.00', 'Page 1 of 1']) {
+    for (const expected of ['91001-A', 'September 29, 2026', '100000910001', '1060401328', 'Tech Labor - Straight', '$250.00', 'Page 1 of 1', 'EQUIPMENT NUMBER', 'EQ-9001']) {
       assert.ok(mergedText.includes(expected), `invoice page shows ${expected}`);
     }
     assert.ok(!mergedText.includes('October 6, 2026'), 'the invoice date from another month is not printed');
@@ -515,7 +515,7 @@ function omegaFixtures() {
           omegaItem('Overtime Labor', 'Per Man', '4.50', '185.00', 'LABOR'),
           omegaItem('Overtime Labor', 'Per Man', '4.50', '185.00', 'LABOR')
         ],
-        InvoiceCustomFields: [{ id: '1', label: 'ORDER NO.', currentValue: '100000956581' }, { id: '5', label: 'ACCOUNT NO.', currentValue: null }]
+        InvoiceCustomFields: [{ id: '1', label: 'ORDER NO.', currentValue: '100000956581' }, { id: '2', label: 'EQUIPMENT NO.', currentValue: '44200150' }, { id: '3', label: 'SERIAL NO.', currentValue: 'SN-77' }, { id: '5', label: 'ACCOUNT NO.', currentValue: null }]
       },
       10220: {
         id: '10220', date: '2026-10-20', invoice_tax: '0.00', invoice_amount: '535.00',
@@ -635,8 +635,11 @@ test('Omega import keeps app corrections, follows Omega changes and flags voided
     assert.deepEqual((await preview()).find(row => row.number === '10232').changes, ['subtotal', 'line items']);
 
     // ACCOUNT NO. filled in Omega after the first import comes through.
-    assert.equal((await request('/api/freeport/invoices/10216')).body.accountCode, '');
-    fixtures.details[10216].InvoiceCustomFields[1].currentValue = '1060401328 - Mine Maintenance - Truck';
+    const first = (await request('/api/freeport/invoices/10216')).body;
+    assert.equal(first.accountCode, '');
+    assert.equal(first.equipmentNumber, '44200150');
+    assert.equal(first.serialNumber, 'SN-77');
+    fixtures.details[10216].InvoiceCustomFields[3].currentValue = '1060401328 - Mine Maintenance - Truck';
     const accountRow = (await preview()).find(row => row.number === '10216');
     assert.equal(accountRow.action, 'update');
     assert.deepEqual(accountRow.changes, ['account code']);

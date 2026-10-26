@@ -252,6 +252,8 @@ function startInvoicePage(pdf, fonts, settings, invoice, continued, sheets) {
     ['INVOICE NUMBER', invoice.number],
     ['INSTALL DATE', longDate(isoToDate(invoice.installDate))],
     ['ORDER NUMBER', invoice.orderNumber],
+    ...(invoice.equipmentNumber ? [['EQUIPMENT NUMBER', invoice.equipmentNumber]] : []),
+    ...(invoice.serialNumber ? [['SERIAL NUMBER', invoice.serialNumber]] : []),
     ['PO', settings.poNumber]
   ]);
   y = drawParties(sheet, y - 6, [

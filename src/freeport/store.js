@@ -73,6 +73,8 @@ export async function initializeFreeport({ includePreviewInvoices = false } = {}
     if (!hasColumn('freeport_items', 'custom_description')) db.exec('ALTER TABLE freeport_items ADD COLUMN custom_description INTEGER NOT NULL DEFAULT 0');
     if (!hasColumn('freeport_invoice_lines', 'description')) db.exec('ALTER TABLE freeport_invoice_lines ADD COLUMN description TEXT');
     if (!hasColumn('freeport_invoices', 'omega_snapshot')) db.exec('ALTER TABLE freeport_invoices ADD COLUMN omega_snapshot TEXT');
+    if (!hasColumn('freeport_invoices', 'equipment_number')) db.exec('ALTER TABLE freeport_invoices ADD COLUMN equipment_number TEXT');
+    if (!hasColumn('freeport_invoices', 'serial_number')) db.exec('ALTER TABLE freeport_invoices ADD COLUMN serial_number TEXT');
   }
 
   await transaction(async tx => {
@@ -198,6 +200,8 @@ function invoiceFromRow(row, lines) {
     omegaTaxCents: row.omega_tax_cents === null || row.omega_tax_cents === undefined ? null : Number(row.omega_tax_cents),
     driveLink: row.drive_link || '',
     notes: row.notes || '',
+    equipmentNumber: row.equipment_number || '',
+    serialNumber: row.serial_number || '',
     status: row.status,
     // What Omega said at the last import; its flag and subtotal feed the review checks.
     omegaSnapshot: snapshot,
@@ -230,7 +234,8 @@ async function insertLines(tx, invoiceId, lines) {
 
 const invoiceColumns = invoice => [
   invoice.number, invoice.omegaDate || null, invoice.installDate || null, invoice.monthOverride || null, invoice.billingMonth,
-  invoice.orderNumber || null, invoice.accountCode || null, invoice.omegaTaxCents, invoice.driveLink || null, invoice.notes || null, invoice.status
+  invoice.orderNumber || null, invoice.accountCode || null, invoice.omegaTaxCents, invoice.driveLink || null, invoice.notes || null, invoice.status,
+  invoice.equipmentNumber || null, invoice.serialNumber || null
 ];
 
 async function insertInvoice(tx, invoice, actor) {
@@ -238,8 +243,8 @@ async function insertInvoice(tx, invoice, actor) {
   const now = isoNow();
   await tx.run(
     `INSERT INTO freeport_invoices (invoice_number, omega_date, install_date, month_override, billing_month, order_number, account_code,
-      omega_tax_cents, drive_link, notes, status, id, version, created_at, updated_at, created_by, updated_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+      omega_tax_cents, drive_link, notes, status, equipment_number, serial_number, id, version, created_at, updated_at, created_by, updated_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
     [...invoiceColumns(invoice), id, now, now, actor, actor]
   );
   await insertLines(tx, id, invoice.lines);
@@ -296,7 +301,8 @@ export async function updateInvoice(currentNumber, expectedVersion, invoice, act
       }
       const updated = await tx.run(
         `UPDATE freeport_invoices SET invoice_number = ?, omega_date = ?, install_date = ?, month_override = ?, billing_month = ?, order_number = ?,
-          account_code = ?, omega_tax_cents = ?, drive_link = ?, notes = ?, status = ?, version = version + 1, updated_at = ?, updated_by = ?
+          account_code = ?, omega_tax_cents = ?, drive_link = ?, notes = ?, status = ?, equipment_number = ?, serial_number = ?,
+          version = version + 1, updated_at = ?, updated_by = ?
          WHERE id = ? AND version = ?`,
         [...invoiceColumns(invoice), isoNow(), actor, existing.id, expectedVersion]
       );

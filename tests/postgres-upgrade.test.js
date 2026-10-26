@@ -9,7 +9,7 @@ import { migratePostgres } from '../src/postgres-migrations.js';
 
 // Production ran 002-freeport.sql before the omega_snapshot column was added to
 // it, so the column must arrive through a later migration. Synthetic data only.
-test('a database that ran the first 002-freeport.sql gets the newer Freeport columns', { timeout: 90000 }, async () => {
+test('a database that ran the first 002-freeport.sql gets every newer Freeport column', { timeout: 90000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'boulevard-pg-upgrade-'));
   const cluster = new EmbeddedPostgres({ databaseDir: path.join(directory, 'cluster'), port: 55441, user: 'testuser', password: 'test-password', persistent: false, onLog: () => {}, onError: () => {} });
   let pool;
@@ -26,13 +26,14 @@ test('a database that ran the first 002-freeport.sql gets the newer Freeport col
     await pool.query(await migration('001-initial.sql'));
     await pool.query(deployed002);
     await pool.query("INSERT INTO schema_migrations (name) VALUES ('001-initial.sql'), ('002-freeport.sql')");
-    const column = async () => (await pool.query("SELECT 1 FROM information_schema.columns WHERE table_name = 'freeport_invoices' AND column_name = 'omega_snapshot'")).rowCount;
-    assert.equal(await column(), 0);
+    const column = async name => (await pool.query("SELECT 1 FROM information_schema.columns WHERE table_name = 'freeport_invoices' AND column_name = $1", [name])).rowCount;
+    const added = ['omega_snapshot', 'equipment_number', 'serial_number'];
+    for (const name of added) assert.equal(await column(name), 0);
 
     await migratePostgres(pool);
-    assert.equal(await column(), 1);
+    for (const name of added) assert.equal(await column(name), 1, name);
     await migratePostgres(pool); // running again changes nothing
-    assert.equal(await column(), 1);
+    for (const name of added) assert.equal(await column(name), 1, name);
   } finally {
     await pool?.end();
     await cluster.stop();

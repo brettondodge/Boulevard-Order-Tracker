@@ -128,6 +128,8 @@ export function mapOmegaInvoice(job, detail, items) {
 
   const customField = (...labels) => (detail.InvoiceCustomFields || []).find(field => labels.includes(labelKey(field.label)))?.currentValue;
   const orderNumber = String(customField('orderno', 'ordernumber') ?? '').trim();
+  const equipmentNumber = String(customField('equipmentno', 'equipmentnumber') ?? '').trim();
+  const serialNumber = String(customField('serialno', 'serialnumber') ?? '').trim();
   // Omega's ACCOUNT NO. dropdown gives "1060401328 - Mine Maintenance - Truck"; the leading code is used.
   const rawAccount = String(customField('accountno', 'accountcode', 'accountnumber') ?? '').trim();
   const accountCode = rawAccount.match(/^(\d{6,})\b/)?.[1] ?? '';
@@ -148,6 +150,8 @@ export function mapOmegaInvoice(job, detail, items) {
     installDate,
     orderNumber,
     accountCode,
+    equipmentNumber,
+    serialNumber,
     omegaTaxCents: parseMoney(detail.invoice_tax ?? job.invoice_tax),
     lines
   };
@@ -156,6 +160,8 @@ export function mapOmegaInvoice(job, detail, items) {
     installDate,
     orderNumber,
     accountCode,
+    equipmentNumber,
+    serialNumber,
     omegaTaxCents: invoice.omegaTaxCents,
     subtotalCents,
     lines: omegaLines,
@@ -166,9 +172,12 @@ export function mapOmegaInvoice(job, detail, items) {
 
 const SNAPSHOT_FIELDS = [
   ['omegaDate', 'invoice date'], ['installDate', 'install date'], ['orderNumber', 'order number'], ['accountCode', 'account code'],
+  ['equipmentNumber', 'equipment number'], ['serialNumber', 'serial number'],
   ['omegaTaxCents', 'tax'], ['subtotalCents', 'subtotal'], ['lines', 'line items'], ['flag', 'Omega status']
 ];
-const INVOICE_FIELDS = new Set(['omegaDate', 'installDate', 'orderNumber', 'accountCode', 'omegaTaxCents']);
+const INVOICE_FIELDS = new Set(['omegaDate', 'installDate', 'orderNumber', 'accountCode', 'equipmentNumber', 'serialNumber', 'omegaTaxCents']);
+// Reference-only fields: filling them in doesn't send a Ready invoice back to review.
+const REFERENCE_FIELDS = new Set(['equipmentNumber', 'serialNumber']);
 
 // Lines Omega didn't change keep the app's version (item picked, description
 // typed); only added or changed lines are mapped fresh. Lines are matched by
@@ -196,7 +205,9 @@ function mergeImport(existing, before, mapped, changes) {
   const body = {
     number: existing.number, omegaDate: existing.omegaDate, installDate: existing.installDate, monthOverride: existing.monthOverride,
     orderNumber: existing.orderNumber, accountCode: existing.accountCode, omegaTaxCents: existing.omegaTaxCents,
-    driveLink: existing.driveLink, notes: existing.notes, lines: existing.lines, status: 'Needs review'
+    equipmentNumber: existing.equipmentNumber, serialNumber: existing.serialNumber,
+    driveLink: existing.driveLink, notes: existing.notes, lines: existing.lines,
+    status: changes.every(([field]) => REFERENCE_FIELDS.has(field)) ? existing.status : 'Needs review'
   };
   for (const [field] of changes) {
     if (field === 'lines') body.lines = mergeLines(before.lines || [], mapped.snapshot.lines, existing.lines, mapped.invoice.lines);
@@ -247,7 +258,8 @@ async function planInvoice(job, config) {
   const changes = omegaChanges(before, mapped.snapshot);
   if (!changes.length) return { row: previewRow('unchanged', existing, config, { notes: mapped.notes }) };
   const invoice = normalizeInvoiceInput(mergeImport(existing, before, mapped, changes), config, stored);
-  const notes = existing.status === 'Ready' ? [...mapped.notes, 'Was Ready; goes back to Needs review'] : mapped.notes;
+  const backToReview = existing.status === 'Ready' && invoice.status !== 'Ready';
+  const notes = backToReview ? [...mapped.notes, 'Was Ready; goes back to Needs review'] : mapped.notes;
   const preview = { ...invoice, omegaSubtotalCents: mapped.snapshot.subtotalCents };
   return { invoice, existing, snapshot: mapped.snapshot, row: previewRow('update', preview, config, { notes, changes: changes.map(([, label]) => label) }) };
 }

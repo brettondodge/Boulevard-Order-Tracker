@@ -334,7 +334,7 @@ function handleOmegaClick(event) {
 
 function blankInvoice(month) {
   return {
-    number: '', omegaDate: '', installDate: '', monthOverride: '', orderNumber: '', accountCode: '',
+    number: '', omegaDate: '', installDate: '', monthOverride: '', orderNumber: '', accountCode: '', equipmentNumber: '', serialNumber: '',
     omegaTax: '', driveLink: '', notes: '', status: 'Needs review', version: 0,
     lines: [],
     suggestedMonth: month
@@ -357,6 +357,8 @@ function invoiceFromDraft(draft) {
     installDate: draft.installDate,
     monthOverride: draft.monthOverride,
     orderNumber: draft.orderNumber,
+    equipmentNumber: draft.equipmentNumber,
+    serialNumber: draft.serialNumber,
     accountCode: draft.accountCode,
     omegaTaxCents: omegaTax ? parseMoney(omegaTax) : null,
     driveLink: draft.driveLink.trim(),
@@ -505,6 +507,8 @@ async function renderInvoice(number, params, isCurrent, loaded = null) {
           <label>Install date<input type="date" data-field="installDate" value="${esc(invoice.installDate)}"></label>
           <label>Invoice date<input type="date" data-field="omegaDate" value="${esc(invoice.omegaDate)}"></label>
           <label>Order number<input data-field="orderNumber" value="${esc(invoice.orderNumber)}" autocomplete="off"></label>
+          <label>Equipment #<input data-field="equipmentNumber" value="${esc(invoice.equipmentNumber)}" autocomplete="off"></label>
+          <label>Serial #<input data-field="serialNumber" value="${esc(invoice.serialNumber)}" autocomplete="off"></label>
           <label class="span-2">Account code
             <select data-field="accountCode">
               <option value="">Choose where the job was…</option>

@@ -93,6 +93,8 @@ export function normalizeInvoiceInput(body = {}, config, stored = {}) {
     omegaTaxCents: cents(body.omegaTaxCents, 'Invoice tax', { nullable: true }),
     driveLink,
     notes: text(body.notes, 'Notes', 2000),
+    equipmentNumber: text(body.equipmentNumber, 'Equipment number', 60),
+    serialNumber: text(body.serialNumber, 'Serial number', 60),
     status: INVOICE_STATUSES.includes(body.status) ? body.status : 'Needs review'
   };
 
