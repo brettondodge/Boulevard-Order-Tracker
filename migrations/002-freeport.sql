@@ -1,5 +1,7 @@
 -- Freeport billing records. Portable SQL: Postgres runs it through the migration
 -- runner; local SQLite runs it at startup (every statement is IF NOT EXISTS).
+-- Production has already run this file: don't change it. Put schema changes in a
+-- new numbered migration (Postgres) plus a guarded ALTER in store.js (SQLite).
 -- Money is stored in integer cents; quantities as canonical decimal text.
 -- Items with custom_description take their spreadsheet description from each
 -- invoice line (e.g. a windshield part number) instead of the item list.
