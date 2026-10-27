@@ -34,6 +34,12 @@ HCP account: that needs the steps below.
   hour the tracker re-reads every unfinished linked job, and finds the HCP job
   for orders that only have a job number. Master Lists › Housecall Pro ›
   **Sync with Housecall Pro now** does the same on demand.
+- **Only the tracker's jobs are kept.** HCP sends events for every job in
+  the company; the tracker stores only jobs it has orders or an approved job
+  for. Finished-and-billed orders are never reopened by HCP.
+- **Security.** A webhook is accepted only with a valid HCP signature made in
+  the last 30 minutes, and each delivery is applied once. All calls to HCP
+  are read-only and go one at a time.
 
 ### How orders are matched to HCP jobs
 
@@ -93,7 +99,8 @@ secrets into chat or email: enter them only in Render.
 | `HCP_AUTO_APPROVED_JOBS` | No | `off` stops adding approved jobs from HCP estimates. Default on. |
 
 To disconnect, remove both variables (and turn off the HCP Webhooks app).
-Orders keep the values they had.
+Orders keep the values they had, and the tracker's own Mark scheduled /
+Mark complete buttons come back.
 
 ## What could not be checked without the live account
 
