@@ -23,42 +23,40 @@
       <div class="topbar-actions">
         <a class="secondary-button" href="/">Tools Home</a>
         <a class="secondary-button desktop-only" href="/freeport">Freeport Billing</a>
-        <span class="preview-pill">Preview data • fictional sample orders</span>
-        <div class="user-chip">
-          <span id="currentUser">Office staff</span>
-          <button id="masterListsButton" type="button" class="secondary-button">Master Lists</button>
-          <button id="logoutButton" type="button" class="secondary-button hidden">Log out</button>
-        </div>
+        <button id="masterListsButton" type="button" class="secondary-button">Master Lists</button>
+        <button id="logoutButton" type="button" class="secondary-button hidden">Exit admin</button>
+        <span id="currentUser" class="current-user"></span>
       </div>
     </header>
 
     <main class="app-shell">
-      <section class="toolbar">
+      <section id="toolbar" class="toolbar">
         <div class="toolbar-main">
           <div class="action-button-row">
             <button id="addOrderButton" type="button" class="primary-button">Add order</button>
-            <button id="addDraftButton" type="button" class="primary-button secondary-variant">Add draft</button>
+            <button id="addDraftButton" type="button" class="secondary-button">Add approved job</button>
           </div>
           <label class="search-field">
             <span class="sr-only">Search orders</span>
             <input id="searchInput" type="search" placeholder="Search customer, job, supplier, or PO" />
           </label>
+          <button id="filtersToggle" type="button" class="secondary-button filters-toggle" aria-expanded="false" aria-controls="filterControls">Filters</button>
         </div>
 
-        <div class="toolbar-controls">
-          <label>
-            Group
+        <div id="filterControls" class="toolbar-controls">
+          <label class="compact-filter">
+            <span>Group</span>
             <select id="groupFilter">
-              <option value="All Orders">All Orders</option>
+              <option value="All Orders">All</option>
               <option value="Windows / Flat Glass">Windows / Flat Glass</option>
               <option value="Heavy Glass / Storefront">Heavy Glass / Storefront</option>
             </select>
           </label>
 
-          <label>
-            Category
+          <label class="compact-filter">
+            <span>Category</span>
             <select id="categoryFilter">
-              <option value="">All categories</option>
+              <option value="">All</option>
               <option value="Windows">Windows</option>
               <option value="Flat Glass">Flat Glass</option>
               <option value="Showers">Showers</option>
@@ -66,55 +64,49 @@
             </select>
           </label>
 
-          <label class="supplier-filter-wrap">
-            <span class="filter-label-row">
-              <span>Supplier</span>
-              <button id="clearSupplierButton" type="button" class="text-button">Clear suppliers</button>
-            </span>
-            <p id="supplierSelectionSummary" class="filter-summary">All Suppliers</p>
-            <select id="supplierFilter" multiple size="4"></select>
-            <small>On desktop, hold ⌘ or Ctrl to select several.</small>
-          </label>
+          <details class="multi-filter">
+            <summary><span>Supplier</span> <strong id="supplierSelectionSummary">All</strong></summary>
+            <div class="multi-filter-panel">
+              <div id="supplierFilter" class="multi-filter-options" role="group" aria-label="Suppliers"></div>
+              <button id="clearSupplierButton" type="button" class="text-button">Clear</button>
+            </div>
+          </details>
 
-          <label class="supplier-filter-wrap">
-            <span class="filter-label-row">
-              <span>Ordered By</span>
+          <details class="multi-filter">
+            <summary><span>Ordered by</span> <strong id="orderedBySelectionSummary">Everyone</strong></summary>
+            <div class="multi-filter-panel">
+              <div id="orderedByFilter" class="multi-filter-options" role="group" aria-label="Ordered by"></div>
               <button id="clearOrderedByButton" type="button" class="text-button">Clear</button>
-            </span>
-            <p id="orderedBySelectionSummary" class="filter-summary">Everyone</p>
-            <select id="orderedByFilter" multiple size="4"></select>
-            <small>On desktop, hold ⌘ or Ctrl to select several.</small>
-          </label>
+            </div>
+          </details>
 
-          <label>
-            Sort
+          <label class="compact-filter">
+            <span>Sort</span>
             <select id="sortSelect">
-              <option value="customer_name">Alphabetical (A–Z)</option>
+              <option value="customer_name">Customer A–Z</option>
               <option value="expected_delivery_date">Expected delivery</option>
               <option value="order_date">Order date</option>
             </select>
           </label>
+
+          <button id="clearFiltersButton" type="button" class="text-button hidden">Clear filters</button>
         </div>
       </section>
 
-      <nav class="view-tabs" aria-label="Order views">
-        <button type="button" class="tab-button active" data-view="Outstanding">Outstanding</button>
-        <button type="button" class="tab-button" data-view="Overdue">Overdue</button>
-        <button type="button" class="tab-button" data-view="Received">Received</button>
-        <button type="button" class="tab-button" data-view="All Orders">All orders</button>
-        <button type="button" class="tab-button" data-view="Approved – Need to Order">Approved – Need to Order</button>
-        <button type="button" class="tab-button" data-view="Archived">Archived</button>
-      </nav>
-
-      <div class="order-display-controls">
-        <button id="condensedViewToggle" type="button" class="secondary-button" aria-pressed="false" aria-controls="condensedOrders">Condensed lines</button>
-        <span id="condensedViewHint" class="hidden">One line per supplier order. Scroll sideways on small screens; Edit opens the full order.</span>
+      <div class="view-row">
+        <nav class="view-tabs" aria-label="Order views">
+          <button type="button" class="tab-button active" data-view="Outstanding">Outstanding</button>
+          <button type="button" class="tab-button" data-view="Overdue">Overdue</button>
+          <button type="button" class="tab-button" data-view="Received">Received</button>
+          <button type="button" class="tab-button" data-view="All Orders">All orders</button>
+          <button type="button" class="tab-button" data-view="Approved – Need to Order">Approved – Need to Order</button>
+        </nav>
+        <div class="view-row-end">
+          <button id="condensedViewToggle" type="button" class="secondary-button" aria-pressed="false" aria-controls="condensedOrders">Condensed lines</button>
+          <span id="liveStatus" class="connection-indicator live">Live</span>
+        </div>
       </div>
-
-      <div class="sync-status-bar">
-        <span id="liveStatus" class="connection-indicator live">Live</span>
-        <span id="saveStatus" class="save-status saved">Saved</span>
-      </div>
+      <p id="condensedViewHint" class="condensed-hint hidden">One line per supplier order. Scroll sideways on small screens; Edit opens the full order.</p>
       <div id="statusMessage" class="message-box" aria-live="polite"></div>
 
       <section id="draftQueueSection" class="draft-queue hidden">
@@ -134,7 +126,7 @@
               <th>Job #</th>
               <th>Supplier</th>
               <th>Ordered by</th>
-              <th>PO / order #</th>
+              <th>PO #</th>
               <th>Ordered</th>
               <th>ETA</th>
               <th>Received</th>
@@ -255,9 +247,10 @@
     <dialog id="draftDialog">
       <form id="draftForm" method="dialog">
         <input type="hidden" id="draftId" />
+        <input type="hidden" id="draftUpdatedAt" />
 
         <div class="dialog-header">
-          <h2 id="draftDialogTitle">Add draft</h2>
+          <h2 id="draftDialogTitle">Add approved job</h2>
           <button type="button" id="closeDraftDialogButton" class="close-button" aria-label="Close">×</button>
         </div>
 
@@ -301,7 +294,7 @@
 
         <div class="dialog-actions">
           <button type="button" id="cancelDraftButton" class="secondary-button">Cancel</button>
-          <button type="submit" class="primary-button">Save draft</button>
+          <button type="submit" class="primary-button">Save job</button>
         </div>
       </form>
     </dialog>
@@ -341,7 +334,7 @@
             </section>
             <label class="checkbox-inline"><input type="checkbox" id="includeHistoricalSupplierCleanup" /> Include orders with historical supplier names missing from Master Lists in cleanup</label>
             <button type="button" id="previewSupplierCleanupButton" class="secondary-button">Preview deletion of inactive suppliers</button>
-            <p>Save your list changes first. Cleanup deletes inactive suppliers and their linked orders after review; drafts stay.</p>
+            <p>Save your list changes first. Cleanup deletes inactive suppliers and their linked orders after review; approved jobs stay.</p>
           </div>
 
           <div class="master-list-section">
@@ -367,7 +360,7 @@
       </div>
       <p id="supplierCleanupSummary"></p>
       <ul id="supplierCleanupList" class="cleanup-list"></ul>
-      <p>Deletion is permanent. All drafts and orders assigned to active suppliers will stay.</p>
+      <p>Deletion is permanent. All approved jobs and orders assigned to active suppliers will stay.</p>
       <label>Type DELETE to confirm <input id="supplierCleanupConfirmation" type="text" autocomplete="off" /></label>
       <p id="supplierCleanupError" class="message-box" aria-live="polite"></p>
       <div class="dialog-actions">
@@ -386,6 +379,11 @@
       <p id="orderNotesText" class="order-notes-text"></p>
       <div class="dialog-actions"><button id="dismissOrderNotesButton" type="button" class="secondary-button">Close</button></div>
     </dialog>
+    <div id="undoToast" class="undo-toast hidden" role="status" aria-live="polite">
+      <span id="undoMessage"></span>
+      <button id="undoButton" type="button">Undo</button>
+      <button id="dismissUndoButton" type="button" class="close-button" aria-label="Dismiss">×</button>
+    </div>
     <script src="/app.js"></script>
   </body>
 </html>

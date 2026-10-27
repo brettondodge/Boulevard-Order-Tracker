@@ -496,7 +496,8 @@ test('approved job drafts stay queued until deposit is received or waived and ca
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       deposit_status: 'Deposit received',
-      notes: 'Approved and deposit received.'
+      notes: 'Approved and deposit received.',
+      updated_at: draftResponse.body.draft.updated_at
     }),
     cookieJar
   });
@@ -574,7 +575,7 @@ test('draft queue keeps separate supplier orders out of overdue and delivery cou
   const readyResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${draftId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ deposit_status: 'Deposit waived / not required' }),
+    body: JSON.stringify({ deposit_status: 'Deposit waived / not required', updated_at: draftResponse.body.draft.updated_at }),
     cookieJar
   });
 
@@ -605,90 +606,60 @@ test('draft queue keeps separate supplier orders out of overdue and delivery cou
   child.kill('SIGTERM');
 });
 
-test('job archive is blocked until linked supplier orders are received', async () => {
+test('edits record who made them, can clear draft fields and lose cleanly to a newer save', async () => {
   const child = startServer();
-  await delay(1500);
-
   const cookieJar = createCookieJar();
-  const login = await requestJson('http://127.0.0.1:4100/api/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'mary', password: 'staff123' }),
-    cookieJar
+  const base = 'http://127.0.0.1:4100';
+  const api = (route, body, method = body ? 'POST' : 'GET') => requestJson(base + route, {
+    method, headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), cookieJar
   });
+  try {
+    await delay(1500);
+    assert.equal((await api('/api/login', { username: 'mary', password: 'staff123' })).status, 200);
 
-  assert.equal(login.status, 200);
+    const created = await api('/api/job-drafts', { customer_name: 'Synthetic Clear Job', housecall_job_number: 'HC-CLEAR-1', housecall_job_link: 'https://example.com/jobs/clear', deposit_status: 'Deposit received' });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.draft.created_by, 'mary');
+    const draft = created.body.draft;
 
-  const customer = `Pending Archive Customer ${Date.now()}`;
-  const draft = await requestJson('http://127.0.0.1:4100/api/job-drafts', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      customer_name: customer,
-      housecall_job_number: `HC-RECEIVE-${Date.now()}`,
-      hcp_job_id: `hcp-receive-${Date.now()}`,
-      notes: 'Waiting for receipt before archiving.',
-      deposit_status: 'Deposit received'
-    }),
-    cookieJar
-  });
+    // Blanking the job number and link must save as blank, not bring the old values back.
+    const cleared = await api(`/api/job-drafts/${draft.id}`, { ...draft, housecall_job_number: '', housecall_job_link: '' }, 'PUT');
+    assert.equal(cleared.status, 200);
+    assert.equal(cleared.body.draft.housecall_job_number, '');
+    assert.equal(cleared.body.draft.housecall_job_link, '');
+    assert.equal(cleared.body.draft.updated_by, 'mary');
+    assert.equal((await api(`/api/job-drafts/${draft.id}`, { notes: 'No version' }, 'PUT')).status, 400);
+    const staleDraft = await api(`/api/job-drafts/${draft.id}`, { ...draft, notes: 'Stale' }, 'PUT');
+    assert.equal(staleDraft.status, 409);
+    assert.match(staleDraft.body.error, /Someone else changed this job/);
 
-  const order = await requestJson('http://127.0.0.1:4100/api/orders', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      customer_name: customer,
-      housecall_job_number: draft.body.draft.housecall_job_number,
-      job_draft_id: draft.body.draft.id,
-      supplier: 'Northline Glass',
-      category: 'Windows',
-      date_ordered: '2026-10-18',
-      ordered_by: 'Admin User'
-    }),
-    cookieJar
-  });
+    const order = await api('/api/orders', { customer_name: 'Synthetic Clear Job', job_draft_id: draft.id, supplier: 'Northline Glass', category: 'Windows', date_ordered: '2026-10-18', ordered_by: 'Admin User' });
+    assert.equal(order.status, 201);
+    assert.equal(order.body.order.created_by, 'mary');
+    const first = await api(`/api/orders/${order.body.order.id}`, { ...order.body.order, notes: 'First save' }, 'PUT');
+    assert.equal(first.status, 200);
+    const second = await api(`/api/orders/${order.body.order.id}`, { ...order.body.order, notes: 'Second save from an old screen' }, 'PUT');
+    assert.equal(second.status, 409);
+    assert.match(second.body.error, /Someone else changed this order/);
+    assert.equal((await api(`/api/orders/${order.body.order.id}`, { ...order.body.order, updated_at: '' }, 'PUT')).status, 400);
+    const saved = (await api('/api/orders?status=All')).body.orders.find(row => row.id === order.body.order.id);
+    assert.equal(saved.notes, 'First save');
 
-  assert.equal(draft.status, 201);
-  assert.equal(order.status, 201);
+    const received = await api(`/api/orders/${order.body.order.id}/mark-received`, { updated_at: order.body.order.updated_at });
+    assert.equal(received.status, 409);
+    const receivedNow = await api(`/api/orders/${order.body.order.id}/mark-received`, { updated_at: first.body.order.updated_at });
+    assert.equal(receivedNow.status, 200);
+    assert.equal(receivedNow.body.order.updated_by, 'mary');
 
-  const blocked = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${draft.body.draft.id}/archive`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirm: true, reason: 'Should fail before receipt', source: 'manual' }),
-    cookieJar
-  });
-
-  assert.equal(blocked.status, 409);
-  assert.match(String(blocked.body.error || blocked.body.warning || ''), /received/i);
-
-  const markReceived = await requestJson(`http://127.0.0.1:4100/api/orders/${order.body.order.id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      ...order.body.order,
-      status: 'Received',
-      date_received: '2026-10-22',
-      updated_at: order.body.order.updated_at
-    }),
-    cookieJar
-  });
-
-  assert.equal(markReceived.status, 200);
-
-  const archiveResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${draft.body.draft.id}/archive`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirm: true, reason: 'Ready to archive', source: 'manual' }),
-    cookieJar
-  });
-
-  assert.equal(archiveResponse.status, 200);
-  assert.equal(archiveResponse.body.archived, true);
-
-  child.kill('SIGTERM');
+    const failed = await api('/api/orders', { customer_name: 'Synthetic Missing Job', job_draft_id: 'draft-that-does-not-exist', supplier: 'Northline Glass', category: 'Windows', ordered_by: 'Admin User' });
+    assert.equal(failed.status, 404);
+    assert.equal(failed.body.details, undefined);
+  } finally {
+    child.kill('SIGTERM');
+  }
 });
 
-test('archive and restore keep linked supplier orders and other jobs separate', async () => {
+test('deleting a job removes it and its orders; undo brings back only what that delete removed', async () => {
   const child = startServer();
   await delay(1500);
 
@@ -766,32 +737,36 @@ test('archive and restore keep linked supplier orders and other jobs separate', 
   assert.equal(firstOrder.status, 201);
   assert.equal(secondOrder.status, 201);
 
-  const markReceived = await requestJson(`http://127.0.0.1:4100/api/orders/${firstOrder.body.order.id}`, {
-    method: 'PUT',
+  // An order on the first job deleted on its own earlier must stay deleted after the job's undo.
+  const separatelyDeleted = await requestJson('http://127.0.0.1:4100/api/orders', {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      ...firstOrder.body.order,
-      status: 'Received',
-      date_received: '2026-10-20',
-      updated_at: firstOrder.body.order.updated_at
+      customer_name: sharedCustomer,
+      job_draft_id: firstDraft.body.draft.id,
+      supplier: 'Oldcastle',
+      category: 'Windows',
+      date_ordered: '2026-10-18',
+      ordered_by: 'Admin User'
     }),
     cookieJar
   });
+  assert.equal(separatelyDeleted.status, 201);
+  const orderDelete = await requestJson(`http://127.0.0.1:4100/api/orders/${separatelyDeleted.body.order.id}/delete`, { method: 'POST', cookieJar });
+  assert.equal(orderDelete.status, 200);
+  assert.equal(orderDelete.body.deleted, true);
 
-  assert.equal(markReceived.status, 200);
-
-  const archiveResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${firstDraft.body.draft.id}/archive`, {
+  // Jobs can be deleted before their orders arrive (cancelled jobs, mistakes).
+  const archiveResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${firstDraft.body.draft.id}/delete`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason: 'Test archive', source: 'manual' }),
     cookieJar
   });
 
   assert.equal(archiveResponse.status, 200);
-  assert.equal(archiveResponse.body.archived, true);
-  assert.equal(archiveResponse.body.order_ids.length, 1);
+  assert.equal(archiveResponse.body.deleted, true);
+  assert.deepEqual(archiveResponse.body.order_ids, [firstOrder.body.order.id]);
 
-  const activeOrders = await requestJson('http://127.0.0.1:4100/api/orders?status=Outstanding');
+  const activeOrders = await requestJson('http://127.0.0.1:4100/api/orders?status=All Orders');
   const archivedOrders = await requestJson('http://127.0.0.1:4100/api/orders?status=Archived');
   const activeDrafts = await requestJson('http://127.0.0.1:4100/api/job-drafts');
 
@@ -799,6 +774,7 @@ test('archive and restore keep linked supplier orders and other jobs separate', 
   assert.equal(archivedOrders.status, 200);
   assert.ok(activeOrders.body.orders.some((order) => order.id === secondOrder.body.order.id));
   assert.ok(archivedOrders.body.orders.some((order) => order.id === firstOrder.body.order.id));
+  assert.ok(!activeOrders.body.orders.some((order) => order.id === firstOrder.body.order.id));
   assert.ok(activeDrafts.body.drafts.some((draft) => draft.id === secondDraft.body.draft.id));
   assert.ok(!activeDrafts.body.drafts.some((draft) => draft.id === firstDraft.body.draft.id));
 
@@ -810,9 +786,16 @@ test('archive and restore keep linked supplier orders and other jobs separate', 
   assert.equal(restoreResponse.status, 200);
   assert.equal(restoreResponse.body.restored, true);
 
+  assert.deepEqual(restoreResponse.body.order_ids, [firstOrder.body.order.id]);
   const restoredOrders = await requestJson('http://127.0.0.1:4100/api/orders?status=Archived');
   assert.equal(restoredOrders.status, 200);
   assert.ok(!restoredOrders.body.orders.some((order) => order.id === firstOrder.body.order.id));
+  assert.ok(restoredOrders.body.orders.some((order) => order.id === separatelyDeleted.body.order.id));
+  assert.ok((await requestJson('http://127.0.0.1:4100/api/job-drafts')).body.drafts.some((draft) => draft.id === firstDraft.body.draft.id));
+
+  const orderRestore = await requestJson(`http://127.0.0.1:4100/api/orders/${separatelyDeleted.body.order.id}/restore`, { method: 'POST', cookieJar });
+  assert.equal(orderRestore.status, 200);
+  assert.ok((await requestJson('http://127.0.0.1:4100/api/orders?status=All Orders')).body.orders.some((order) => order.id === separatelyDeleted.body.order.id));
 
   child.kill('SIGTERM');
 });
@@ -852,7 +835,7 @@ test('master-list IDs survive renaming and deactivation; confirmed cleanup prese
     assert.deepEqual(lists.body.ordered_by_options, lists.body.staff_names.map(row => row.name));
     assert.ok(lists.body.supplier_filter_options.some(row => row.id === removeId && row.active === false));
     assert.equal((await api('/api/suppliers')).body.suppliers.includes('Renamed Supplier'), false);
-    assert.equal((await api('/api/orders/archive', { order_ids: [removedOrder.body.order.id] })).status, 200);
+    assert.equal((await api(`/api/orders/${removedOrder.body.order.id}/delete`, {})).status, 200);
     filtered = await api(`/api/orders?status=Archived&supplier=${removeId}&ordered_by=${staffId}`);
     assert.equal(filtered.body.orders.length, 1);
     let preview = await api('/api/admin/inactive-suppliers/preview');

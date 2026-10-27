@@ -39,14 +39,17 @@ These accounts are intended for preview only and should be replaced with real of
 
 ## Preview data
 
-The app includes fictional sample orders for preview use. The sample data is clearly labeled as preview data in the interface and is kept separate from any live business records.
+Local preview runs include fictional sample orders. They are kept in the local SQLite database only and never reach the hosted app.
 
 ## App workflow
 
 - Outstanding view is the default landing page.
 - Search across customer, job number, supplier, and PO number.
 - Filter by supplier and sort by expected delivery date or order date.
-- Add, edit, receive, and reopen orders.
+- Add, edit, receive, reopen and delete orders. Approved jobs (deposit taken, materials not ordered yet) wait under Approved – Need to Order.
+- Every change can be undone for 15 seconds from the bar at the bottom of the screen.
+- Deleting removes an order or job from the tracker. The record stays hidden in the database (marked archived, with who deleted it) so Undo can bring it back.
+- Each change records the signed-in staff email as created_by / updated_by.
 - Received orders remain searchable for history.
 - Overdue is a calculated flag, not a separate status.
 - Orders without an ETA show `No ETA`.
@@ -63,7 +66,7 @@ Follow [the hosting and recovery guide](docs/hosting.md) for the existing Render
 
 ## HCP automation readiness
 
-The archive workflow is designed to support a later Housecall Pro import or automation step without connecting to HCP from this project.
+Deleting a job uses the database's archive fields, so a later Housecall Pro import or automation step can reuse them without connecting to HCP from this project.
 
 Eligibility for a future automated archive decision:
 

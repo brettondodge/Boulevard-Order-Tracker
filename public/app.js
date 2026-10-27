@@ -17,6 +17,10 @@ const state = {
   supplierCleanupPreview: null,
   condensedView: false,
   adminLoggedIn: false,
+  editingOrder: null,
+  editingDraft: null,
+  undo: null,
+  undoTimer: null,
   connectionState: 'live',
   requestCounter: 0,
   orderRequestCounter: 0,
@@ -29,6 +33,13 @@ const state = {
 const elements = {
   currentUser: document.getElementById('currentUser'),
   searchInput: document.getElementById('searchInput'),
+  toolbar: document.getElementById('toolbar'),
+  filtersToggle: document.getElementById('filtersToggle'),
+  clearFiltersButton: document.getElementById('clearFiltersButton'),
+  undoToast: document.getElementById('undoToast'),
+  undoMessage: document.getElementById('undoMessage'),
+  undoButton: document.getElementById('undoButton'),
+  dismissUndoButton: document.getElementById('dismissUndoButton'),
   groupFilter: document.getElementById('groupFilter'),
   categoryFilter: document.getElementById('categoryFilter'),
   supplierFilter: document.getElementById('supplierFilter'),
@@ -58,13 +69,13 @@ const elements = {
   emptyState: document.getElementById('emptyState'),
   statusMessage: document.getElementById('statusMessage'),
   liveStatus: document.getElementById('liveStatus'),
-  saveStatus: document.getElementById('saveStatus'),
   dialog: document.getElementById('orderDialog'),
   draftDialog: document.getElementById('draftDialog'),
   draftForm: document.getElementById('draftForm'),
   draftFormError: document.getElementById('draftFormError'),
   draftDialogTitle: document.getElementById('draftDialogTitle'),
   draftId: document.getElementById('draftId'),
+  draftUpdatedAt: document.getElementById('draftUpdatedAt'),
   draftCustomerName: document.getElementById('draftCustomerName'),
   draftHousecallJobNumber: document.getElementById('draftHousecallJobNumber'),
   draftHousecallJobLink: document.getElementById('draftHousecallJobLink'),
@@ -120,6 +131,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateLayoutMode();
   });
 
+  loadCurrentUser();
   try {
     await refreshAdminState();
     await Promise.all([loadSuppliers(), loadMasterLists(), loadJobDrafts(), loadOrders()]);
@@ -143,38 +155,33 @@ function setConnectionState(stateName, message = '') {
   elements.liveStatus.className = `connection-indicator ${next.className}`;
 }
 
-function setSaveState(mode, message = '') {
-  const indicator = elements.saveStatus;
-  if (!indicator) return;
+function isPhoneLayout() {
+  return window.matchMedia('(max-width: 820px)').matches;
+}
 
-  const map = {
-    saving: { label: message || 'Saving…', className: 'saving' },
-    saved: { label: message || 'Saved', className: 'saved' },
-    failed: { label: message || 'Save failed', className: 'failed' }
-  };
-
-  const next = map[mode] || map.saved;
-  indicator.textContent = next.label;
-  indicator.className = `save-status ${next.className}`;
+// Phones always use the cards; Condensed lines is a computer option.
+function condensedActive() {
+  return state.condensedView && !isPhoneLayout();
 }
 
 function updateLayoutMode() {
-  const mobile = window.matchMedia('(max-width: 820px)').matches;
+  const mobile = isPhoneLayout();
   const draftView = state.status === 'Approved – Need to Order';
+  const condensed = condensedActive();
 
   if (elements.tableWrap) {
     elements.tableWrap.classList.toggle('desktop-table', !mobile);
-    elements.tableWrap.classList.toggle('mobile-hidden', mobile || draftView || state.condensedView);
-    elements.tableWrap.classList.toggle('hidden', draftView || state.condensedView);
+    elements.tableWrap.classList.toggle('mobile-hidden', mobile || draftView || condensed);
+    elements.tableWrap.classList.toggle('hidden', draftView || condensed);
   }
   if (elements.mobileOrderCards) {
-    elements.mobileOrderCards.classList.toggle('hidden', !mobile || draftView || state.condensedView);
+    elements.mobileOrderCards.classList.toggle('hidden', !mobile || draftView);
   }
 
-  elements.condensedOrders.classList.toggle('hidden', draftView || !state.condensedView || !state.orders.length);
+  elements.condensedOrders.classList.toggle('hidden', draftView || !condensed || !state.orders.length);
   elements.condensedViewToggle.setAttribute('aria-pressed', String(state.condensedView));
   elements.condensedViewToggle.disabled = draftView;
-  elements.condensedViewHint.classList.toggle('hidden', draftView || !state.condensedView);
+  elements.condensedViewHint.classList.toggle('hidden', draftView || !condensed);
 
   if (elements.draftQueueSection) {
     elements.draftQueueSection.classList.toggle('hidden', !draftView);
@@ -200,6 +207,10 @@ function setupLiveUpdates() {
     });
 
     state.eventSource.addEventListener('orders', () => {
+      refreshAllData('live-update');
+    });
+
+    state.eventSource.addEventListener('job-drafts', () => {
       refreshAllData('live-update');
     });
 
@@ -230,29 +241,14 @@ function setupLiveUpdates() {
   });
 }
 
-function refreshAllData(reason = 'manual') {
-  if (reason === 'live-update' || reason === 'master-lists' || reason === 'live-sync') {
-    Promise.all([loadSuppliers(), loadMasterLists(), loadJobDrafts(), loadOrders()]);
-    return;
-  }
-
+function refreshAllData() {
   Promise.all([loadSuppliers(), loadMasterLists(), loadJobDrafts(), loadOrders()]);
 }
 
 function renderQueueVisibility() {
-  const draftView = state.status === 'Approved – Need to Order';
-  if (elements.draftQueueSection) {
-    elements.draftQueueSection.classList.toggle('hidden', !draftView);
-  }
-  if (elements.tableWrap) {
-    elements.tableWrap.classList.toggle('hidden', draftView || state.condensedView);
-  }
-  if (elements.mobileOrderCards) {
-    elements.mobileOrderCards.classList.toggle('hidden', draftView || state.condensedView || !window.matchMedia('(max-width: 820px)').matches);
-  }
   updateLayoutMode();
   if (elements.emptyState) {
-    elements.emptyState.classList.toggle('hidden', draftView || !!state.orders.length);
+    elements.emptyState.classList.toggle('hidden', state.status === 'Approved – Need to Order' || !!state.orders.length);
   }
 }
 
@@ -300,18 +296,48 @@ function bindEvents() {
     });
   });
 
+  elements.filtersToggle.addEventListener('click', () => {
+    const open = !elements.toolbar.classList.contains('filters-open');
+    elements.toolbar.classList.toggle('filters-open', open);
+    elements.filtersToggle.setAttribute('aria-expanded', String(open));
+  });
+
+  // Supplier and Ordered by are checkbox lists inside <details>; close them when clicking elsewhere.
+  document.addEventListener('click', (event) => {
+    document.querySelectorAll('details.multi-filter[open]').forEach((menu) => {
+      if (!menu.contains(event.target)) menu.removeAttribute('open');
+    });
+  });
+
+  elements.clearFiltersButton.addEventListener('click', () => {
+    state.groupView = 'All Orders';
+    state.category = '';
+    state.supplier = [];
+    state.orderedBy = [];
+    elements.groupFilter.value = state.groupView;
+    elements.categoryFilter.value = state.category;
+    renderSupplierSelection();
+    renderOrderedBySelection();
+    loadOrders();
+  });
+
+  elements.undoButton.addEventListener('click', runUndo);
+  elements.dismissUndoButton.addEventListener('click', hideUndo);
+
   elements.groupFilter.addEventListener('change', (event) => {
     state.groupView = event.target.value;
+    renderFilterCount();
     loadOrders();
   });
 
   elements.categoryFilter.addEventListener('change', (event) => {
     state.category = event.target.value;
+    renderFilterCount();
     loadOrders();
   });
 
   elements.supplierFilter.addEventListener('change', () => {
-    state.supplier = Array.from(elements.supplierFilter.selectedOptions, option => option.value);
+    state.supplier = checkedValues(elements.supplierFilter);
     renderSupplierSelection();
     loadOrders();
   });
@@ -323,7 +349,7 @@ function bindEvents() {
   });
 
   elements.orderedByFilter.addEventListener('change', () => {
-    state.orderedBy = Array.from(elements.orderedByFilter.selectedOptions, option => option.value);
+    state.orderedBy = checkedValues(elements.orderedByFilter);
     renderOrderedBySelection();
     loadOrders();
   });
@@ -484,13 +510,8 @@ function bindEvents() {
       return;
     }
 
-    if (action === 'archive-order') {
-      await archiveOrder(id);
-      return;
-    }
-
-    if (action === 'restore-order') {
-      await restoreOrder(id);
+    if (action === 'delete-order') {
+      await deleteOrder(id);
       return;
     }
 
@@ -536,8 +557,8 @@ function bindEvents() {
       return;
     }
 
-    if (action === 'archive-draft' && draft) {
-      await archiveDraft(id);
+    if (action === 'delete-draft' && draft) {
+      await deleteDraft(id);
       return;
     }
 
@@ -576,7 +597,18 @@ function updateAdminUi() {
   elements.adminLoginSection.classList.toggle('hidden', state.adminLoggedIn);
   elements.masterListsSection.classList.toggle('hidden', !state.adminLoggedIn);
   elements.logoutButton.classList.toggle('hidden', !state.adminLoggedIn);
-  elements.currentUser.textContent = state.adminLoggedIn ? 'Administrator' : 'Office staff';
+}
+
+// The signed-in staff email, shown in the top-right corner like Freeport Billing.
+async function loadCurrentUser() {
+  try {
+    const response = await fetch('/api/me');
+    if (!response.ok) return;
+    const data = await response.json();
+    elements.currentUser.textContent = data.user?.username || '';
+  } catch {
+    // The tracker still works without the name.
+  }
 }
 
 async function loginAsAdmin() {
@@ -669,19 +701,48 @@ async function loadMasterLists() {
   document.getElementById('historicalSupplierList').innerHTML = historical.map(item => `<li>${escapeHtml(item.name)} — ${item.order_count} orders</li>`).join('');
 }
 
+function supplierFilterChoices() {
+  return [...state.supplierFilterOptions]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(supplier => ({ value: supplier.id || supplier.name, label: supplier.name, note: supplier.historical ? 'historical' : supplier.active === false ? 'inactive' : '' }));
+}
+
+function staffFilterChoices() {
+  return state.masterStaffNames.map(person => ({ value: person.id || person.name, label: person.name, note: person.active === false ? 'inactive' : '' }));
+}
+
+function renderCheckboxOptions(container, choices, selected) {
+  container.innerHTML = choices.map(choice => `<label class="checkbox-option"><input type="checkbox" value="${escapeAttr(choice.value)}" ${selected.includes(choice.value) ? 'checked' : ''} /><span>${escapeHtml(choice.label)}${choice.note ? ` <small>(${choice.note})</small>` : ''}</span></label>`).join('')
+    || '<p class="multi-filter-empty">None yet</p>';
+}
+
+function checkedValues(container) {
+  return Array.from(container.querySelectorAll('input:checked'), input => input.value);
+}
+
+function selectionSummary(selected, choices, allLabel) {
+  if (!selected.length) return allLabel;
+  if (selected.length > 2) return `${selected.length} selected`;
+  return selected.map(value => choices.find(choice => choice.value === value)?.label || value).join(', ');
+}
+
+function renderFilterCount() {
+  const count = [state.groupView !== 'All Orders', Boolean(state.category), state.supplier.length > 0, state.orderedBy.length > 0].filter(Boolean).length;
+  elements.filtersToggle.textContent = count ? `Filters (${count})` : 'Filters';
+  elements.clearFiltersButton.classList.toggle('hidden', !count);
+}
+
 function renderSupplierFilterOptions() {
-  const selected = new Set(state.supplier);
-  const options = [...state.supplierFilterOptions].sort((a, b) => a.name.localeCompare(b.name)).map((supplier) => `<option value="${escapeHtml(supplier.id || supplier.name)}" ${selected.has(supplier.id || supplier.name) ? 'selected' : ''}>${escapeHtml(supplier.name)}${supplier.historical ? ' (historical)' : supplier.active === false ? ' (inactive)' : ''}</option>`).join('');
-  elements.supplierFilter.innerHTML = options;
+  renderCheckboxOptions(elements.supplierFilter, supplierFilterChoices(), state.supplier);
   renderSupplierSelection();
 }
 
 function renderSupplierSelection() {
-  const selected = state.supplier.filter(Boolean);
-  elements.supplierSelectionSummary.textContent = selected.length ? selected.map(value => state.supplierFilterOptions.find(item => (item.id || item.name) === value)?.name || value).join(', ') : 'All Suppliers';
-  Array.from(elements.supplierFilter.options).forEach((option) => {
-    option.selected = selected.includes(option.value);
+  elements.supplierSelectionSummary.textContent = selectionSummary(state.supplier, supplierFilterChoices(), 'All');
+  elements.supplierFilter.querySelectorAll('input').forEach((input) => {
+    input.checked = state.supplier.includes(input.value);
   });
+  renderFilterCount();
 }
 
 function renderSupplierOptions() {
@@ -712,18 +773,16 @@ function renderOrderedByOptions() {
 }
 
 function renderOrderedByFilterOptions() {
-  const selected = new Set(state.orderedBy);
-  const options = state.masterStaffNames.map((person) => `<option value="${escapeHtml(person.id || person.name)}" ${selected.has(person.id || person.name) ? 'selected' : ''}>${escapeHtml(person.name)}${person.active === false ? ' (inactive)' : ''}</option>`).join('');
-  elements.orderedByFilter.innerHTML = options;
+  renderCheckboxOptions(elements.orderedByFilter, staffFilterChoices(), state.orderedBy);
   renderOrderedBySelection();
 }
 
 function renderOrderedBySelection() {
-  const selected = state.orderedBy.filter(Boolean);
-  elements.orderedBySelectionSummary.textContent = selected.length ? selected.map(value => state.masterStaffNames.find(item => (item.id || item.name) === value)?.name || value).join(', ') : 'Everyone';
-  Array.from(elements.orderedByFilter.options).forEach((option) => {
-    option.selected = selected.includes(option.value);
+  elements.orderedBySelectionSummary.textContent = selectionSummary(state.orderedBy, staffFilterChoices(), 'Everyone');
+  elements.orderedByFilter.querySelectorAll('input').forEach((input) => {
+    input.checked = state.orderedBy.includes(input.value);
   });
+  renderFilterCount();
 }
 
 function renderMasterListsEditor() {
@@ -903,10 +962,6 @@ async function loadOrders() {
     params.append('ordered_by', staff);
   }
 
-  if (state.status === 'Archived') {
-    params.set('status', 'Archived');
-  }
-
   try {
     const response = await fetch(`/api/orders?${params.toString()}`, { signal: controller.signal });
     if (requestId !== state.orderRequestCounter) return;
@@ -958,10 +1013,10 @@ function renderJobDrafts() {
 
           <div class="draft-actions">
             <button type="button" class="action-button" data-action="edit-draft" data-id="${id}">Edit</button>
-            <button type="button" class="action-button ${readyToOrder ? 'primary' : ''}" data-action="create-order" data-id="${id}" ${readyToOrder ? '' : 'disabled'}>Create supplier order</button>
+            <button type="button" class="action-button ${readyToOrder ? 'primary' : ''}" data-action="create-order" data-id="${id}" ${readyToOrder ? '' : 'disabled'}>Order materials</button>
             <button type="button" class="action-button" data-draft-menu="${id}" popovertarget="draftActionsMenu" aria-label="More actions for ${escapeAttr(draft.customer_name)}">⋯</button>
           </div>
-          ${draft.deposit_status === 'Awaiting deposit' && draft.status !== 'Completed' ? '<p class="draft-order-hint">Receive or waive the deposit before creating supplier orders.</p>' : ''}
+          ${draft.deposit_status === 'Awaiting deposit' && draft.status !== 'Completed' ? '<p class="draft-order-hint">Receive or waive the deposit before ordering materials.</p>' : ''}
         </article>
       `;
     })
@@ -969,164 +1024,73 @@ function renderJobDrafts() {
 }
 
 function renderOrders() {
-  const mobile = window.matchMedia('(max-width: 820px)').matches;
   renderCondensedOrders();
-
-  if (!state.orders.length) {
-    elements.tableBody.innerHTML = '';
-    elements.mobileOrderCards.innerHTML = '';
-    elements.emptyState.classList.remove('hidden');
-    updateLayoutMode();
-    return;
-  }
-
-  elements.emptyState.classList.add('hidden');
-
-  const orders = [...state.orders];
-  const renderedRows = orders
-    .map((order) => {
-      const status = order.status || 'Ordered';
-      const eta = order.expected_delivery_date ? formatDate(order.expected_delivery_date) : 'No ETA';
-      const received = order.date_received ? formatDate(order.date_received) : '—';
-      const rowClass = order.is_overdue ? 'overdue' : '';
-      const jobLink = order.housecall_job_link
-        ? `<a href="${escapeAttr(order.housecall_job_link)}" target="_blank" rel="noreferrer">Open</a>`
-        : '—';
-      const notes = escapeHtml(order.notes || '');
-      const category = order.category || 'Unassigned';
-      const orderedBy = order.ordered_by || '—';
-      const archived = Number(order.is_archived || 0) === 1;
-      const actionButtons = archived
-        ? `<button type="button" class="action-button primary" data-action="restore-order" data-id="${order.id}">Restore</button>`
-        : `${status === 'Received'
-          ? `<button type="button" class="action-button danger" data-action="reopen" data-id="${order.id}">Reopen</button>`
-          : `<button type="button" class="action-button primary" data-action="mark-received" data-id="${order.id}">Mark received</button>`}
-          <button type="button" class="action-button danger" data-action="archive-order" data-id="${order.id}">Archive</button>`;
-
-      return {
-        row: `
-          <tr class="${rowClass}">
-            <td>
-              <strong>${escapeHtml(order.customer_name)}</strong>
-            </td>
-            <td>${escapeHtml(category)}</td>
-            <td>
-              ${order.housecall_job_number ? escapeHtml(order.housecall_job_number) : '—'}<br />
-              ${jobLink}
-            </td>
-            <td>${escapeHtml(order.supplier || '—')}</td>
-            <td>${escapeHtml(orderedBy)}</td>
-            <td>${escapeHtml(order.po_number || '—')}</td>
-            <td>${formatDate(order.date_ordered)}</td>
-            <td>${eta}</td>
-            <td>${received}</td>
-            <td>
-              <span class="status-badge ${status === 'Received' ? 'received' : (order.is_overdue ? 'overdue' : 'ordered')}">${order.is_overdue ? 'Overdue' : status}</span>
-            </td>
-            <td class="notes-cell">${renderOrderNotesPreview(order)}</td>
-            <td>
-              ${renderDesktopOrderActions(order)}
-            </td>
-          </tr>
-        `,
-        card: `
-          <article class="order-card ${rowClass}">
-            <div class="order-card-header">
-              <div>
-                <p class="order-card-label">Customer</p>
-                <h3>${escapeHtml(order.customer_name)}</h3>
-              </div>
-              <span class="status-badge ${status === 'Received' ? 'received' : (order.is_overdue ? 'overdue' : 'ordered')}">${order.is_overdue ? 'Overdue' : status}</span>
-            </div>
-
-            <div class="order-card-grid">
-              <div><span>Category</span><strong>${escapeHtml(category)}</strong></div>
-              <div><span>Supplier</span><strong>${escapeHtml(order.supplier || '—')}</strong></div>
-              <div><span>Expected delivery</span><strong>${eta}</strong></div>
-              <div><span>Ordered by</span><strong>${escapeHtml(orderedBy)}</strong></div>
-              <div><span>Job #</span><strong>${escapeHtml(order.housecall_job_number || '—')}</strong></div>
-              <div><span>PO #</span><strong>${escapeHtml(order.po_number || '—')}</strong></div>
-              <div><span>Ordered</span><strong>${formatDate(order.date_ordered)}</strong></div>
-              <div><span>Received</span><strong>${received}</strong></div>
-            </div>
-
-            <div class="order-card-meta">
-              <div><span>Housecall Pro</span>${jobLink}</div>
-              <div><span>Notes</span><p>${notes || '—'}</p></div>
-            </div>
-
-            <div class="action-stack mobile-actions">
-              <button type="button" class="action-button" data-action="edit" data-id="${order.id}">Edit</button>
-              ${actionButtons}
-            </div>
-          </article>
-        `
-      };
-    })
-    .map((entry) => entry.row)
-    .join('');
-
-  elements.tableBody.innerHTML = renderedRows;
-  elements.mobileOrderCards.innerHTML = orders
-    .map((order) => {
-      const status = order.status || 'Ordered';
-      const eta = order.expected_delivery_date ? formatDate(order.expected_delivery_date) : 'No ETA';
-      const received = order.date_received ? formatDate(order.date_received) : '—';
-      const rowClass = order.is_overdue ? 'overdue' : '';
-      const jobLink = order.housecall_job_link
-        ? `<a href="${escapeAttr(order.housecall_job_link)}" target="_blank" rel="noreferrer">Open</a>`
-        : '—';
-      const notes = escapeHtml(order.notes || '');
-      const category = order.category || 'Unassigned';
-      const orderedBy = order.ordered_by || '—';
-      const archived = Number(order.is_archived || 0) === 1;
-      const actionButtons = archived
-        ? `<button type="button" class="action-button primary" data-action="restore-order" data-id="${order.id}">Restore</button>`
-        : `${status === 'Received'
-          ? `<button type="button" class="action-button danger" data-action="reopen" data-id="${order.id}">Reopen</button>`
-          : `<button type="button" class="action-button primary" data-action="mark-received" data-id="${order.id}">Mark received</button>`}
-          <button type="button" class="action-button danger" data-action="archive-order" data-id="${order.id}">Archive</button>`;
-
-      return `
-        <article class="order-card ${rowClass}">
-          <div class="order-card-header">
-            <div>
-              <p class="order-card-label">Customer</p>
-              <h3>${escapeHtml(order.customer_name)}</h3>
-            </div>
-            <span class="status-badge ${status === 'Received' ? 'received' : (order.is_overdue ? 'overdue' : 'ordered')}">${order.is_overdue ? 'Overdue' : status}</span>
-          </div>
-
-          <div class="order-card-grid">
-            <div><span>Category</span><strong>${escapeHtml(category)}</strong></div>
-            <div><span>Supplier</span><strong>${escapeHtml(order.supplier || '—')}</strong></div>
-            <div><span>Expected delivery</span><strong>${eta}</strong></div>
-            <div><span>Ordered by</span><strong>${escapeHtml(orderedBy)}</strong></div>
-            <div><span>Job #</span><strong>${escapeHtml(order.housecall_job_number || '—')}</strong></div>
-            <div><span>PO #</span><strong>${escapeHtml(order.po_number || '—')}</strong></div>
-            <div><span>Ordered</span><strong>${formatDate(order.date_ordered)}</strong></div>
-            <div><span>Received</span><strong>${received}</strong></div>
-          </div>
-
-          <div class="order-card-meta">
-            <div><span>Housecall Pro</span>${jobLink}</div>
-            <div><span>Notes</span><p>${notes || '—'}</p></div>
-          </div>
-
-          <div class="action-stack mobile-actions">
-            <button type="button" class="action-button" data-action="edit" data-id="${order.id}">Edit</button>
-            ${actionButtons}
-          </div>
-        </article>
-      `;
-    })
-    .join('');
-
+  elements.tableBody.innerHTML = state.orders.map(renderOrderRow).join('');
+  elements.mobileOrderCards.innerHTML = state.orders.map(renderOrderCard).join('');
   renderQueueVisibility();
-  updateLayoutMode();
-  if (mobile && !state.condensedView && state.status !== 'Approved – Need to Order') {
-    elements.mobileOrderCards.classList.remove('hidden');
-  }
+}
+
+function orderStatusBadge(order) {
+  const status = order.is_overdue ? 'Overdue' : (order.status || 'Ordered');
+  const tone = order.is_overdue ? 'overdue' : status === 'Received' ? 'received' : 'ordered';
+  return `<span class="status-badge ${tone}">${escapeHtml(status)}</span>`;
+}
+
+// The job number links to Housecall Pro when the order has a job link.
+function jobNumberHtml(order) {
+  const number = escapeHtml(order.housecall_job_number || '');
+  const link = String(order.housecall_job_link || '');
+  if (!/^https?:\/\//i.test(link)) return number || '—';
+  return `<a href="${escapeAttr(link)}" target="_blank" rel="noreferrer" title="Open in Housecall Pro">${number || 'Open'}</a>`;
+}
+
+function renderOrderRow(order) {
+  return `
+    <tr class="${order.is_overdue ? 'overdue' : ''}">
+      <td><strong>${escapeHtml(order.customer_name)}</strong></td>
+      <td>${escapeHtml(order.category || 'Unassigned')}</td>
+      <td class="nowrap">${jobNumberHtml(order)}</td>
+      <td>${escapeHtml(order.supplier || '—')}</td>
+      <td>${escapeHtml(order.ordered_by || '—')}</td>
+      <td class="nowrap">${escapeHtml(order.po_number || '—')}</td>
+      <td class="nowrap">${formatDate(order.date_ordered)}</td>
+      <td class="nowrap">${order.expected_delivery_date ? formatDate(order.expected_delivery_date) : 'No ETA'}</td>
+      <td class="nowrap">${order.date_received ? formatDate(order.date_received) : '—'}</td>
+      <td>${orderStatusBadge(order)}</td>
+      <td class="notes-cell">${renderOrderNotesPreview(order)}</td>
+      <td>${renderDesktopOrderActions(order)}</td>
+    </tr>
+  `;
+}
+
+// Phone card: who, what, when on three short lines, with the common actions underneath.
+function renderOrderCard(order) {
+  const id = escapeAttr(order.id);
+  const received = (order.status || 'Ordered') === 'Received';
+  const when = [
+    received ? `Received ${formatDate(order.date_received)}` : order.expected_delivery_date ? `ETA ${formatDate(order.expected_delivery_date)}` : 'No ETA',
+    order.housecall_job_number || order.housecall_job_link ? `Job ${jobNumberHtml(order)}` : '',
+    order.po_number ? `PO ${escapeHtml(order.po_number)}` : ''
+  ].filter(Boolean).join(' · ');
+  const notes = String(order.notes || '').trim();
+  return `
+    <article class="order-card ${order.is_overdue ? 'overdue' : ''}">
+      <div class="order-card-header">
+        <h3>${escapeHtml(order.customer_name)}</h3>
+        ${orderStatusBadge(order)}
+      </div>
+      <p class="order-card-line">${escapeHtml(order.supplier || '—')} · ${escapeHtml(order.category || 'Unassigned')}${order.ordered_by ? ` · ${escapeHtml(order.ordered_by)}` : ''}</p>
+      <p class="order-card-line muted">${when}</p>
+      ${notes ? `<button type="button" class="order-card-notes" data-action="view-notes" data-id="${id}">${escapeHtml(notes)}</button>` : ''}
+      <div class="order-card-actions">
+        <button type="button" class="action-button" data-action="edit" data-id="${id}">Edit</button>
+        ${received
+          ? `<button type="button" class="action-button" data-action="reopen" data-id="${id}">Reopen</button>`
+          : `<button type="button" class="action-button primary" data-action="mark-received" data-id="${id}">Mark received</button>`}
+        <button type="button" class="action-button danger" data-action="delete-order" data-id="${id}">Delete</button>
+      </div>
+    </article>
+  `;
 }
 
 function renderCondensedOrders() {
@@ -1150,15 +1114,11 @@ function renderCondensedOrders() {
 
 function renderDesktopOrderActions(order) {
   const id = escapeAttr(order.id);
-  const archived = Number(order.is_archived || 0) === 1;
-  const primary = archived
-    ? `<button type="button" class="action-button primary" data-action="restore-order" data-id="${id}">Restore</button>`
-    : (order.status || 'Ordered') === 'Received' ? ''
-    : `<button type="button" class="action-button primary" data-action="mark-received" data-id="${id}">Mark received</button>`;
+  const received = (order.status || 'Ordered') === 'Received';
   return `<div class="desktop-order-actions">
     <button type="button" class="action-button" data-action="edit" data-id="${id}">Edit</button>
-    ${primary}
-    ${archived ? '' : `<button type="button" class="action-button" data-order-menu="${id}" popovertarget="desktopOrderMenu" aria-label="More actions for ${escapeAttr(order.customer_name)}">⋯</button>`}
+    ${received ? '' : `<button type="button" class="action-button primary" data-action="mark-received" data-id="${id}">Mark received</button>`}
+    <button type="button" class="action-button" data-order-menu="${id}" popovertarget="desktopOrderMenu" aria-label="More actions for ${escapeAttr(order.customer_name)}">⋯</button>
   </div>`;
 }
 
@@ -1177,7 +1137,7 @@ function openOrderNotes(order) {
 
 function openDesktopOrderMenu(orderId, trigger) {
   const order = state.orders.find(item => item.id === orderId);
-  if (!order || Number(order.is_archived || 0) === 1) return;
+  if (!order) return;
   if (elements.desktopOrderMenu.matches(':popover-open') && elements.desktopOrderMenu.dataset.orderId === orderId) {
     elements.desktopOrderMenu.hidePopover();
     return;
@@ -1186,7 +1146,7 @@ function openDesktopOrderMenu(orderId, trigger) {
   const id = escapeAttr(order.id);
   elements.desktopOrderMenu.innerHTML = `${(order.status || 'Ordered') === 'Received'
     ? `<button type="button" class="action-button danger" data-action="reopen" data-id="${id}" autofocus>Reopen</button>` : ''}
-    <button type="button" class="action-button danger" data-action="archive-order" data-id="${id}" ${(order.status || 'Ordered') === 'Received' ? '' : 'autofocus'}>Archive</button>`;
+    <button type="button" class="action-button danger" data-action="delete-order" data-id="${id}" ${(order.status || 'Ordered') === 'Received' ? '' : 'autofocus'}>Delete</button>`;
   elements.desktopOrderMenu.setAttribute('aria-label', `More actions for ${order.customer_name}`);
   elements.desktopOrderMenu.showPopover();
   positionActionMenu(elements.desktopOrderMenu, trigger);
@@ -1203,7 +1163,7 @@ function openDraftActionsMenu(draftId, trigger) {
   menu.dataset.draftId = draftId;
   const id = escapeAttr(draftId);
   menu.innerHTML = `<button type="button" class="action-button" data-action="${draft.status === 'Completed' ? 'reopen-draft' : 'complete-draft'}" data-id="${id}" autofocus>${draft.status === 'Completed' ? 'Reopen job' : 'All materials ordered'}</button>
-    <button type="button" class="action-button danger" data-action="archive-draft" data-id="${id}">Archive job</button>`;
+    <button type="button" class="action-button danger" data-action="delete-draft" data-id="${id}">Delete job</button>`;
   menu.setAttribute('aria-label', `More actions for ${draft.customer_name}`);
   menu.showPopover();
   positionActionMenu(menu, trigger);
@@ -1216,87 +1176,32 @@ function positionActionMenu(menu, trigger) {
   menu.style.top = `${Math.max(8, top + menu.offsetHeight > window.innerHeight - 8 ? rect.top - menu.offsetHeight - 6 : top)}px`;
 }
 
-async function archiveDraft(draftId) {
+async function deleteDraft(draftId) {
   const draft = state.jobDrafts.find((entry) => entry.id === draftId);
   if (!draft) return;
 
-  const linkedOrders = state.orders.filter((order) => order.job_draft_id === draftId);
-  const hasOutstanding = linkedOrders.some((order) => (order.status || 'Ordered') !== 'Received');
-  if (hasOutstanding) {
-    showStatus('This job can only be archived after all linked supplier orders have been received.', 'error');
-    return;
-  }
-
-  const summary = linkedOrders.length
-    ? linkedOrders.map((order) => `${order.supplier || 'Supplier'}${order.po_number ? ` (${order.po_number})` : ''}`).join(', ')
-    : 'No linked supplier orders have been created yet.';
-
-  if (!window.confirm(`Archive this job and the linked supplier orders below?\n\n${summary}`)) {
+  const orderCount = Number(draft.supplier_order_count || 0);
+  if (orderCount && !window.confirm(`Delete ${draft.customer_name}? Its ${orderCount} supplier ${orderCount === 1 ? 'order' : 'orders'} will be deleted too.`)) {
     return;
   }
 
   try {
-    const response = await fetch(`/api/job-drafts/${draftId}/archive`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm: true, source: 'manual', reason: 'Manual archive from tracker' })
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.warning || data.error || 'Unable to archive the job.');
-    }
-    showStatus('Job archived.', 'success');
-    await loadJobDrafts();
-    await loadOrders();
+    await sendJson(`/api/job-drafts/${draftId}/delete`);
+    offerUndo(`Deleted ${draft.customer_name}.`, () => sendJson(`/api/job-drafts/${draftId}/restore`));
+    await Promise.all([loadJobDrafts(), loadOrders()]);
   } catch (error) {
     showStatus(error.message, 'error');
   }
 }
 
-async function archiveOrder(orderId) {
+async function deleteOrder(orderId) {
   const order = state.orders.find((entry) => entry.id === orderId);
   if (!order) return;
 
-  if ((order.status || 'Ordered') !== 'Received') {
-    showStatus('Only received orders can be archived.', 'error');
-    return;
-  }
-
-  const confirmText = `Archive this order for ${order.customer_name} from ${order.supplier || 'supplier'}?`;
-  if (!window.confirm(confirmText)) {
-    return;
-  }
-
   try {
-    const response = await fetch('/api/orders/archive', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        order_ids: [orderId],
-        source: 'manual',
-        reason: 'Manual archive from tracker'
-      })
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || 'Unable to archive the order.');
-    }
-    showStatus('Order archived.', 'success');
-    await loadOrders();
-  } catch (error) {
-    showStatus(error.message, 'error');
-  }
-}
-
-async function restoreOrder(orderId) {
-  try {
-    const response = await fetch(`/api/orders/${orderId}/restore`, { method: 'POST' });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || 'Unable to restore the order.');
-    }
-    showStatus('Order restored.', 'success');
-    await loadOrders();
+    await sendJson(`/api/orders/${orderId}/delete`);
+    offerUndo(`Deleted the ${order.supplier || 'supplier'} order for ${order.customer_name}.`, () => sendJson(`/api/orders/${orderId}/restore`));
+    await Promise.all([loadJobDrafts(), loadOrders()]);
   } catch (error) {
     showStatus(error.message, 'error');
   }
@@ -1308,12 +1213,13 @@ function openOrderDialog(order = null, draft = null) {
   elements.orderId.value = '';
   elements.orderUpdatedAt.value = '';
   elements.jobDraftId.value = '';
+  state.editingOrder = order;
   elements.categorySelect.value = '';
   elements.orderedBySelect.value = '';
   document.getElementById('supplierInput').value = '';
   renderSupplierOptions();
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localToday();
   document.getElementById('dateOrdered').value = today;
 
   if (draft) {
@@ -1321,7 +1227,7 @@ function openOrderDialog(order = null, draft = null) {
     document.getElementById('customerName').value = draft.customer_name || '';
     document.getElementById('housecallJobNumber').value = draft.housecall_job_number || '';
     document.getElementById('housecallJobLink').value = draft.housecall_job_link || '';
-    elements.dialogTitle.textContent = 'Create supplier order from draft';
+    elements.dialogTitle.textContent = `Order materials for ${draft.customer_name}`;
     elements.dialog.showModal();
     return;
   }
@@ -1366,16 +1272,19 @@ function openDraftDialog(draft = null) {
   elements.draftForm.reset();
   elements.draftFormError.textContent = '';
   elements.draftId.value = '';
+  elements.draftUpdatedAt.value = '';
   elements.draftDepositStatus.value = 'Awaiting deposit';
+  state.editingDraft = draft;
 
   if (!draft) {
-    elements.draftDialogTitle.textContent = 'Add draft';
+    elements.draftDialogTitle.textContent = 'Add approved job';
     elements.draftDialog.showModal();
     return;
   }
 
-  elements.draftDialogTitle.textContent = 'Edit draft';
+  elements.draftDialogTitle.textContent = 'Edit approved job';
   elements.draftId.value = draft.id || '';
+  elements.draftUpdatedAt.value = draft.updated_at || '';
   elements.draftCustomerName.value = draft.customer_name || '';
   elements.draftHousecallJobNumber.value = draft.housecall_job_number || '';
   elements.draftHousecallJobLink.value = draft.housecall_job_link || '';
@@ -1388,6 +1297,18 @@ function openDraftDialog(draft = null) {
 function closeDraftDialog() {
   elements.draftDialog.close();
   elements.draftFormError.textContent = '';
+}
+
+function draftPayload(draft) {
+  return {
+    customer_name: draft.customer_name || '',
+    housecall_job_number: draft.housecall_job_number || '',
+    housecall_job_link: draft.housecall_job_link || '',
+    hcp_job_id: draft.hcp_job_id || '',
+    deposit_status: draft.deposit_status || 'Awaiting deposit',
+    notes: draft.notes || '',
+    status: draft.status || 'Open'
+  };
 }
 
 async function saveDraft() {
@@ -1406,31 +1327,30 @@ async function saveDraft() {
   }
 
   const id = elements.draftId.value;
-  const response = await fetch(id ? `/api/job-drafts/${id}` : '/api/job-drafts', {
-    method: id ? 'PUT' : 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-
-  const data = await response.json();
-  if (!response.ok) {
-    elements.draftFormError.textContent = data.error || 'Unable to save the draft.';
+  const previous = state.editingDraft;
+  let data;
+  try {
+    data = id
+      ? await sendJson(`/api/job-drafts/${id}`, { ...payload, updated_at: elements.draftUpdatedAt.value }, 'PUT')
+      : await sendJson('/api/job-drafts', payload);
+  } catch (error) {
+    elements.draftFormError.textContent = error.message;
     return;
   }
 
   closeDraftDialog();
-  showStatus(id ? 'Draft updated.' : 'Draft saved.', 'success');
+  if (id && previous) {
+    offerUndo('Job updated.', () => sendJson(`/api/job-drafts/${id}`, { ...draftPayload(previous), updated_at: data.draft.updated_at }, 'PUT'));
+  } else {
+    offerUndo('Approved job added.', () => sendJson(`/api/job-drafts/${data.draft.id}/delete`));
+  }
   await loadJobDrafts();
 }
 
 async function completeDraft(draftId) {
   try {
-    const response = await fetch(`/api/job-drafts/${draftId}/complete`, { method: 'POST' });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || 'Unable to complete the draft.');
-    }
-    showStatus('Draft marked as complete.', 'success');
+    await sendJson(`/api/job-drafts/${draftId}/complete`);
+    offerUndo('Job marked as all materials ordered.', () => sendJson(`/api/job-drafts/${draftId}/reopen`));
     await loadJobDrafts();
   } catch (error) {
     showStatus(error.message, 'error');
@@ -1439,12 +1359,8 @@ async function completeDraft(draftId) {
 
 async function reopenDraft(draftId) {
   try {
-    const response = await fetch(`/api/job-drafts/${draftId}/reopen`, { method: 'POST' });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || 'Unable to reopen the draft.');
-    }
-    showStatus('Draft reopened.', 'success');
+    await sendJson(`/api/job-drafts/${draftId}/reopen`);
+    offerUndo('Job reopened.', () => sendJson(`/api/job-drafts/${draftId}/complete`));
     await loadJobDrafts();
   } catch (error) {
     showStatus(error.message, 'error');
@@ -1519,46 +1435,52 @@ async function saveOrder() {
   }
 
   const id = elements.orderId.value;
-  const requestOptions = {
-    method: id ? 'PUT' : 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      ...payload,
-      updated_at: elements.orderUpdatedAt.value
-    })
-  };
-
+  const previous = state.editingOrder;
+  let data;
   try {
-    const url = id ? `/api/orders/${id}` : '/api/orders';
-    const response = await fetch(url, requestOptions);
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || 'Unable to save the order.');
-    }
-
-    closeDialog();
-    showStatus(id ? 'Order updated.' : 'Order created.', 'success');
-    await Promise.all([loadSuppliers(), loadMasterLists(), loadOrders()]);
+    data = id
+      ? await sendJson(`/api/orders/${id}`, { ...payload, updated_at: elements.orderUpdatedAt.value }, 'PUT')
+      : await sendJson('/api/orders', payload);
   } catch (error) {
     elements.formError.textContent = error.message;
+    return;
   }
+
+  closeDialog();
+  if (id && previous) {
+    offerUndo('Order updated.', () => sendJson(`/api/orders/${id}`, { ...orderPayload(previous), updated_at: data.order.updated_at }, 'PUT'));
+  } else {
+    offerUndo('Order added.', () => sendJson(`/api/orders/${data.order.id}/delete`));
+  }
+  await Promise.all([loadSuppliers(), loadMasterLists(), loadJobDrafts(), loadOrders()]);
+}
+
+function orderPayload(order) {
+  return {
+    customer_name: order.customer_name || '',
+    category: order.category || '',
+    housecall_job_number: order.housecall_job_number || '',
+    housecall_job_link: order.housecall_job_link || '',
+    supplier: order.supplier || '',
+    supplier_id: order.supplier_id || '',
+    po_number: order.po_number || '',
+    date_ordered: order.date_ordered || '',
+    expected_delivery_date: order.expected_delivery_date || '',
+    date_received: order.date_received || '',
+    ordered_by: order.ordered_by || '',
+    ordered_by_id: order.ordered_by_id || '',
+    notes: order.notes || '',
+    job_draft_id: order.job_draft_id || '',
+    status: order.date_received ? 'Received' : 'Ordered'
+  };
 }
 
 async function markReceived(orderId) {
+  const order = state.orders.find((entry) => entry.id === orderId);
   try {
-    const response = await fetch(`/api/orders/${orderId}/mark-received`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ date_received: new Date().toISOString().slice(0, 10) })
-    });
-
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || 'Unable to mark the order received.');
-    }
-
-    showStatus('Order marked as received.', 'success');
+    // The server fills in today's date in Phoenix.
+    const data = await sendJson(`/api/orders/${orderId}/mark-received`, { updated_at: order?.updated_at });
+    offerUndo(`${order?.customer_name || 'Order'} marked received.`, () => sendJson(`/api/orders/${orderId}/reopen`, { updated_at: data.order.updated_at }));
     await loadOrders();
   } catch (error) {
     showStatus(error.message, 'error');
@@ -1566,15 +1488,10 @@ async function markReceived(orderId) {
 }
 
 async function reopenOrder(orderId) {
+  const order = state.orders.find((entry) => entry.id === orderId);
   try {
-    const response = await fetch(`/api/orders/${orderId}/reopen`, { method: 'POST' });
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || 'Unable to reopen this order.');
-    }
-
-    showStatus('Order reopened.', 'success');
+    const data = await sendJson(`/api/orders/${orderId}/reopen`, { updated_at: order?.updated_at });
+    offerUndo(`${order?.customer_name || 'Order'} reopened.`, () => sendJson(`/api/orders/${orderId}/mark-received`, { date_received: order?.date_received, updated_at: data.order.updated_at }));
     await loadOrders();
   } catch (error) {
     showStatus(error.message, 'error');
@@ -1586,11 +1503,60 @@ function showStatus(message, type = 'success') {
   elements.statusMessage.className = `message-box ${type}`;
 }
 
+async function sendJson(url, body = {}, method = 'POST') {
+  const response = await fetch(url, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Unable to save right now.');
+  return data;
+}
+
+// After a change, a bar at the bottom offers to put things back for 15 seconds.
+function offerUndo(message, undo) {
+  showStatus('');
+  clearTimeout(state.undoTimer);
+  state.undo = undo;
+  elements.undoMessage.textContent = message;
+  elements.undoToast.classList.remove('hidden');
+  state.undoTimer = setTimeout(hideUndo, 15000);
+}
+
+function hideUndo() {
+  clearTimeout(state.undoTimer);
+  state.undo = null;
+  elements.undoToast.classList.add('hidden');
+}
+
+async function runUndo() {
+  const undo = state.undo;
+  hideUndo();
+  if (!undo) return;
+  try {
+    await undo();
+    showStatus('Undone.', 'success');
+  } catch (error) {
+    showStatus(`Couldn't undo: ${error.message}`, 'error');
+  }
+  await Promise.all([loadJobDrafts(), loadOrders()]);
+}
+
+function localToday() {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+// "Oct 26" for this year, "Oct 26, 2025" otherwise, so dates fit on one line.
 function formatDate(value) {
   if (!value) return '—';
   const parsed = new Date(`${value}T12:00:00`);
   if (Number.isNaN(parsed.getTime())) return value;
-  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(parsed);
+  const options = parsed.getFullYear() === new Date().getFullYear()
+    ? { month: 'short', day: 'numeric' }
+    : { month: 'short', day: 'numeric', year: 'numeric' };
+  return new Intl.DateTimeFormat('en-US', options).format(parsed);
 }
 
 function escapeHtml(value) {

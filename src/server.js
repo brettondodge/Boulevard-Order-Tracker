@@ -100,6 +100,11 @@ function requireStaffAuth(req, res, next) {
   next();
 }
 
+// The signed-in staff email in production; the local login name in development.
+function actor(req) {
+  return req.session?.user?.username || 'office-user';
+}
+
 function currentAdminUsername() {
   return (process.env.ADMIN_USERNAME || 'admin').trim();
 }
@@ -167,7 +172,7 @@ async function serializeJobDraft(draft, knownOrderCount) {
   };
 }
 
-async function getArchivedOrderIdsForDraft(draftId) {
+async function getActiveOrdersForDraft(draftId) {
   const rows = await dbAll('SELECT id, customer_name, supplier, po_number, status FROM orders WHERE job_draft_id = ? AND is_archived = 0 ORDER BY date_ordered DESC, created_at DESC', [draftId]);
 
   return rows.map((order) => ({
@@ -184,7 +189,7 @@ async function markOrdersArchived(orderIds, metadata = {}) {
     return [];
   }
 
-  const stamp = isoNow();
+  const stamp = metadata.stamp || isoNow();
   const source = normalizeArchiveSource(metadata.source || 'manual');
   const reason = (metadata.reason || '').trim();
   const uniqueIds = [...new Set(orderIds.map((id) => normalizeText(id || '')).filter(Boolean))];
@@ -202,7 +207,7 @@ async function markDraftsArchived(draftIds, metadata = {}) {
     return [];
   }
 
-  const stamp = isoNow();
+  const stamp = metadata.stamp || isoNow();
   const source = normalizeArchiveSource(metadata.source || 'manual');
   const reason = (metadata.reason || '').trim();
   const uniqueIds = [...new Set(draftIds.map((id) => normalizeText(id || '')).filter(Boolean))];
@@ -415,8 +420,8 @@ app.post('/api/job-drafts', requireStaffAuth, asyncRoute(async (req, res) => {
     draftData.status,
     now,
     now,
-    'office-user',
-    'office-user'
+    actor(req),
+    actor(req)
   ]);
 
   const draft = await serializeJobDraft(await getJobDraftById(id));
@@ -430,14 +435,20 @@ app.put('/api/job-drafts/:id', requireStaffAuth, asyncRoute(async (req, res) => 
     return res.status(404).json({ error: 'Job draft not found.' });
   }
 
+  if (!req.body.updated_at) {
+    return res.status(400).json({ error: 'Refresh the page and try again.' });
+  }
+
+  // A field that is sent replaces the saved value, even when it is blank.
+  const field = key => (Object.hasOwn(req.body, key) ? req.body[key] : draft[key]);
   const draftData = {
-    customer_name: normalizeText(req.body.customer_name || draft.customer_name),
-    housecall_job_number: normalizeText(req.body.housecall_job_number || draft.housecall_job_number),
-    housecall_job_link: normalizeText(req.body.housecall_job_link || draft.housecall_job_link),
-    hcp_job_id: normalizeText(req.body.hcp_job_id || draft.hcp_job_id),
+    customer_name: normalizeText(field('customer_name')),
+    housecall_job_number: normalizeText(field('housecall_job_number')),
+    housecall_job_link: normalizeText(field('housecall_job_link')),
+    hcp_job_id: normalizeText(field('hcp_job_id')),
     notes: typeof req.body.notes === 'string' ? req.body.notes.trim() : (draft.notes || ''),
-    deposit_status: normalizeDraftDepositStatus(req.body.deposit_status || draft.deposit_status),
-    status: normalizeText(req.body.status || draft.status || 'Open')
+    deposit_status: normalizeDraftDepositStatus(field('deposit_status')),
+    status: normalizeText(field('status')) || 'Open'
   };
 
   if (!draftData.customer_name) {
@@ -445,7 +456,7 @@ app.put('/api/job-drafts/:id', requireStaffAuth, asyncRoute(async (req, res) => 
   }
 
   const now = isoNow();
-  await dbRun(`
+  const result = await dbRun(`
     UPDATE job_drafts SET
       customer_name = ?,
       housecall_job_number = ?,
@@ -456,7 +467,7 @@ app.put('/api/job-drafts/:id', requireStaffAuth, asyncRoute(async (req, res) => 
       status = ?,
       updated_at = ?,
       updated_by = ?
-    WHERE id = ?
+    WHERE id = ? AND updated_at = ?
   `, [
     draftData.customer_name,
     draftData.housecall_job_number,
@@ -466,9 +477,13 @@ app.put('/api/job-drafts/:id', requireStaffAuth, asyncRoute(async (req, res) => 
     draftData.deposit_status,
     draftData.status === 'Completed' ? 'Completed' : 'Open',
     now,
-    'office-user',
-    req.params.id
+    actor(req),
+    req.params.id,
+    String(req.body.updated_at)
   ]);
+  if (!result.changes) {
+    return res.status(409).json({ error: 'Someone else changed this job. Close this window to see their changes, then try again.' });
+  }
 
   const updated = await serializeJobDraft(await getJobDraftById(req.params.id));
   broadcastLiveEvent('job-drafts', { action: 'updated', draftId: req.params.id, time: isoNow() });
@@ -482,56 +497,44 @@ app.post('/api/job-drafts/:id/complete', requireStaffAuth, asyncRoute(async (req
   }
 
   const now = isoNow();
-  await dbRun('UPDATE job_drafts SET status = ?, updated_at = ?, updated_by = ? WHERE id = ?', ['Completed', now, 'office-user', req.params.id]);
+  await dbRun('UPDATE job_drafts SET status = ?, updated_at = ?, updated_by = ? WHERE id = ?', ['Completed', now, actor(req), req.params.id]);
   const updated = await serializeJobDraft(await getJobDraftById(req.params.id));
   broadcastLiveEvent('job-drafts', { action: 'completed', draftId: req.params.id, time: isoNow() });
   return res.json({ draft: updated });
 }));
 
-app.post('/api/job-drafts/:id/archive', requireStaffAuth, asyncRoute(async (req, res) => {
+app.post('/api/job-drafts/:id/delete', requireStaffAuth, asyncRoute(async (req, res) => {
   const draft = await getJobDraftById(req.params.id);
   if (!draft) {
-    return res.status(404).json({ error: 'Job draft not found.' });
+    return res.status(404).json({ error: 'Job not found.' });
   }
 
-  const linkedOrders = await getArchivedOrderIdsForDraft(draft.id);
-  const hasOutstanding = linkedOrders.some((order) => order.status !== 'Received');
-  const source = normalizeArchiveSource(req.body.source || 'manual');
-  const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
+  const linkedOrders = await getActiveOrdersForDraft(draft.id);
+  const metadata = { stamp: isoNow(), reason: `Deleted by ${actor(req)}` };
+  await markDraftsArchived([draft.id], metadata);
+  const deletedOrderIds = await markOrdersArchived(linkedOrders.map((order) => order.id), metadata);
 
-  if (hasOutstanding) {
-    return res.status(409).json({
-      error: 'This job can only be archived after all linked supplier orders have been received.',
-      warning: 'This job still has outstanding supplier orders or unfinished ordering work. Archive is allowed only after all linked supplier orders have been received.',
-      order_ids: linkedOrders.map((order) => order.id),
-      source,
-      reason
-    });
-  }
-
-  const archivedIds = await markDraftsArchived([draft.id], { source, reason });
-  const archivedOrderIds = await markOrdersArchived(linkedOrders.map((order) => order.id), { source, reason });
-
-  broadcastLiveEvent('job-drafts', { action: 'archived', draftId: draft.id, time: isoNow() });
-  broadcastLiveEvent('orders', { action: 'archived', orderIds: archivedOrderIds, time: isoNow() });
-
-  return res.json({ archived: archivedIds.length > 0, draft_id: draft.id, order_ids: archivedOrderIds, warning: null, source, reason });
+  broadcastLiveEvent('job-drafts', { action: 'deleted', draftId: draft.id, time: isoNow() });
+  broadcastLiveEvent('orders', { action: 'deleted', orderIds: deletedOrderIds, time: isoNow() });
+  return res.json({ deleted: true, draft_id: draft.id, order_ids: deletedOrderIds });
 }));
 
+// Undo for a deleted job: brings back the job and only the orders deleted with it.
 app.post('/api/job-drafts/:id/restore', requireStaffAuth, asyncRoute(async (req, res) => {
   const draft = await getJobDraftById(req.params.id);
   if (!draft) {
-    return res.status(404).json({ error: 'Job draft not found.' });
+    return res.status(404).json({ error: 'Job not found.' });
   }
 
+  const deletedWithJob = draft.archived_at
+    ? (await dbAll('SELECT id FROM orders WHERE job_draft_id = ? AND is_archived = 1 AND archived_at = ?', [draft.id, draft.archived_at])).map((row) => row.id)
+    : [];
   const restoredDraftIds = await restoreDrafts([draft.id]);
-  const linkedOrders = (await dbAll('SELECT id FROM orders WHERE job_draft_id = ?', [draft.id])).map((row) => row.id);
-  await restoreOrders(linkedOrders);
+  await restoreOrders(deletedWithJob);
 
   broadcastLiveEvent('job-drafts', { action: 'restored', draftId: draft.id, time: isoNow() });
-  broadcastLiveEvent('orders', { action: 'restored', orderIds: linkedOrders, time: isoNow() });
-
-  return res.json({ restored: restoredDraftIds.length > 0, draft_id: draft.id, order_ids: linkedOrders });
+  broadcastLiveEvent('orders', { action: 'restored', orderIds: deletedWithJob, time: isoNow() });
+  return res.json({ restored: restoredDraftIds.length > 0, draft_id: draft.id, order_ids: deletedWithJob });
 }));
 
 app.post('/api/job-drafts/:id/reopen', requireStaffAuth, asyncRoute(async (req, res) => {
@@ -541,7 +544,7 @@ app.post('/api/job-drafts/:id/reopen', requireStaffAuth, asyncRoute(async (req, 
   }
 
   const now = isoNow();
-  await dbRun('UPDATE job_drafts SET status = ?, updated_at = ?, updated_by = ? WHERE id = ?', ['Open', now, 'office-user', req.params.id]);
+  await dbRun('UPDATE job_drafts SET status = ?, updated_at = ?, updated_by = ? WHERE id = ?', ['Open', now, actor(req), req.params.id]);
   const updated = await serializeJobDraft(await getJobDraftById(req.params.id));
   broadcastLiveEvent('job-drafts', { action: 'reopened', draftId: req.params.id, time: isoNow() });
   return res.json({ draft: updated });
@@ -636,39 +639,18 @@ app.post('/api/master-lists/ordered-by', requireAdminAuth, asyncRoute(async (req
   return res.json({ staff_names: saved.map((item) => ({ id: item.id, name: item.name, active: Number(item.active) !== 0 })) });
 }));
 
-app.post('/api/orders/archive', requireStaffAuth, asyncRoute(async (req, res) => {
-  const ids = Array.isArray(req.body.order_ids) ? req.body.order_ids : [];
-  if (!ids.length) {
-    return res.status(400).json({ error: 'At least one order must be selected to archive.' });
+app.post('/api/orders/:id/delete', requireStaffAuth, asyncRoute(async (req, res) => {
+  const order = await dbGet('SELECT id FROM orders WHERE id = ?', [req.params.id]);
+  if (!order) {
+    return res.status(404).json({ error: 'Order not found.' });
   }
 
-  const source = normalizeArchiveSource(req.body.source || 'manual');
-  const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
-  const selected = ids.map((id) => normalizeText(id || '')).filter(Boolean);
-
-  if (!selected.length) {
-    return res.status(400).json({ error: 'No valid orders were selected for archiving.' });
-  }
-
-  const statusRows = await dbAll(`SELECT id, status FROM orders WHERE id IN (${selected.map(() => '?').join(', ')})`, selected);
-  const includesUnreceived = statusRows.some((row) => (row.status || 'Ordered') !== 'Received');
-  if (includesUnreceived) {
-    return res.status(409).json({
-      error: 'Only received orders can be archived.',
-      warning: 'Only received orders can be archived. Archive after the supplier order has been marked as received.'
-    });
-  }
-
-  const archivedIds = await markOrdersArchived(selected, { source, reason });
-  const jobDraftIds = (await dbAll(`SELECT DISTINCT job_draft_id FROM orders WHERE id IN (${selected.map(() => '?').join(', ')}) AND job_draft_id IS NOT NULL`, selected)).map((row) => row.job_draft_id).filter(Boolean);
-  if (jobDraftIds.length) {
-    await markDraftsArchived(jobDraftIds, { source, reason });
-  }
-
-  broadcastLiveEvent('orders', { action: 'archived', orderIds: archivedIds, time: isoNow() });
-  return res.json({ archived: true, order_ids: archivedIds, source, reason });
+  await markOrdersArchived([order.id], { reason: `Deleted by ${actor(req)}` });
+  broadcastLiveEvent('orders', { action: 'deleted', orderIds: [order.id], time: isoNow() });
+  return res.json({ deleted: true, order_id: order.id });
 }));
 
+// Undo for a deleted order. Its job comes back too if the job had been deleted.
 app.post('/api/orders/:id/restore', requireStaffAuth, asyncRoute(async (req, res) => {
   const order = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   if (!order) {
@@ -677,11 +659,10 @@ app.post('/api/orders/:id/restore', requireStaffAuth, asyncRoute(async (req, res
 
   const restoredIds = await restoreOrders([order.id]);
   if (order.job_draft_id) {
-    const linkedOrders = (await dbAll('SELECT id FROM orders WHERE job_draft_id = ?', [order.job_draft_id])).map((row) => row.id);
-    await restoreOrders(linkedOrders);
-    const linkedDraft = await dbGet('SELECT * FROM job_drafts WHERE id = ?', [order.job_draft_id]);
+    const linkedDraft = await getJobDraftById(order.job_draft_id);
     if (linkedDraft && Number(linkedDraft.is_archived) === 1) {
       await restoreDrafts([linkedDraft.id]);
+      broadcastLiveEvent('job-drafts', { action: 'restored', draftId: linkedDraft.id, time: isoNow() });
     }
   }
 
@@ -798,184 +779,180 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/orders', requireStaffAuth, asyncRoute(async (req, res) => {
-  try {
-    const orderData = normalizeOrderInput(req.body);
-    const draftId = normalizeText(req.body.job_draft_id || '');
+  const orderData = normalizeOrderInput(req.body);
+  const draftId = normalizeText(req.body.job_draft_id || '');
 
-    if (draftId) {
-      const draft = await getJobDraftById(draftId);
-      if (!draft) {
-        return res.status(404).json({ error: 'Job draft not found.' });
-      }
-
-      if (draft.status === 'Completed') {
-        return res.status(400).json({ error: 'This job draft is already marked complete. Reopen it before ordering more materials.' });
-      }
-
-      if (draft.deposit_status === 'Awaiting deposit') {
-        return res.status(400).json({ error: 'Deposit must be received or waived before creating a supplier order.' });
-      }
-
-      orderData.job_draft_id = draftId;
+  if (draftId) {
+    const draft = await getJobDraftById(draftId);
+    if (!draft) {
+      return res.status(404).json({ error: 'Job draft not found.' });
     }
 
-    if (!orderData.customer_name) return res.status(400).json({ error: 'Customer name is required.' });
-    if (!orderData.supplier && !orderData.supplier_id) return res.status(400).json({ error: 'Supplier is required.' });
-    if (!orderData.category) return res.status(400).json({ error: 'Category is required.' });
-    if (!orderData.ordered_by) return res.status(400).json({ error: 'Ordered by is required.' });
-
-    const supplierRecord = await resolveOrderSupplierAsync(orderData);
-    if (!supplierRecord) {
-      return res.status(400).json({ error: 'Select an active supplier from Master Lists.' });
+    if (draft.status === 'Completed') {
+      return res.status(400).json({ error: 'This job draft is already marked complete. Reopen it before ordering more materials.' });
     }
 
-    orderData.supplier = supplierRecord.name;
-    orderData.supplier_id = supplierRecord.id;
-    orderData.category = normalizeCategory(orderData.category);
-    orderData.combined_group = getOrderGroup(orderData.category);
-
-    if (!orderData.category) {
-      return res.status(400).json({ error: 'Category is required.' });
+    if (draft.deposit_status === 'Awaiting deposit') {
+      return res.status(400).json({ error: 'Deposit must be received or waived before creating a supplier order.' });
     }
 
-    const orderId = `order-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-    const now = isoNow();
-
-    await dbRun(`
-      INSERT INTO orders (
-        id, customer_name, housecall_job_number, housecall_job_link, supplier, supplier_id, category, combined_group,
-        po_number, date_ordered, expected_delivery_date, date_received, ordered_by, ordered_by_id, status, notes, job_draft_id,
-        created_at, updated_at, created_by, updated_by, is_preview_data
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-    `, [
-      orderId,
-      orderData.customer_name,
-      orderData.housecall_job_number,
-      orderData.housecall_job_link,
-      orderData.supplier,
-      orderData.supplier_id || null,
-      orderData.category,
-      orderData.combined_group,
-      orderData.po_number,
-      orderData.date_ordered,
-      orderData.expected_delivery_date,
-      orderData.date_received,
-      orderData.ordered_by || '',
-      orderData.ordered_by_id || null,
-      orderData.date_received ? 'Received' : 'Ordered',
-      orderData.notes,
-      orderData.job_draft_id || null,
-      now,
-      now,
-      'office-user',
-      'office-user'
-    ]);
-
-    const created = await dbGet('SELECT * FROM orders WHERE id = ?', [orderId]);
-    broadcastLiveEvent('orders', { action: 'created', orderId, updatedAt: created.updated_at, time: isoNow() });
-    return res.status(201).json({
-      order: {
-        ...created,
-        status: statusFromOrder(created),
-        supplier: await resolveSupplierDisplay(created),
-        ordered_by: await resolveOrderedByDisplay(created)
-      }
-    });
-  } catch (error) {
-    return res.status(500).json({ error: 'Unable to save the order.', details: error.message });
+    orderData.job_draft_id = draftId;
   }
+
+  if (!orderData.customer_name) return res.status(400).json({ error: 'Customer name is required.' });
+  if (!orderData.supplier && !orderData.supplier_id) return res.status(400).json({ error: 'Supplier is required.' });
+  if (!orderData.category) return res.status(400).json({ error: 'Category is required.' });
+  if (!orderData.ordered_by) return res.status(400).json({ error: 'Ordered by is required.' });
+
+  const supplierRecord = await resolveOrderSupplierAsync(orderData);
+  if (!supplierRecord) {
+    return res.status(400).json({ error: 'Select an active supplier from Master Lists.' });
+  }
+
+  orderData.supplier = supplierRecord.name;
+  orderData.supplier_id = supplierRecord.id;
+  orderData.category = normalizeCategory(orderData.category);
+  orderData.combined_group = getOrderGroup(orderData.category);
+
+  if (!orderData.category) {
+    return res.status(400).json({ error: 'Category is required.' });
+  }
+
+  const orderId = `order-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const now = isoNow();
+
+  await dbRun(`
+    INSERT INTO orders (
+      id, customer_name, housecall_job_number, housecall_job_link, supplier, supplier_id, category, combined_group,
+      po_number, date_ordered, expected_delivery_date, date_received, ordered_by, ordered_by_id, status, notes, job_draft_id,
+      created_at, updated_at, created_by, updated_by, is_preview_data
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+  `, [
+    orderId,
+    orderData.customer_name,
+    orderData.housecall_job_number,
+    orderData.housecall_job_link,
+    orderData.supplier,
+    orderData.supplier_id || null,
+    orderData.category,
+    orderData.combined_group,
+    orderData.po_number,
+    orderData.date_ordered,
+    orderData.expected_delivery_date,
+    orderData.date_received,
+    orderData.ordered_by || '',
+    orderData.ordered_by_id || null,
+    orderData.date_received ? 'Received' : 'Ordered',
+    orderData.notes,
+    orderData.job_draft_id || null,
+    now,
+    now,
+    actor(req),
+    actor(req)
+  ]);
+
+  const created = await dbGet('SELECT * FROM orders WHERE id = ?', [orderId]);
+  broadcastLiveEvent('orders', { action: 'created', orderId, updatedAt: created.updated_at, time: isoNow() });
+  return res.status(201).json({
+    order: {
+      ...created,
+      status: statusFromOrder(created),
+      supplier: await resolveSupplierDisplay(created),
+      ordered_by: await resolveOrderedByDisplay(created)
+    }
+  });
 }));
 
 app.put('/api/orders/:id', requireStaffAuth, asyncRoute(async (req, res) => {
-  try {
-    const existing = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
-    if (!existing) {
-      return res.status(404).json({ error: 'Order not found.' });
-    }
-
-    const incomingVersion = (req.body.updated_at || req.body.version || '').toString();
-    if (incomingVersion && incomingVersion !== existing.updated_at) {
-      return res.status(409).json({ error: 'This order was edited by another staff member. Please refresh and try again.' });
-    }
-
-    const orderData = normalizeOrderInput(req.body);
-    if (!orderData.customer_name) return res.status(400).json({ error: 'Customer name is required.' });
-    if (!orderData.supplier && !orderData.supplier_id) return res.status(400).json({ error: 'Supplier is required.' });
-    if (!orderData.category) return res.status(400).json({ error: 'Category is required.' });
-    if (!orderData.ordered_by) return res.status(400).json({ error: 'Ordered by is required.' });
-
-    const supplierRecord = await resolveOrderSupplierAsync(orderData, existing);
-    if (!supplierRecord) {
-      return res.status(400).json({ error: 'Select an active supplier from Master Lists.' });
-    }
-
-    orderData.supplier = supplierRecord.name;
-    orderData.supplier_id = supplierRecord.id;
-    orderData.category = normalizeCategory(orderData.category);
-    orderData.combined_group = getOrderGroup(orderData.category);
-
-    if (req.body.status === 'Received') {
-      orderData.date_received = req.body.date_received || todayPhoenixString();
-    } else if (req.body.status === 'Ordered') {
-      orderData.date_received = '';
-    }
-
-    const now = isoNow();
-    await dbRun(`
-      UPDATE orders SET
-        customer_name = ?,
-        housecall_job_number = ?,
-        housecall_job_link = ?,
-        supplier = ?,
-        supplier_id = ?,
-        category = ?,
-        combined_group = ?,
-        po_number = ?,
-        date_ordered = ?,
-        expected_delivery_date = ?,
-        date_received = ?,
-        ordered_by = ?,
-        ordered_by_id = ?,
-        status = ?,
-        notes = ?,
-        updated_at = ?,
-        updated_by = ?
-      WHERE id = ?
-    `, [
-      orderData.customer_name,
-      orderData.housecall_job_number,
-      orderData.housecall_job_link,
-      orderData.supplier,
-      orderData.supplier_id || null,
-      orderData.category,
-      orderData.combined_group,
-      orderData.po_number,
-      orderData.date_ordered,
-      orderData.expected_delivery_date,
-      orderData.date_received,
-      orderData.ordered_by || '',
-      orderData.ordered_by_id || null,
-      orderData.date_received ? 'Received' : 'Ordered',
-      orderData.notes,
-      now,
-      'office-user',
-      req.params.id
-    ]);
-
-    const updated = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
-    broadcastLiveEvent('orders', { action: 'updated', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
-    return res.json({
-      order: {
-        ...updated,
-        status: statusFromOrder(updated),
-        supplier: await resolveSupplierDisplay(updated),
-        ordered_by: await resolveOrderedByDisplay(updated),
-        is_overdue: updated.expected_delivery_date && updated.status === 'Ordered' && updated.expected_delivery_date < todayPhoenixString()
-      }
-    });
-  } catch (error) {
-    return res.status(500).json({ error: 'Unable to update the order.', details: error.message });
+  const existing = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
+  if (!existing) {
+    return res.status(404).json({ error: 'Order not found.' });
   }
+
+  const incomingVersion = (req.body.updated_at || '').toString();
+  if (!incomingVersion) {
+    return res.status(400).json({ error: 'Refresh the page and try again.' });
+  }
+
+  const orderData = normalizeOrderInput(req.body);
+  if (!orderData.customer_name) return res.status(400).json({ error: 'Customer name is required.' });
+  if (!orderData.supplier && !orderData.supplier_id) return res.status(400).json({ error: 'Supplier is required.' });
+  if (!orderData.category) return res.status(400).json({ error: 'Category is required.' });
+  if (!orderData.ordered_by) return res.status(400).json({ error: 'Ordered by is required.' });
+
+  const supplierRecord = await resolveOrderSupplierAsync(orderData, existing);
+  if (!supplierRecord) {
+    return res.status(400).json({ error: 'Select an active supplier from Master Lists.' });
+  }
+
+  orderData.supplier = supplierRecord.name;
+  orderData.supplier_id = supplierRecord.id;
+  orderData.category = normalizeCategory(orderData.category);
+  orderData.combined_group = getOrderGroup(orderData.category);
+
+  if (req.body.status === 'Received') {
+    orderData.date_received = req.body.date_received || todayPhoenixString();
+  } else if (req.body.status === 'Ordered') {
+    orderData.date_received = '';
+  }
+
+  const now = isoNow();
+  const result = await dbRun(`
+    UPDATE orders SET
+      customer_name = ?,
+      housecall_job_number = ?,
+      housecall_job_link = ?,
+      supplier = ?,
+      supplier_id = ?,
+      category = ?,
+      combined_group = ?,
+      po_number = ?,
+      date_ordered = ?,
+      expected_delivery_date = ?,
+      date_received = ?,
+      ordered_by = ?,
+      ordered_by_id = ?,
+      status = ?,
+      notes = ?,
+      updated_at = ?,
+      updated_by = ?
+    WHERE id = ? AND updated_at = ?
+  `, [
+    orderData.customer_name,
+    orderData.housecall_job_number,
+    orderData.housecall_job_link,
+    orderData.supplier,
+    orderData.supplier_id || null,
+    orderData.category,
+    orderData.combined_group,
+    orderData.po_number,
+    orderData.date_ordered,
+    orderData.expected_delivery_date,
+    orderData.date_received,
+    orderData.ordered_by || '',
+    orderData.ordered_by_id || null,
+    orderData.date_received ? 'Received' : 'Ordered',
+    orderData.notes,
+    now,
+    actor(req),
+    req.params.id,
+    incomingVersion
+  ]);
+  if (!result.changes) {
+    return res.status(409).json({ error: 'Someone else changed this order. Close this window to see their changes, then try again.' });
+  }
+
+  const updated = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
+  broadcastLiveEvent('orders', { action: 'updated', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
+  return res.json({
+    order: {
+      ...updated,
+      status: statusFromOrder(updated),
+      supplier: await resolveSupplierDisplay(updated),
+      ordered_by: await resolveOrderedByDisplay(updated),
+      is_overdue: updated.expected_delivery_date && updated.status === 'Ordered' && updated.expected_delivery_date < todayPhoenixString()
+    }
+  });
 }));
 
 app.post('/api/orders/:id/mark-received', requireStaffAuth, asyncRoute(async (req, res) => {
@@ -984,14 +961,13 @@ app.post('/api/orders/:id/mark-received', requireStaffAuth, asyncRoute(async (re
     return res.status(404).json({ error: 'Order not found.' });
   }
 
-  const incomingVersion = (req.body.updated_at || req.body.version || '').toString();
-  if (incomingVersion && incomingVersion !== existing.updated_at) {
-    return res.status(409).json({ error: 'This order changed elsewhere. Your draft was kept. Review the latest version and try again.' });
-  }
-
-  const receivedDate = normalizeText(req.body.date_received) || todayPhoenixString();
+  const incomingVersion = (req.body?.updated_at || '').toString();
+  const receivedDate = normalizeText(req.body?.date_received) || todayPhoenixString();
   const now = isoNow();
-  await dbRun('UPDATE orders SET date_received = ?, status = ?, updated_at = ?, updated_by = ? WHERE id = ?', [receivedDate, 'Received', now, 'office-user', req.params.id]);
+  const result = await dbRun(`UPDATE orders SET date_received = ?, status = ?, updated_at = ?, updated_by = ? WHERE id = ?${incomingVersion ? ' AND updated_at = ?' : ''}`, [receivedDate, 'Received', now, actor(req), req.params.id, ...(incomingVersion ? [incomingVersion] : [])]);
+  if (!result.changes) {
+    return res.status(409).json({ error: 'Someone else changed this order. Refresh and try again.' });
+  }
 
   const updated = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   broadcastLiveEvent('orders', { action: 'received', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
@@ -1004,13 +980,12 @@ app.post('/api/orders/:id/reopen', requireStaffAuth, asyncRoute(async (req, res)
     return res.status(404).json({ error: 'Order not found.' });
   }
 
-  const incomingVersion = (req.body.updated_at || req.body.version || '').toString();
-  if (incomingVersion && incomingVersion !== existing.updated_at) {
-    return res.status(409).json({ error: 'This order changed elsewhere. Your draft was kept. Review the latest version and try again.' });
-  }
-
+  const incomingVersion = (req.body?.updated_at || '').toString();
   const now = isoNow();
-  await dbRun('UPDATE orders SET date_received = NULL, status = ?, updated_at = ?, updated_by = ? WHERE id = ?', ['Ordered', now, 'office-user', req.params.id]);
+  const result = await dbRun(`UPDATE orders SET date_received = NULL, status = ?, updated_at = ?, updated_by = ? WHERE id = ?${incomingVersion ? ' AND updated_at = ?' : ''}`, ['Ordered', now, actor(req), req.params.id, ...(incomingVersion ? [incomingVersion] : [])]);
+  if (!result.changes) {
+    return res.status(409).json({ error: 'Someone else changed this order. Refresh and try again.' });
+  }
 
   const updated = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   broadcastLiveEvent('orders', { action: 'reopened', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
