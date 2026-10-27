@@ -140,8 +140,15 @@ export async function parseOrderSheet(buffer, { today }) {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
   const plan = { tabs: [], orders: [], jobs: [], suppliers: [], staff: [], skipped: [] };
-  const suppliers = new Set();
-  const staff = new Set();
+  // Supplier and staff names are matched without regard to capitals, like
+  // Master Lists; the first spelling seen is kept.
+  const suppliers = new Map();
+  const staff = new Map();
+  const canonical = (names, name) => {
+    const key = name.trim().toLowerCase();
+    if (!names.has(key)) names.set(key, name.trim());
+    return names.get(key);
+  };
 
   for (const tab of ORDER_TABS) {
     const worksheet = workbook.worksheets.find(sheet => tab.match.test(sheet.name.trim()));
@@ -184,8 +191,8 @@ export async function parseOrderSheet(buffer, { today }) {
       const [earliest] = [expected, today].filter(Boolean).sort();
       const dateReceived = received ? (earliest < dateOrdered ? dateOrdered : earliest) : '';
       const orderedByText = text(cell(row, 'orderedBy'));
-      const person = orderedByText ? staffName(orderedByText) : UNKNOWN_STAFF;
-      const supplier = supplierName(text(cell(row, 'vendor')));
+      const person = canonical(staff, orderedByText ? staffName(orderedByText) : UNKNOWN_STAFF);
+      const supplier = canonical(suppliers, supplierName(text(cell(row, 'vendor'))));
       const notes = [
         multilineText(cell(row, 'notes')),
         missingOrderDate ? `No order date in the sheet${text(cell(row, 'orderDate')) ? ` ("${text(cell(row, 'orderDate'))}")` : ''}; used ${dateOrdered === today ? 'the import date' : 'the expected date'}.` : '',
@@ -215,8 +222,6 @@ export async function parseOrderSheet(buffer, { today }) {
         notes
       };
       plan.orders.push(order);
-      suppliers.add(supplier);
-      staff.add(person);
       summary.imported += 1;
       const key = customerKey(customer);
       if (!groups.has(key)) groups.set(key, []);
@@ -237,8 +242,8 @@ export async function parseOrderSheet(buffer, { today }) {
   if (!plan.tabs.length) {
     throw Object.assign(new Error('No order tabs found.'), { code: 'NOT_ORDER_SHEET' });
   }
-  plan.suppliers = [...suppliers].sort((a, b) => a.localeCompare(b));
-  plan.staff = [...staff].sort((a, b) => a.localeCompare(b));
+  plan.suppliers = [...suppliers.values()].sort((a, b) => a.localeCompare(b));
+  plan.staff = [...staff.values()].sort((a, b) => a.localeCompare(b));
   return plan;
 }
 

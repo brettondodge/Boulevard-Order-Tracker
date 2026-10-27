@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { groupOrdersByJob, normalizeProgressInput, orderStage } from '../src/utils.js';
 import { importStatements, parseOrderSheet } from '../src/sheet-import.js';
+import ExcelJS from 'exceljs';
 import { syntheticOrderSheet } from './sheet-fixture.js';
 
 test('orders join a job through a shared approved job or Housecall Pro job number, transitively', () => {
@@ -125,4 +126,17 @@ test('import statements reuse existing names when adding and skip orders already
   assert.equal(replaced.result.orders, 7);
   assert.equal(replaced.result.suppliers_added, 6);
   assert.equal(replaced.result.jobs, 1);
+});
+
+test('supplier and staff names that differ only in capitals become one entry', async () => {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Window Orders');
+  sheet.addRow(['Window Orders']);
+  sheet.addRow(['Who Ordered', 'Customer', 'Vendor', 'Order Date']);
+  sheet.addRow(['rd', 'Synthetic One', 'CW', new Date('2026-10-01T00:00:00Z')]);
+  sheet.addRow(['RD', 'Synthetic Two', 'cw', new Date('2026-10-02T00:00:00Z')]);
+  const plan = await parseOrderSheet(Buffer.from(await workbook.xlsx.writeBuffer()), { today: '2026-10-26' });
+  assert.deepEqual(plan.suppliers, ['CW']);
+  assert.deepEqual(plan.staff, ['RD']);
+  assert.deepEqual(plan.orders.map(order => order.supplier), ['CW', 'CW']);
 });
