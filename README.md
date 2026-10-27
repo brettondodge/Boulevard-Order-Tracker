@@ -50,6 +50,10 @@ Local preview runs include fictional sample orders. They are kept in the local S
 - Every change can be undone for 15 seconds from the bar at the bottom of the screen.
 - Deleting removes an order or job from the tracker. The record stays hidden in the database (marked archived, with who deleted it) so Undo can bring it back.
 - Each change records the signed-in staff email as created_by / updated_by.
+- Job progress on every order: shop location, scheduled (date and note), complete and invoiced. Scheduled, complete and invoiced apply to every order on the same job (same approved job or Housecall Pro job number).
+- Views for the labor meeting: To schedule (all of a job's material is here and it isn't scheduled), Scheduled and Need invoice. Each line shows its furthest step and the next one.
+- Housecall Pro: webhooks and an hourly sync keep scheduled / complete / invoiced in step with HCP and add jobs from approved estimates to Approved – Need to Order. Setup: [docs/housecall-pro.md](docs/housecall-pro.md).
+- One-time import from the "Misc. Parts Ordered" Google Sheet (Master Lists › Import from Google Sheet), with a preview before anything changes.
 - Received orders remain searchable for history.
 - Overdue is a calculated flag, not a separate status.
 - Orders without an ETA show `No ETA`.

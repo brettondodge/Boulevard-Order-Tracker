@@ -63,6 +63,12 @@ First check for an existing tracker web service. Reuse it if present. If none ex
 | CF_ACCESS_TEAM_DOMAIN | Zero Trust team hostname, no https:// or trailing slash |
 | CF_ACCESS_AUD | Exact Access application AUD tag |
 | OMEGA_API_KEY | Omega EDI API key for Freeport's read-only invoice import, entered directly (added October 22, 2026). Without it the import button is disabled; replace it here and in local `.env` if the key is ever regenerated |
+| HCP_API_KEY | Housecall Pro company API key (MAX plan, read-only is enough), entered directly. See docs/housecall-pro.md |
+| HCP_WEBHOOK_SECRET | Signing secret Housecall Pro shows after the webhook URL is saved, entered directly. Without it /api/hcp/webhooks answers 503 |
+| HCP_SYNC_INTERVAL_MINUTES | Optional. Housecall Pro catch-up interval, default 60; 0 turns it off |
+| HCP_AUTO_APPROVED_JOBS | Optional. `off` stops adding approved jobs from HCP estimates |
+
+The Housecall Pro webhook address `/api/hcp/webhooks` must be reachable without a Google sign-in: add a Cloudflare Access self-hosted application for `tools.blvdglass.com/api/hcp/webhooks` with a single Bypass / Everyone policy. The app authenticates those requests by HCP's HMAC signature; every other path still requires Access.
 
 render.yaml has one web service and one scheduled backup job; it has no database provisioning block. Do not apply a Blueprint if that would duplicate an existing web service. Production startup fails without database, Access and session/admin configuration. It creates no sample staff account or demo orders. Import before first startup if the database must remain empty for import. The migration command only creates the schema.
 

@@ -3,6 +3,7 @@
 // never reaches the browser or the database. Only GET requests are made.
 const DEFAULT_BASE = 'https://api.housecallpro.com';
 const MAX_RATE_LIMIT_WAIT_MS = 30000;
+const REQUEST_TIMEOUT_MS = 20000;
 
 export class HcpError extends Error {
   constructor(message, status = 0) {
@@ -24,7 +25,8 @@ export function createHcpClient({ apiKey = process.env.HCP_API_KEY, baseUrl = pr
     for (let attempt = 0; ; attempt += 1) {
       let response;
       try {
-        response = await fetch(url, { headers: { Authorization: `Token ${apiKey}`, Accept: 'application/json' } });
+        // A hung request must not stall the hourly sync.
+        response = await fetch(url, { headers: { Authorization: `Token ${apiKey}`, Accept: 'application/json' }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
       } catch {
         throw new HcpError('Could not reach Housecall Pro.');
       }
