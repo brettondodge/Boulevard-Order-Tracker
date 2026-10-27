@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   resolveOrderSupplierAsync,
   getActiveSuppliersAsync,
@@ -35,7 +35,9 @@ import {
   refreshHcpJobSoon,
   resolveOrderHcpJobId,
   syncHcp,
-  verifyWebhookSignature
+  verifyWebhookSignature,
+  webhookEventId,
+  hcpConfigured
 } from './hcp/sync.js';
 import {
   ORDER_CATEGORIES,
@@ -95,7 +97,7 @@ app.post('/api/hcp/webhooks', express.raw({ type: () => true, limit: '1mb' }), a
   } catch {
     return res.status(400).json({ error: 'Invalid JSON.' });
   }
-  const eventId = createHash('sha256').update(`${timestamp}.${signature}`).digest('hex');
+  const eventId = webhookEventId(timestamp, rawBody);
   const result = await handleHcpWebhook(payload, { eventId });
   if (result.orderIds?.length) broadcastLiveEvent('orders', { action: 'housecall-pro', orderIds: result.orderIds });
   if (result.draftId) broadcastLiveEvent('job-drafts', { action: 'housecall-pro', draftId: result.draftId });
@@ -717,7 +719,8 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
   const [storedRows, suppliers, staffNames, hcpRows] = await Promise.all([
     dbAll('SELECT * FROM orders ORDER BY date_ordered DESC, created_at DESC'),
     getAllSuppliersAsync(), getAllStaffNamesAsync(),
-    dbAll('SELECT * FROM hcp_jobs')
+    // Only while HCP is connected; switched off, the tracker's own controls return.
+    hcpConfigured() ? dbAll('SELECT * FROM hcp_jobs WHERE id IN (SELECT hcp_job_id FROM orders WHERE is_archived = 0)') : []
   ]);
   const hcpJobById = new Map(hcpRows.map(row => [row.id, row]));
   const supplierById = new Map(suppliers.map(item => [item.id, item]));

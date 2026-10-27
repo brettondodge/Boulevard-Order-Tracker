@@ -10,7 +10,10 @@ import { startFakeHcp, syntheticHcpJob } from './hcp-fake.js';
 // sync.js loads the database module, which opens SQLite on import: point it
 // at a throwaway folder so tests never touch data/.
 process.env.SQLITE_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'boulevard-hcp-unit-'));
-const { hcpJobIdFromLink, hcpJobRow, phoenixDate, progressFromHcp, verifyWebhookSignature, workStatusOf } = await import('../src/hcp/sync.js');
+process.env.PREVIEW_MODE = 'false';
+const { applyHcpJob, handleHcpWebhook, hcpJobIdFrom, hcpJobIdFromLink, hcpJobRow, phoenixDate, progressFromHcp, syncHcp, verifyWebhookSignature, webhookEventId, workStatusOf } = await import('../src/hcp/sync.js');
+const { dbRun, dbGet } = await import('../src/db.js');
+await (await import('../src/db.js')).initializeDatabase();
 
 test('webhook signatures follow the HCP docs: HMAC-SHA256 of "timestamp.body" with the signing secret', () => {
   const secret = 'synthetic-signing-secret';
@@ -22,11 +25,19 @@ test('webhook signatures follow the HCP docs: HMAC-SHA256 of "timestamp.body" wi
   assert.equal(check({}), true);
   assert.equal(check({ signature: digest.toString('hex').toUpperCase() }), true);
   assert.equal(check({ signature: digest.toString('base64') }), true);
-  assert.equal(check({ signature: `sha256=${digest.toString('hex')}` }), true);
+  // Only plain hex or standard base64; other spellings of the same bytes are refused.
+  assert.equal(check({ signature: `sha256=${digest.toString('hex')}` }), false);
+  assert.equal(check({ signature: digest.toString('base64url') }), false);
+  assert.equal(check({ signature: `${digest.toString('base64').slice(0, 10)}!!${digest.toString('base64').slice(10)}` }), false);
   assert.equal(check({ secret: 'wrong' }), false);
   assert.equal(check({ rawBody: Buffer.from('{"event":"job.completed"}') }), false);
   assert.equal(check({ timestamp: String(now / 1000 + 1) }), false);
-  assert.equal(check({ now: now + 2 * 86400 * 1000 }), false, 'deliveries older than a day are refused');
+  assert.equal(check({ now: now + 29 * 60 * 1000 }), true);
+  assert.equal(check({ now: now + 31 * 60 * 1000 }), false, 'deliveries more than 30 minutes off are refused');
+  assert.equal(check({ timestamp: 'soon' }), false);
+  // The event log id comes from the timestamp and body, so a delivery counts once however it is signed.
+  assert.equal(webhookEventId(timestamp, rawBody), webhookEventId(timestamp, Buffer.from(rawBody)));
+  assert.notEqual(webhookEventId(timestamp, rawBody), webhookEventId(String(Number(timestamp) + 1), rawBody));
   assert.equal(check({ signature: '' }), false);
   assert.equal(check({ signature: 'not-a-signature' }), false);
   assert.equal(check({ secret: '' }), false);
@@ -36,6 +47,10 @@ test('job ids come from HCP job links; dates are Phoenix calendar days', () => {
   assert.equal(hcpJobIdFromLink('https://pro.housecallpro.com/app/jobs/job_4f2a9c1b8e7d6c5b4a39281706f5e4d3?tab=notes'), 'job_4f2a9c1b8e7d6c5b4a39281706f5e4d3');
   assert.equal(hcpJobIdFromLink('https://example.com/jobs/hc-1'), '');
   assert.equal(hcpJobIdFromLink(''), '');
+  // The approved-job form's free-text box: only real HCP ids count.
+  assert.equal(hcpJobIdFrom('job_4f2a9c1b8e7d6c5b4a39281706f5e4d3'), 'job_4f2a9c1b8e7d6c5b4a39281706f5e4d3');
+  assert.equal(hcpJobIdFrom('10239422'), '');
+  assert.equal(hcpJobIdFrom('https://pro.housecallpro.com/app/jobs/job_abc123'), 'job_abc123');
   // 9:30pm Nov 3 in Phoenix is already Nov 4 in UTC.
   assert.equal(phoenixDate('2026-11-04T04:30:00Z'), '2026-11-03');
   assert.equal(phoenixDate('2026-11-04T04:30:00'), '2026-11-03');
@@ -93,6 +108,10 @@ test('an HCP job maps onto tracker progress: scheduled and complete mirror HCP, 
   assert.equal(back.invoiced, 1);
   assert.equal(back.invoice_reference, 'Paid by check');
   assert.equal(progressFromHcp({ ...scheduled, work_status: 'pro canceled' }, current), null);
+  // Finished and billed in the tracker is never reopened by HCP.
+  const settled = progressFromHcp({ ...scheduled, work_status: 'scheduled' }, { ...current, job_scheduled: 1, scheduled_date: '2026-09-01', job_completed: 1, completed_date: '2026-09-02', invoiced: 1, invoice_reference: '10239422' });
+  assert.equal(settled.job_completed, 1);
+  assert.equal(settled.completed_date, '2026-09-02');
 });
 
 test('the API client sends the company key, waits out rate limits and reports a rejected key', async () => {
@@ -117,4 +136,74 @@ test('the API client sends the company key, waits out rate limits and reports a 
   } finally {
     await fake.close();
   }
+});
+
+test('rate-limit waits are read as seconds or epoch times, and requests go one at a time', async () => {
+  const fake = await startFakeHcp();
+  try {
+    fake.jobs.set('job_a', syntheticHcpJob({ id: 'job_a' }));
+    const waits = [];
+    const client = createHcpClient({ apiKey: fake.apiKey, baseUrl: fake.url, sleep: async (ms) => { waits.push(ms); } });
+    fake.rateLimitOnce(1, { 'RateLimit-Reset': '12' });
+    await client.getJob('job_a');
+    assert.equal(waits.at(-1), 12000, 'RateLimit-Reset 12 = twelve seconds');
+    fake.rateLimitOnce(1, { 'Retry-After': '3' });
+    await client.getJob('job_a');
+    assert.equal(waits.at(-1), 3000);
+    const before = fake.requests.length;
+    const results = await Promise.all([client.getJob('job_a'), client.getJob('job_a'), client.listJobs()]);
+    assert.equal(results.length, 3);
+    assert.equal(fake.maxConcurrent, 1);
+    assert.equal(fake.requests.length - before, 3);
+  } finally {
+    await fake.close();
+  }
+});
+
+test('one job HCP cannot read does not stop the sync from finding the others by number', async () => {
+  const fake = await startFakeHcp();
+  try {
+    fake.jobs.set('job_found', syntheticHcpJob({ id: 'job_found', invoice_number: '22222222', work_status: 'scheduled', schedule: { scheduled_start: '2026-11-03T15:00:00Z' } }));
+    fake.failJob('job_broken', 500);
+    const now = '2026-10-26T00:00:00.000Z';
+    const insert = (id, number, link, extra = '') => dbRun(`INSERT INTO orders (id, customer_name, supplier, date_ordered, housecall_job_number, housecall_job_link, created_at, updated_at, status${extra ? ', job_completed, invoiced' : ''}) VALUES (?, 'Synthetic Sync', 'Synthetic Supplier', '2026-10-01', ?, ?, ?, ?, 'Ordered'${extra})`, [id, number, link, now, now]);
+    await insert('o-broken', '', 'https://pro.housecallpro.com/app/jobs/job_broken');
+    await insert('o-number', '22222222', '');
+    await insert('o-settled', '33333333', '', ', 1, 1');
+    const client = createHcpClient({ apiKey: fake.apiKey, baseUrl: fake.url, sleep: async () => {} });
+    const result = await syncHcp({ client });
+    assert.equal(result.jobs_failed, 1);
+    assert.equal(result.jobs_found_by_number, 1);
+    assert.equal((await dbGet('SELECT hcp_job_id, job_scheduled FROM orders WHERE id = ?', ['o-number'])).job_scheduled, 1);
+    assert.match((await dbGet("SELECT value FROM hcp_state WHERE name = 'last_error'")).value, /1 jobs could not be read/);
+    // Settled orders aren't looked up by number.
+    assert.equal(result.numbers_not_found, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test('orders saved before the connection link by their HCP link or their approved job from HCP', async () => {
+  const now = '2026-10-26T00:00:00.000Z';
+  await dbRun("INSERT INTO job_drafts (id, customer_name, hcp_job_id, created_at, updated_at) VALUES ('draft-from-hcp', 'Synthetic Draft Job', 'job_11110000000000000000000000000002', ?, ?)", [now, now]);
+  await dbRun("INSERT INTO orders (id, customer_name, supplier, date_ordered, housecall_job_link, created_at, updated_at, status) VALUES ('legacy-link', 'Synthetic Legacy', 'Synthetic Supplier', '2026-10-01', 'https://pro.housecallpro.com/app/jobs/job_11110000000000000000000000000001', ?, ?, 'Ordered')", [now, now]);
+  await dbRun("INSERT INTO orders (id, customer_name, supplier, date_ordered, job_draft_id, created_at, updated_at, status) VALUES ('legacy-draft', 'Synthetic Draft Job', 'Synthetic Supplier', '2026-10-01', 'draft-from-hcp', ?, ?, 'Ordered')", [now, now]);
+  const scheduled = (id, number) => hcpJobRow(syntheticHcpJob({ id, invoice_number: number, work_status: 'scheduled', schedule: { scheduled_start: '2026-11-03T15:00:00Z' } }), now);
+  assert.deepEqual(await applyHcpJob(scheduled('job_11110000000000000000000000000001', '44444444')), ['legacy-link']);
+  assert.deepEqual(await applyHcpJob(scheduled('job_11110000000000000000000000000002', '55555555')), ['legacy-draft']);
+  for (const id of ['legacy-link', 'legacy-draft']) {
+    const order = await dbGet('SELECT hcp_job_id, job_scheduled, scheduled_date FROM orders WHERE id = ?', [id]);
+    assert.equal(order.job_scheduled, 1);
+    assert.equal(order.scheduled_date, '2026-11-03');
+    assert.match(order.hcp_job_id, /^job_1111/);
+  }
+});
+
+test('appointment and invoice events for jobs not in the tracker are ignored and not stored', async () => {
+  const appointment = await handleHcpWebhook({ event: 'job.appointment.scheduled', event_occurred_at: '2026-10-26T15:00:00Z', appointment: { id: 'appt_x', job_id: 'job_not_ours', start_time: '2026-11-03T15:00:00Z' } }, { eventId: 'unit-appointment' });
+  const invoice = await handleHcpWebhook({ event: 'invoice.sent', event_occurred_at: '2026-10-26T15:01:00Z', invoice: { id: 'invoice_x', job_id: 'job_not_ours', sent_at: '2026-10-26T15:01:00Z' } }, { eventId: 'unit-invoice' });
+  assert.equal(appointment.outcome, 'ignored');
+  assert.equal(invoice.outcome, 'ignored');
+  assert.equal(await dbGet("SELECT id FROM hcp_jobs WHERE id = 'job_not_ours'"), undefined);
+  assert.equal((await handleHcpWebhook({ event: 'invoice.sent', invoice: { job_id: 'job_not_ours' } }, { eventId: 'unit-invoice' })).outcome, 'duplicate');
 });

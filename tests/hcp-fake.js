@@ -8,14 +8,23 @@ export async function startFakeHcp({ apiKey = 'synthetic-hcp-key' } = {}) {
   const invoices = new Map();
   const requests = [];
   let rateLimitNext = 0;
-  const server = http.createServer((req, res) => {
+  let rateLimitHeaders = null;
+  const failing = new Map();
+  let active = 0;
+  const state = { maxConcurrent: 0 };
+  const server = http.createServer(async (req, res) => {
+    active += 1;
+    state.maxConcurrent = Math.max(state.maxConcurrent, active);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    res.on('finish', () => { active -= 1; });
     const url = new URL(req.url, 'http://fake');
     requests.push({ path: url.pathname, query: Object.fromEntries(url.searchParams), auth: req.headers.authorization });
     const send = (status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json', ...headers }); res.end(JSON.stringify(body)); };
     if (req.headers.authorization !== `Token ${apiKey}`) return send(401, { error: 'unauthorized' });
-    if (rateLimitNext > 0) { rateLimitNext -= 1; return send(429, {}, { 'RateLimit-Reset': String(Math.floor(Date.now() / 1000)) }); }
+    if (rateLimitNext > 0) { rateLimitNext -= 1; return send(429, {}, rateLimitHeaders || { 'RateLimit-Reset': String(Math.floor(Date.now() / 1000)) }); }
     const parts = url.pathname.split('/').filter(Boolean);
     if (parts[0] !== 'jobs') return send(404, {});
+    if (parts[1] && failing.has(parts[1])) return send(failing.get(parts[1]), {});
     if (parts.length === 1) {
       const all = [...jobs.values()].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
       const page = Number(url.searchParams.get('page') || 1);
@@ -34,7 +43,9 @@ export async function startFakeHcp({ apiKey = 'synthetic-hcp-key' } = {}) {
     jobs,
     invoices,
     requests,
-    rateLimitOnce(count = 1) { rateLimitNext = count; },
+    rateLimitOnce(count = 1, headers = null) { rateLimitNext = count; rateLimitHeaders = headers; },
+    failJob(id, status) { failing.set(id, status); },
+    get maxConcurrent() { return state.maxConcurrent; },
     close: () => new Promise(resolve => server.close(resolve))
   };
 }

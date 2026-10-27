@@ -1184,7 +1184,8 @@ test('Housecall Pro webhooks and sync keep linked orders in step with their HCP 
     assert.equal(drafts[0].created_by, 'Housecall Pro');
     assert.match(drafts[0].notes, /Two shower doors/);
     // A job not from an estimate is not added.
-    await deliver({ event: 'job.created', event_occurred_at: at(37), job: syntheticHcpJob({ id: 'job_0000000000000000000000000000000d', invoice_number: '10239700' }) });
+    const untracked = await deliver({ event: 'job.created', event_occurred_at: at(37), job: syntheticHcpJob({ id: 'job_0000000000000000000000000000000d', invoice_number: '10239700' }) });
+    assert.equal(untracked.body.outcome, 'ignored', 'jobs with nothing in the tracker are not stored');
     assert.equal((await api('/api/job-drafts')).body.drafts.filter(draft => draft.hcp_job_id === 'job_0000000000000000000000000000000d').length, 0);
 
     // Canceled in HCP: the tracker keeps its data and shows the warning.
@@ -1212,7 +1213,7 @@ test('Housecall Pro webhooks and sync keep linked orders in step with their HCP 
     const status = (await api('/api/hcp/status')).body;
     assert.equal(status.api, true);
     assert.equal(status.webhooks, true);
-    assert.ok(status.linked_jobs >= 3);
+    assert.equal(status.linked_jobs, 3, 'jobs that active orders point at');
     assert.ok(status.last_event_at);
     assert.ok(status.last_sync_at);
     assert.ok(status.recent_events.some(event => event.event === 'job.scheduled' && event.outcome === 'applied'));

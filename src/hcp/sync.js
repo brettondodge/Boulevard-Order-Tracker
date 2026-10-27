@@ -1,4 +1,4 @@
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { dbAll, dbGet, dbRun, runInTransaction } from '../db.js';
 import { groupOrdersByJob, isoNow, PROGRESS_FIELDS } from '../utils.js';
 import { createHcpClient, hcpApiConfigured } from './client.js';
@@ -53,16 +53,30 @@ export function workStatusOf(row) {
 
 // Webhook check from the HCP docs: HMAC-SHA256 of "<Api-Timestamp>.<body>"
 // keyed with the signing secret, compared with Api-Signature. The docs don't
-// say hex or base64, so both are accepted. Deliveries older than a day are
-// refused; repeats inside that window are caught by the event log.
-export function verifyWebhookSignature({ secret, timestamp, signature, rawBody, now = Date.now(), toleranceSeconds = 86400 }) {
+// say hex or base64, so exactly those two spellings are accepted. Deliveries
+// more than 30 minutes off are refused (the hourly sync covers anything
+// late); repeats inside the window are caught by the event log, whose id
+// comes from the timestamp and body (webhookEventId), not the header text.
+export function verifyWebhookSignature({ secret, timestamp, signature, rawBody, now = Date.now(), toleranceSeconds = 1800 }) {
   if (!secret || !timestamp || !signature || !Buffer.isBuffer(rawBody)) return false;
-  const seconds = Number(timestamp);
-  if (!Number.isFinite(seconds) || Math.abs(now / 1000 - seconds) > toleranceSeconds) return false;
+  if (!/^\d{9,11}$/.test(String(timestamp)) || Math.abs(now / 1000 - Number(timestamp)) > toleranceSeconds) return false;
   const expected = createHmac('sha256', secret).update(`${timestamp}.`).update(rawBody).digest();
-  const given = String(signature).trim().replace(/^sha256=/i, '');
-  const candidate = /^[0-9a-f]{64}$/i.test(given) ? Buffer.from(given, 'hex') : Buffer.from(given, 'base64');
-  return candidate.length === expected.length && timingSafeEqual(candidate, expected);
+  const given = String(signature).trim();
+  const candidate = /^[0-9a-f]{64}$/i.test(given) ? Buffer.from(given, 'hex')
+    : /^[A-Za-z0-9+/]{43}=$/.test(given) ? Buffer.from(given, 'base64')
+      : null;
+  return Boolean(candidate) && candidate.length === expected.length && timingSafeEqual(candidate, expected);
+}
+
+export function webhookEventId(timestamp, rawBody) {
+  return createHash('sha256').update(`${timestamp}.`).update(rawBody).digest('hex');
+}
+
+// Only HCP job ids (job_...) count; the approved-job form's free-text
+// "Stable HCP job ID" box may hold a job number or a pasted link.
+export function hcpJobIdFrom(value) {
+  const text = String(value || '').trim();
+  return /^job_[A-Za-z0-9]+$/.test(text) ? text : hcpJobIdFromLink(text);
 }
 
 function customerName(customer = {}) {
@@ -103,17 +117,18 @@ const HCP_JOB_COLUMNS = ['id', 'invoice_number', 'work_status', 'scheduled_start
 
 const getHcpJob = id => dbGet('SELECT * FROM hcp_jobs WHERE id = ?', [id]);
 
-// Saves the row unless a newer version is already stored (webhooks can
-// arrive out of order). Returns the row now stored.
+// Saves the row in one statement, unless a newer version is already stored
+// (webhooks can arrive out of order or at the same moment). Invoice times
+// already known are kept. Returns the row now stored.
+const KEEP_IF_BLANK = new Set(['invoice_sent_at', 'invoice_paid_at', 'customer_name', 'original_estimate_id']);
 async function saveHcpJob(row) {
-  const previous = await getHcpJob(row.id);
-  if (previous && String(previous.source_time) > String(row.source_time)) return previous;
   await dbRun(
     `INSERT INTO hcp_jobs (${HCP_JOB_COLUMNS.join(', ')}) VALUES (${HCP_JOB_COLUMNS.map(() => '?').join(', ')})
-     ON CONFLICT (id) DO UPDATE SET ${HCP_JOB_COLUMNS.filter(column => column !== 'id').map(column => `${column} = excluded.${column}`).join(', ')}`,
+     ON CONFLICT (id) DO UPDATE SET ${HCP_JOB_COLUMNS.filter(column => column !== 'id').map(column => (KEEP_IF_BLANK.has(column) ? `${column} = COALESCE(excluded.${column}, hcp_jobs.${column})` : `${column} = excluded.${column}`)).join(', ')}
+     WHERE hcp_jobs.source_time <= excluded.source_time`,
     HCP_JOB_COLUMNS.map(column => row[column] ?? null)
   );
-  return row;
+  return getHcpJob(row.id);
 }
 
 // Tracker progress implied by the HCP job. Scheduled and complete mirror HCP;
@@ -122,7 +137,10 @@ async function saveHcpJob(row) {
 export function progressFromHcp(row, current) {
   const status = workStatusOf(row);
   if (status === 'canceled') return null;
-  const completed = status === 'completed';
+  // Finished and billed in the tracker stays that way (old history matched
+  // by job number, or a job paid but never closed in HCP).
+  const settled = Number(current.job_completed) && Number(current.invoiced);
+  const completed = status === 'completed' || Boolean(settled);
   const scheduled = completed || status === 'scheduled' || status === 'in_progress';
   const billed = Boolean(row.invoice_sent_at || row.invoice_paid_at);
   return {
@@ -136,13 +154,18 @@ export function progressFromHcp(row, current) {
   };
 }
 
-// Applies an HCP job to its orders: those linked by id, those with the same
-// job number, and the rest of their job (same approved job). Links them too.
+// Applies an HCP job to its orders: those linked by id, by a pasted HCP link
+// or by an approved job from HCP, those with the same job number, and the
+// rest of their job (same approved job). Links them too.
 export async function applyHcpJob(row) {
   const active = await dbAll('SELECT * FROM orders WHERE is_archived = 0');
+  const draftIds = new Set((await dbAll('SELECT id FROM job_drafts WHERE hcp_job_id = ?', [row.id])).map(draft => draft.id));
   const number = String(row.invoice_number || '').trim().toLowerCase();
   const byNumber = /[1-9]/.test(number);
-  const direct = active.filter(order => order.hcp_job_id === row.id || (!order.hcp_job_id && byNumber && String(order.housecall_job_number ?? '').trim().toLowerCase() === number));
+  const direct = active.filter(order => order.hcp_job_id === row.id || (!order.hcp_job_id && (
+    hcpJobIdFromLink(order.housecall_job_link) === row.id
+    || draftIds.has(order.job_draft_id)
+    || (byNumber && String(order.housecall_job_number ?? '').trim().toLowerCase() === number))));
   if (!direct.length) return [];
   const groupOf = groupOrdersByJob(active);
   const groups = new Set(direct.map(order => groupOf.get(order.id)));
@@ -163,6 +186,17 @@ export async function applyHcpJob(row) {
   }
   if (statements.length) await runInTransaction(statements);
   return changedIds;
+}
+
+// Whether any active order or approved job belongs to this HCP job.
+async function jobIsTracked(job) {
+  if (await getHcpJob(job.id)) return true;
+  const number = String(job.invoice_number ?? '').trim();
+  const byNumber = /[1-9]/.test(number) ? number : '';
+  return Boolean(
+    await dbGet("SELECT id FROM orders WHERE is_archived = 0 AND (hcp_job_id = ? OR housecall_job_link LIKE ? OR (? <> '' AND lower(trim(housecall_job_number)) = lower(?)))", [job.id, `%/jobs/${job.id}%`, byNumber, byNumber])
+    || await dbGet('SELECT id FROM job_drafts WHERE is_archived = 0 AND hcp_job_id = ?', [job.id])
+  );
 }
 
 // A job made from an approved estimate becomes an approved job in the
@@ -221,19 +255,23 @@ async function processEvent(event, payload, occurredAt) {
   if (JOB_EVENTS.has(event)) {
     const job = payload.job;
     if (!job?.id) return { outcome: 'ignored', detail: 'No job in the event.' };
+    const draftId = event === 'job.created' ? await addApprovedJobFromHcp(job) : null;
+    // HCP sends events for every job in the company; keep only the ones the
+    // tracker has orders or an approved job for.
+    if (!draftId && !(await jobIsTracked(job))) return { outcome: 'ignored', jobId: job.id, detail: 'Job is not in the tracker.' };
     const previous = await getHcpJob(job.id);
     const row = hcpJobRow(job, occurredAt, previous);
     if (event === 'job.deleted' && !row.deleted_at) row.deleted_at = occurredAt;
     if (event === 'job.paid' && row.outstanding_balance === 0) row.invoice_paid_at = row.invoice_paid_at || occurredAt;
     const saved = await saveHcpJob(row);
     const orderIds = await applyHcpJob(saved);
-    const draftId = event === 'job.created' ? await addApprovedJobFromHcp(job) : null;
     return { outcome: 'applied', jobId: job.id, orderIds, draftId };
   }
 
   if (event.startsWith('job.appointment.')) {
     const jobId = payload.appointment?.job_id;
     if (!jobId) return { outcome: 'ignored', detail: 'No job in the event.' };
+    if (!(await jobIsTracked({ id: jobId }))) return { outcome: 'ignored', jobId, detail: 'Job is not in the tracker.' };
     if (hcpApiConfigured()) {
       // Appointment events carry only the visit, so read the whole job.
       const saved = await refreshJobFromApi(createHcpClient(), jobId);
@@ -252,13 +290,12 @@ async function processEvent(event, payload, occurredAt) {
     const jobId = invoice.job_id;
     if (!jobId) return { outcome: 'ignored', detail: 'Invoice is not tied to a job.' };
     let row = await getHcpJob(jobId);
-    if (!row && hcpApiConfigured()) row = await refreshJobFromApi(createHcpClient(), jobId);
+    if (!row && hcpApiConfigured() && (await jobIsTracked({ id: jobId }))) row = await refreshJobFromApi(createHcpClient(), jobId);
     if (!row) return { outcome: 'ignored', jobId, detail: 'Job is not in the tracker.' };
     const sent = isoTime(invoice.sent_at) || (event === 'invoice.sent' ? occurredAt : '');
     const paid = isoTime(invoice.paid_at) || (event === 'invoice.paid' ? occurredAt : '');
-    const updated = { ...row, invoice_sent_at: row.invoice_sent_at || sent || null, invoice_paid_at: row.invoice_paid_at || paid || null };
-    await dbRun('UPDATE hcp_jobs SET invoice_sent_at = ?, invoice_paid_at = ?, synced_at = ? WHERE id = ?', [updated.invoice_sent_at, updated.invoice_paid_at, isoNow(), jobId]);
-    return { outcome: 'applied', jobId, orderIds: await applyHcpJob(updated) };
+    await dbRun('UPDATE hcp_jobs SET invoice_sent_at = COALESCE(invoice_sent_at, ?), invoice_paid_at = COALESCE(invoice_paid_at, ?), synced_at = ? WHERE id = ?', [sent || null, paid || null, isoNow(), jobId]);
+    return { outcome: 'applied', jobId, orderIds: await applyHcpJob(await getHcpJob(jobId)) };
   }
 
   return { outcome: 'ignored', detail: 'Event not used by the tracker.' };
@@ -299,7 +336,7 @@ async function runSync({ client = createHcpClient(), maxPages = 30 } = {}) {
   const changed = new Set();
   try {
     const orders = await dbAll('SELECT id, hcp_job_id, housecall_job_number, housecall_job_link, job_draft_id, job_completed, invoiced FROM orders WHERE is_archived = 0');
-    const drafts = new Map((await dbAll("SELECT id, hcp_job_id FROM job_drafts WHERE hcp_job_id IS NOT NULL AND hcp_job_id <> ''")).map(row => [row.id, row.hcp_job_id]));
+    const drafts = new Map((await dbAll("SELECT id, hcp_job_id FROM job_drafts WHERE hcp_job_id IS NOT NULL AND hcp_job_id <> ''")).map(row => [row.id, hcpJobIdFrom(row.hcp_job_id)]).filter(([, id]) => id));
     const cached = await dbAll('SELECT id, invoice_number FROM hcp_jobs');
     const cachedByNumber = new Map(cached.filter(row => row.invoice_number).map(row => [row.invoice_number.toLowerCase(), row.id]));
 
@@ -309,22 +346,28 @@ async function runSync({ client = createHcpClient(), maxPages = 30 } = {}) {
     for (const order of orders) {
       const number = String(order.housecall_job_number ?? '').trim().toLowerCase();
       const id = order.hcp_job_id || hcpJobIdFromLink(order.housecall_job_link) || drafts.get(order.job_draft_id) || cachedByNumber.get(number) || '';
+      const settled = Boolean(Number(order.job_completed) && Number(order.invoiced));
       if (id) {
-        const entry = jobIds.get(id) || { settled: true, needsInvoice: false };
-        entry.settled &&= Boolean(Number(order.job_completed) && Number(order.invoiced));
-        entry.needsInvoice ||= Boolean(Number(order.job_completed) && !Number(order.invoiced));
+        const entry = jobIds.get(id) || { settled: true };
+        entry.settled &&= settled;
         jobIds.set(id, entry);
-      } else if (number) {
+      } else if (/[1-9]/.test(number) && !settled) {
         wantedNumbers.add(number);
       }
     }
 
-    // Finished and billed jobs need no more checking.
+    // Finished and billed jobs need no more checking. One job failing (for
+    // example a mistyped link) doesn't stop the rest; a rejected key does.
     for (const [id, entry] of jobIds) {
       if (entry.settled) continue;
-      const saved = await refreshJobFromApi(client, id, { withInvoices: true });
-      summary.jobs_refreshed += 1;
-      if (saved) (await applyHcpJob(saved)).forEach(orderId => changed.add(orderId));
+      try {
+        const saved = await refreshJobFromApi(client, id, { withInvoices: true });
+        summary.jobs_refreshed += 1;
+        if (saved) (await applyHcpJob(saved)).forEach(orderId => changed.add(orderId));
+      } catch (error) {
+        if (error.status === 401 || error.status === 403) throw error;
+        summary.jobs_failed = (summary.jobs_failed || 0) + 1;
+      }
     }
 
     // HCP can't look a job up by number, so read recent jobs, newest first.
@@ -345,6 +388,8 @@ async function runSync({ client = createHcpClient(), maxPages = 30 } = {}) {
     summary.orders_updated = changed.size;
     await setState('last_sync_at', isoNow());
     await setState('last_sync_summary', JSON.stringify(summary));
+    await setState('last_error', summary.jobs_failed ? `${isoNow()} sync: ${summary.jobs_failed} jobs could not be read from HCP.` : '');
+    await dbRun('DELETE FROM hcp_events WHERE received_at < ?', [new Date(Date.now() - 90 * 86400000).toISOString()]);
     return { ...summary, order_ids: [...changed] };
   } catch (error) {
     await setState('last_error', `${isoNow()} sync: ${String(error.message || 'Failed').slice(0, 200)}`);
@@ -370,7 +415,8 @@ export async function resolveOrderHcpJobId({ link, number, draftId, keep = '' })
   if (fromLink) return fromLink;
   if (draftId) {
     const draft = await dbGet('SELECT hcp_job_id FROM job_drafts WHERE id = ?', [draftId]);
-    if (draft?.hcp_job_id) return draft.hcp_job_id;
+    const fromDraft = hcpJobIdFrom(draft?.hcp_job_id);
+    if (fromDraft) return fromDraft;
   }
   const trimmed = String(number || '').trim();
   if (trimmed) {
@@ -402,7 +448,7 @@ export async function hcpStatus() {
   return {
     api: hcpApiConfigured(),
     webhooks: hcpWebhookConfigured(),
-    linked_jobs: Number((await dbGet('SELECT COUNT(*) AS count FROM hcp_jobs'))?.count || 0),
+    linked_jobs: Number((await dbGet("SELECT COUNT(DISTINCT hcp_job_id) AS count FROM orders WHERE is_archived = 0 AND hcp_job_id IS NOT NULL AND hcp_job_id <> ''"))?.count || 0),
     last_event_at: state.last_event_at || '',
     last_sync_at: state.last_sync_at || '',
     last_sync_summary: summary,
