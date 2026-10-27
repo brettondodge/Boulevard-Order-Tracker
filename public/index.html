@@ -86,6 +86,7 @@
               <option value="customer_name">Customer A–Z</option>
               <option value="expected_delivery_date">Expected delivery</option>
               <option value="order_date">Order date</option>
+              <option value="scheduled_date">Scheduled date</option>
             </select>
           </label>
 
@@ -97,6 +98,9 @@
         <nav class="view-tabs" aria-label="Order views">
           <button type="button" class="tab-button active" data-view="Outstanding">Outstanding</button>
           <button type="button" class="tab-button" data-view="Overdue">Overdue</button>
+          <button type="button" class="tab-button" data-view="To Schedule">To schedule</button>
+          <button type="button" class="tab-button" data-view="Scheduled">Scheduled</button>
+          <button type="button" class="tab-button" data-view="Need Invoice">Need invoice</button>
           <button type="button" class="tab-button" data-view="Received">Received</button>
           <button type="button" class="tab-button" data-view="All Orders">All orders</button>
           <button type="button" class="tab-button" data-view="Approved – Need to Order">Approved – Need to Order</button>
@@ -112,6 +116,7 @@
       <section id="draftQueueSection" class="draft-queue hidden">
         <div class="section-header-row">
           <h2>Approved – Need to Order</h2>
+          <button id="showFinishedJobsButton" type="button" class="text-button hidden" aria-pressed="false"></button>
         </div>
         <p id="draftQueueSummary" class="draft-queue-summary" aria-live="polite"></p>
         <div id="jobDraftList" class="draft-list"></div>
@@ -130,6 +135,7 @@
               <th>Ordered</th>
               <th>ETA</th>
               <th>Received</th>
+              <th>Shop</th>
               <th>Status</th>
               <th>Notes</th>
               <th>Actions</th>
@@ -145,7 +151,7 @@
         <p id="condensedOrderCount" aria-live="polite"></p>
         <div class="condensed-table-wrap" tabindex="0" role="region" aria-label="Order lines, scroll horizontally for more columns">
           <table>
-            <thead><tr><th scope="col">Customer</th><th scope="col">Job #</th><th scope="col">Category</th><th scope="col">Supplier</th><th scope="col">ETA</th><th scope="col">Received</th><th scope="col">Status</th><th scope="col">Notes</th><th scope="col">Details</th></tr></thead>
+            <thead><tr><th scope="col">Customer</th><th scope="col">Job #</th><th scope="col">Category</th><th scope="col">Supplier</th><th scope="col">ETA</th><th scope="col">Received</th><th scope="col">Job materials</th><th scope="col">Shop</th><th scope="col">Status</th><th scope="col">Schedule note</th><th scope="col">Notes</th><th scope="col">Actions</th></tr></thead>
             <tbody id="condensedOrdersBody"></tbody>
           </table>
         </div>
@@ -227,6 +233,11 @@
           <label>
             Date received
             <input id="dateReceived" name="date_received" type="date" />
+          </label>
+
+          <label>
+            Shop location
+            <input id="shopLocation" name="shop_location" type="text" list="shopLocations" placeholder="e.g. H, G, IGU Wall" />
           </label>
 
           <label class="full-width">
@@ -345,6 +356,12 @@
             <div id="orderedByMasterList" class="master-list-editor"></div>
           </div>
 
+          <div class="master-list-section">
+            <h3>Google Sheet</h3>
+            <p>Bring the orders from the Misc. Parts Ordered sheet into the tracker.</p>
+            <button type="button" id="openSheetImportButton" class="secondary-button">Import from Google Sheet…</button>
+          </div>
+
           <div class="dialog-actions">
             <button type="button" id="adminLogoutButton" class="secondary-button">Sign out</button>
             <button type="button" id="saveMasterListsButton" class="primary-button">Save lists</button>
@@ -379,6 +396,89 @@
       <p id="orderNotesText" class="order-notes-text"></p>
       <div class="dialog-actions"><button id="dismissOrderNotesButton" type="button" class="secondary-button">Close</button></div>
     </dialog>
+    <datalist id="shopLocations"></datalist>
+
+    <dialog id="progressDialog" aria-labelledby="progressDialogTitle">
+      <form id="progressForm" method="dialog">
+        <input type="hidden" id="progressOrderId" />
+        <div class="dialog-header">
+          <h2 id="progressDialogTitle">Job progress</h2>
+          <button type="button" id="closeProgressButton" class="close-button" aria-label="Close">×</button>
+        </div>
+        <p id="progressCustomer" class="progress-customer"></p>
+
+        <div class="progress-grid">
+          <label class="full-width">
+            Shop location <small>(this order)</small>
+            <input id="progressShopLocation" type="text" list="shopLocations" placeholder="e.g. H, G, IGU Wall" />
+          </label>
+
+          <label class="checkbox-inline progress-check"><input id="progressScheduled" type="checkbox" /> Scheduled</label>
+          <label>
+            Scheduled for
+            <input id="progressScheduledDate" type="date" />
+          </label>
+          <label class="full-width">
+            Scheduling note
+            <input id="progressScheduleNote" type="text" placeholder="e.g. Customer picking up, IGU only, wrong locks" />
+          </label>
+
+          <label class="checkbox-inline progress-check"><input id="progressCompleted" type="checkbox" /> Job complete</label>
+          <label>
+            Completed on
+            <input id="progressCompletedDate" type="date" />
+          </label>
+
+          <label class="checkbox-inline progress-check"><input id="progressInvoiced" type="checkbox" /> Invoiced</label>
+          <label>
+            Invoice # or billing note
+            <input id="progressInvoiceReference" type="text" />
+          </label>
+        </div>
+
+        <p id="progressJobHint" class="progress-hint"></p>
+        <div id="progressError" class="form-error" aria-live="polite"></div>
+        <div class="dialog-actions">
+          <button type="button" id="cancelProgressButton" class="secondary-button">Cancel</button>
+          <button type="submit" class="primary-button">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="sheetImportDialog" aria-labelledby="sheetImportTitle">
+      <div class="dialog-header">
+        <h2 id="sheetImportTitle">Import from the Google Sheet</h2>
+        <button type="button" id="closeSheetImportButton" class="close-button" aria-label="Close">×</button>
+      </div>
+      <ol class="import-steps">
+        <li>In Google Sheets choose File › Download › Microsoft Excel (.xlsx).</li>
+        <li>Choose that file and press Preview. Nothing changes until you confirm.</li>
+      </ol>
+      <div class="import-file-row">
+        <input id="sheetImportFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+        <button type="button" id="previewSheetImportButton" class="secondary-button">Preview</button>
+      </div>
+      <p id="sheetImportError" class="form-error" aria-live="polite"></p>
+      <div id="sheetImportPreview" class="hidden">
+        <div id="sheetImportSummary" class="import-summary"></div>
+        <fieldset class="import-mode">
+          <legend>How should it come in?</legend>
+          <label class="checkbox-inline"><input type="radio" name="sheetImportMode" value="replace" /> Replace everything in the tracker</label>
+          <p class="import-hint">Deletes the orders, approved jobs, suppliers and staff in the tracker now, then brings in the sheet. Logins and Freeport Billing are not touched.</p>
+          <label class="checkbox-inline"><input type="radio" name="sheetImportMode" value="add" /> Add to what is in the tracker</label>
+          <p class="import-hint">Keeps everything and skips sheet rows already in the tracker (same customer, supplier and order date).</p>
+        </fieldset>
+        <label class="import-confirm">
+          <span>Type <strong id="sheetImportWord">IMPORT</strong> to confirm</span>
+          <input id="sheetImportConfirmation" type="text" autocomplete="off" />
+        </label>
+        <div class="dialog-actions">
+          <button type="button" id="cancelSheetImportButton" class="secondary-button">Cancel</button>
+          <button type="button" id="applySheetImportButton" class="primary-button" disabled>Import</button>
+        </div>
+      </div>
+    </dialog>
+
     <div id="undoToast" class="undo-toast hidden" role="status" aria-live="polite">
       <span id="undoMessage"></span>
       <button id="undoButton" type="button">Undo</button>

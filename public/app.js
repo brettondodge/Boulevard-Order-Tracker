@@ -19,6 +19,9 @@ const state = {
   adminLoggedIn: false,
   editingOrder: null,
   editingDraft: null,
+  editingProgress: null,
+  showFinishedJobs: false,
+  sheetImport: null,
   undo: null,
   undoTimer: null,
   connectionState: 'live',
@@ -76,6 +79,30 @@ const elements = {
   draftDialogTitle: document.getElementById('draftDialogTitle'),
   draftId: document.getElementById('draftId'),
   draftUpdatedAt: document.getElementById('draftUpdatedAt'),
+  showFinishedJobsButton: document.getElementById('showFinishedJobsButton'),
+  shopLocations: document.getElementById('shopLocations'),
+  progressDialog: document.getElementById('progressDialog'),
+  progressForm: document.getElementById('progressForm'),
+  progressCustomer: document.getElementById('progressCustomer'),
+  progressShopLocation: document.getElementById('progressShopLocation'),
+  progressScheduled: document.getElementById('progressScheduled'),
+  progressScheduledDate: document.getElementById('progressScheduledDate'),
+  progressScheduleNote: document.getElementById('progressScheduleNote'),
+  progressCompleted: document.getElementById('progressCompleted'),
+  progressCompletedDate: document.getElementById('progressCompletedDate'),
+  progressInvoiced: document.getElementById('progressInvoiced'),
+  progressInvoiceReference: document.getElementById('progressInvoiceReference'),
+  progressJobHint: document.getElementById('progressJobHint'),
+  progressError: document.getElementById('progressError'),
+  sheetImportDialog: document.getElementById('sheetImportDialog'),
+  sheetImportFile: document.getElementById('sheetImportFile'),
+  sheetImportError: document.getElementById('sheetImportError'),
+  sheetImportPreview: document.getElementById('sheetImportPreview'),
+  sheetImportSummary: document.getElementById('sheetImportSummary'),
+  sheetImportWord: document.getElementById('sheetImportWord'),
+  sheetImportConfirmation: document.getElementById('sheetImportConfirmation'),
+  previewSheetImportButton: document.getElementById('previewSheetImportButton'),
+  applySheetImportButton: document.getElementById('applySheetImportButton'),
   draftCustomerName: document.getElementById('draftCustomerName'),
   draftHousecallJobNumber: document.getElementById('draftHousecallJobNumber'),
   draftHousecallJobLink: document.getElementById('draftHousecallJobLink'),
@@ -322,6 +349,27 @@ function bindEvents() {
   });
 
   elements.undoButton.addEventListener('click', runUndo);
+
+  elements.progressForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await saveProgressDialog();
+  });
+  for (const id of ['closeProgressButton', 'cancelProgressButton']) document.getElementById(id).addEventListener('click', () => elements.progressDialog.close());
+  for (const box of [elements.progressScheduled, elements.progressCompleted]) box.addEventListener('change', syncProgressInputs);
+
+  elements.showFinishedJobsButton.addEventListener('click', () => {
+    state.showFinishedJobs = !state.showFinishedJobs;
+    renderJobDrafts();
+  });
+
+  document.getElementById('openSheetImportButton').addEventListener('click', openSheetImport);
+  for (const id of ['closeSheetImportButton', 'cancelSheetImportButton']) document.getElementById(id).addEventListener('click', () => elements.sheetImportDialog.close());
+  elements.previewSheetImportButton.addEventListener('click', previewSheetImport);
+  elements.sheetImportDialog.addEventListener('change', (event) => {
+    if (event.target.name === 'sheetImportMode') syncSheetImportConfirmation();
+  });
+  elements.sheetImportConfirmation.addEventListener('input', syncSheetImportConfirmation);
+  elements.applySheetImportButton.addEventListener('click', applySheetImport);
   elements.dismissUndoButton.addEventListener('click', hideUndo);
 
   elements.groupFilter.addEventListener('change', (event) => {
@@ -512,6 +560,23 @@ function bindEvents() {
 
     if (action === 'delete-order') {
       await deleteOrder(id);
+      return;
+    }
+
+    const order = state.orders.find((entry) => entry.id === id);
+    if (!order) return;
+    if (action === 'schedule' || action === 'progress') {
+      openProgressDialog(order, action === 'schedule' ? 'schedule' : '');
+      return;
+    }
+
+    if (action === 'mark-complete') {
+      await markJobComplete(order);
+      return;
+    }
+
+    if (action === 'mark-invoiced') {
+      await markJobInvoiced(order);
       return;
     }
 
@@ -979,14 +1044,22 @@ async function loadOrders() {
 
 function renderJobDrafts() {
   elements.draftActionsMenu.hidePopover?.();
-  const readyCount = state.jobDrafts.filter(draft => draft.deposit_status !== 'Awaiting deposit' && draft.status !== 'Completed').length;
-  elements.draftQueueSummary.textContent = `${state.jobDrafts.length} ${state.jobDrafts.length === 1 ? 'job' : 'jobs'} · ${readyCount} ready to order`;
-  if (!state.jobDrafts.length) {
+  // Jobs with all materials ordered move on to the order views; they stay
+  // reachable behind the "Show" button.
+  const openJobs = state.jobDrafts.filter(draft => draft.status !== 'Completed');
+  const finishedCount = state.jobDrafts.length - openJobs.length;
+  const visible = state.showFinishedJobs ? state.jobDrafts : openJobs;
+  const readyCount = openJobs.filter(draft => draft.deposit_status !== 'Awaiting deposit').length;
+  elements.draftQueueSummary.textContent = `${openJobs.length} ${openJobs.length === 1 ? 'job' : 'jobs'} · ${readyCount} ready to order`;
+  elements.showFinishedJobsButton.classList.toggle('hidden', !finishedCount);
+  elements.showFinishedJobsButton.setAttribute('aria-pressed', String(state.showFinishedJobs));
+  elements.showFinishedJobsButton.textContent = state.showFinishedJobs ? 'Hide jobs with all materials ordered' : `Show ${finishedCount} with all materials ordered`;
+  if (!visible.length) {
     elements.jobDraftList.innerHTML = '<div class="empty-state small-empty-state"><h3>No approved jobs waiting to order</h3><p>When a job is approved, add it here and mark the deposit status as soon as it is confirmed.</p></div>';
     return;
   }
 
-  elements.jobDraftList.innerHTML = state.jobDrafts
+  elements.jobDraftList.innerHTML = visible
     .map((draft) => {
       const readyToOrder = draft.deposit_status !== 'Awaiting deposit' && draft.status !== 'Completed';
       const depositClass = draft.deposit_status === 'Awaiting deposit' ? 'awaiting' : 'ready';
@@ -1027,13 +1100,50 @@ function renderOrders() {
   renderCondensedOrders();
   elements.tableBody.innerHTML = state.orders.map(renderOrderRow).join('');
   elements.mobileOrderCards.innerHTML = state.orders.map(renderOrderCard).join('');
+  const locations = [...new Set(state.orders.map(order => String(order.shop_location || '').trim()).filter(Boolean))].sort();
+  elements.shopLocations.innerHTML = locations.map(location => `<option value="${escapeAttr(location)}"></option>`).join('');
   renderQueueVisibility();
 }
 
+const STAGE_LABELS = { ordered: 'Ordered', overdue: 'Overdue', received: 'Received', scheduled: 'Scheduled', complete: 'Complete', invoiced: 'Invoiced' };
+
+function stageOf(order) {
+  if (STAGE_LABELS[order.stage]) return order.stage;
+  if (order.is_overdue) return 'overdue';
+  return (order.status || 'Ordered') === 'Received' ? 'received' : 'ordered';
+}
+
+// Badge for the furthest step reached, plus a warning when a job is on the
+// schedule before this order's material has arrived.
 function orderStatusBadge(order) {
-  const status = order.is_overdue ? 'Overdue' : (order.status || 'Ordered');
-  const tone = order.is_overdue ? 'overdue' : status === 'Received' ? 'received' : 'ordered';
-  return `<span class="status-badge ${tone}">${escapeHtml(status)}</span>`;
+  const stage = stageOf(order);
+  let label = STAGE_LABELS[stage];
+  if (stage === 'received' && order.job_ready === true) label = 'Ready to schedule';
+  if (stage === 'scheduled' && order.scheduled_date) label = `Scheduled ${formatDate(order.scheduled_date)}`;
+  const warning = Number(order.job_scheduled) && !Number(order.job_completed) && !order.date_received
+    ? `<span class="stage-warning">Scheduled${order.scheduled_date ? ` ${formatDate(order.scheduled_date)}` : ''}, not here yet</span>`
+    : '';
+  return `<span class="status-badge ${stage}">${escapeHtml(label)}</span>${warning}`;
+}
+
+// "1 of 2 here" when the job has more than one supplier order.
+function jobMaterials(order) {
+  const count = Number(order.job_order_count || 1);
+  if (count < 2) return '';
+  const here = Number(order.job_received_count || 0);
+  return here === count ? `All ${count} here` : `${here} of ${count} here`;
+}
+
+function nextStep(order) {
+  if (!order.date_received) return { action: 'mark-received', label: 'Mark received' };
+  if (Number(order.job_completed)) return Number(order.invoiced) ? null : { action: 'mark-invoiced', label: 'Mark invoiced' };
+  if (Number(order.job_scheduled)) return { action: 'mark-complete', label: 'Mark complete' };
+  return { action: 'schedule', label: 'Mark scheduled' };
+}
+
+function nextStepButton(order) {
+  const step = nextStep(order);
+  return step ? `<button type="button" class="action-button primary" data-action="${step.action}" data-id="${escapeAttr(order.id)}">${step.label}</button>` : '';
 }
 
 // The job number links to Housecall Pro when the order has a job link.
@@ -1045,6 +1155,7 @@ function jobNumberHtml(order) {
 }
 
 function renderOrderRow(order) {
+  const materials = jobMaterials(order);
   return `
     <tr class="${order.is_overdue ? 'overdue' : ''}">
       <td><strong>${escapeHtml(order.customer_name)}</strong></td>
@@ -1056,38 +1167,40 @@ function renderOrderRow(order) {
       <td class="nowrap">${formatDate(order.date_ordered)}</td>
       <td class="nowrap">${order.expected_delivery_date ? formatDate(order.expected_delivery_date) : 'No ETA'}</td>
       <td class="nowrap">${order.date_received ? formatDate(order.date_received) : '—'}</td>
-      <td>${orderStatusBadge(order)}</td>
+      <td>${escapeHtml(order.shop_location || '—')}</td>
+      <td class="status-cell">${orderStatusBadge(order)}${materials ? `<small class="job-materials">${materials}</small>` : ''}</td>
       <td class="notes-cell">${renderOrderNotesPreview(order)}</td>
       <td>${renderDesktopOrderActions(order)}</td>
     </tr>
   `;
 }
 
-// Phone card: who, what, when on three short lines, with the common actions underneath.
+// Phone card: who, what, when on three short lines, with the next step underneath.
 function renderOrderCard(order) {
   const id = escapeAttr(order.id);
   const received = (order.status || 'Ordered') === 'Received';
   const when = [
     received ? `Received ${formatDate(order.date_received)}` : order.expected_delivery_date ? `ETA ${formatDate(order.expected_delivery_date)}` : 'No ETA',
+    order.shop_location ? `Shop ${escapeHtml(order.shop_location)}` : '',
     order.housecall_job_number || order.housecall_job_link ? `Job ${jobNumberHtml(order)}` : '',
-    order.po_number ? `PO ${escapeHtml(order.po_number)}` : ''
+    order.po_number ? `PO ${escapeHtml(order.po_number)}` : '',
+    jobMaterials(order)
   ].filter(Boolean).join(' · ');
   const notes = String(order.notes || '').trim();
   return `
     <article class="order-card ${order.is_overdue ? 'overdue' : ''}">
       <div class="order-card-header">
         <h3>${escapeHtml(order.customer_name)}</h3>
-        ${orderStatusBadge(order)}
+        <div class="order-card-status">${orderStatusBadge(order)}</div>
       </div>
       <p class="order-card-line">${escapeHtml(order.supplier || '—')} · ${escapeHtml(order.category || 'Unassigned')}${order.ordered_by ? ` · ${escapeHtml(order.ordered_by)}` : ''}</p>
       <p class="order-card-line muted">${when}</p>
+      ${order.schedule_note ? `<p class="order-card-line schedule-note">${escapeHtml(order.schedule_note)}</p>` : ''}
       ${notes ? `<button type="button" class="order-card-notes" data-action="view-notes" data-id="${id}">${escapeHtml(notes)}</button>` : ''}
       <div class="order-card-actions">
         <button type="button" class="action-button" data-action="edit" data-id="${id}">Edit</button>
-        ${received
-          ? `<button type="button" class="action-button" data-action="reopen" data-id="${id}">Reopen</button>`
-          : `<button type="button" class="action-button primary" data-action="mark-received" data-id="${id}">Mark received</button>`}
-        <button type="button" class="action-button danger" data-action="delete-order" data-id="${id}">Delete</button>
+        ${nextStepButton(order) || `<button type="button" class="action-button" data-action="progress" data-id="${id}">Progress</button>`}
+        <button type="button" class="action-button" data-order-menu="${id}" aria-label="More actions for ${escapeAttr(order.customer_name)}">More</button>
       </div>
     </article>
   `;
@@ -1096,28 +1209,29 @@ function renderOrderCard(order) {
 function renderCondensedOrders() {
   elements.condensedOrderCount.textContent = `${state.orders.length} matching supplier ${state.orders.length === 1 ? 'order' : 'orders'}`;
   elements.condensedOrdersBody.innerHTML = state.orders.map(order => {
-    const status = order.is_overdue ? 'Overdue' : order.status || 'Ordered';
     const notes = order.notes || '—';
     return `<tr class="${order.is_overdue ? 'overdue' : ''}">
       <td class="condensed-customer" title="${escapeAttr(order.customer_name)}"><strong>${escapeHtml(order.customer_name)}</strong></td>
-      <td>${escapeHtml(order.housecall_job_number || '—')}</td>
+      <td>${jobNumberHtml(order)}</td>
       <td>${escapeHtml(order.category || 'Unassigned')}</td>
       <td class="condensed-supplier" title="${escapeAttr(order.supplier || '')}">${escapeHtml(order.supplier || '—')}</td>
       <td>${order.expected_delivery_date ? formatDate(order.expected_delivery_date) : 'No ETA'}</td>
       <td>${order.date_received ? formatDate(order.date_received) : '—'}</td>
-      <td><span class="status-badge ${order.is_overdue ? 'overdue' : status === 'Received' ? 'received' : 'ordered'}">${escapeHtml(status)}</span></td>
+      <td>${jobMaterials(order) || '—'}</td>
+      <td>${escapeHtml(order.shop_location || '—')}</td>
+      <td class="status-cell">${orderStatusBadge(order)}</td>
+      <td class="condensed-notes" title="${escapeAttr(order.schedule_note || '')}">${escapeHtml(order.schedule_note || '—')}</td>
       <td class="condensed-notes" title="${escapeAttr(notes)}">${escapeHtml(notes)}</td>
-      <td><button type="button" class="action-button" data-action="edit" data-id="${escapeAttr(order.id)}" aria-label="Edit order for ${escapeAttr(order.customer_name)}">Edit</button></td>
+      <td class="condensed-actions"><button type="button" class="action-button" data-action="edit" data-id="${escapeAttr(order.id)}" aria-label="Edit order for ${escapeAttr(order.customer_name)}">Edit</button>${nextStepButton(order)}</td>
     </tr>`;
   }).join('');
 }
 
 function renderDesktopOrderActions(order) {
   const id = escapeAttr(order.id);
-  const received = (order.status || 'Ordered') === 'Received';
   return `<div class="desktop-order-actions">
     <button type="button" class="action-button" data-action="edit" data-id="${id}">Edit</button>
-    ${received ? '' : `<button type="button" class="action-button primary" data-action="mark-received" data-id="${id}">Mark received</button>`}
+    ${nextStepButton(order)}
     <button type="button" class="action-button" data-order-menu="${id}" popovertarget="desktopOrderMenu" aria-label="More actions for ${escapeAttr(order.customer_name)}">⋯</button>
   </div>`;
 }
@@ -1144,9 +1258,9 @@ function openDesktopOrderMenu(orderId, trigger) {
   }
   elements.desktopOrderMenu.dataset.orderId = orderId;
   const id = escapeAttr(order.id);
-  elements.desktopOrderMenu.innerHTML = `${(order.status || 'Ordered') === 'Received'
-    ? `<button type="button" class="action-button danger" data-action="reopen" data-id="${id}" autofocus>Reopen</button>` : ''}
-    <button type="button" class="action-button danger" data-action="delete-order" data-id="${id}" ${(order.status || 'Ordered') === 'Received' ? '' : 'autofocus'}>Delete</button>`;
+  elements.desktopOrderMenu.innerHTML = `<button type="button" class="action-button" data-action="progress" data-id="${id}" autofocus>Job progress…</button>
+    ${(order.status || 'Ordered') === 'Received' ? `<button type="button" class="action-button danger" data-action="reopen" data-id="${id}">Reopen</button>` : ''}
+    <button type="button" class="action-button danger" data-action="delete-order" data-id="${id}">Delete</button>`;
   elements.desktopOrderMenu.setAttribute('aria-label', `More actions for ${order.customer_name}`);
   elements.desktopOrderMenu.showPopover();
   positionActionMenu(elements.desktopOrderMenu, trigger);
@@ -1258,6 +1372,7 @@ function openOrderDialog(order = null, draft = null) {
   document.getElementById('dateOrdered').value = order.date_ordered || today;
   document.getElementById('expectedDeliveryDate').value = order.expected_delivery_date || '';
   document.getElementById('dateReceived').value = order.date_received || '';
+  document.getElementById('shopLocation').value = order.shop_location || '';
   document.getElementById('notes').value = order.notes || '';
 
   elements.dialog.showModal();
@@ -1404,6 +1519,7 @@ async function saveOrder() {
     date_received: document.getElementById('dateReceived').value,
     ordered_by: orderedBy.name,
     ordered_by_id: orderedBy.id,
+    shop_location: document.getElementById('shopLocation').value,
     notes: document.getElementById('notes').value,
     job_draft_id: elements.jobDraftId.value || '',
     status: document.getElementById('dateReceived').value ? 'Received' : 'Ordered'
@@ -1469,6 +1585,7 @@ function orderPayload(order) {
     date_received: order.date_received || '',
     ordered_by: order.ordered_by || '',
     ordered_by_id: order.ordered_by_id || '',
+    shop_location: order.shop_location || '',
     notes: order.notes || '',
     job_draft_id: order.job_draft_id || '',
     status: order.date_received ? 'Received' : 'Ordered'
@@ -1495,6 +1612,191 @@ async function reopenOrder(orderId) {
     await loadOrders();
   } catch (error) {
     showStatus(error.message, 'error');
+  }
+}
+
+function progressOf(order) {
+  return {
+    shop_location: order.shop_location || '',
+    job_scheduled: Number(order.job_scheduled || 0),
+    scheduled_date: order.scheduled_date || '',
+    schedule_note: order.schedule_note || '',
+    job_completed: Number(order.job_completed || 0),
+    completed_date: order.completed_date || '',
+    invoiced: Number(order.invoiced || 0),
+    invoice_reference: order.invoice_reference || ''
+  };
+}
+
+// Scheduled / complete / invoiced are saved for every order on the job.
+async function saveProgress(order, values, message) {
+  const data = await sendJson(`/api/orders/${order.id}/progress`, { ...values, updated_at: order.updated_at }, 'PUT');
+  const count = data.order_ids.length;
+  offerUndo(count > 1 ? `${message} (all ${count} orders on this job).` : `${message}.`, () => sendJson('/api/order-progress/restore', { updated_at: data.updated_at, items: data.previous }));
+  await loadOrders();
+}
+
+async function markJobComplete(order) {
+  try {
+    // The server fills in today's date in Phoenix.
+    await saveProgress(order, { ...progressOf(order), job_completed: 1, completed_date: '' }, `${order.customer_name} marked complete`);
+  } catch (error) {
+    showStatus(error.message, 'error');
+  }
+}
+
+async function markJobInvoiced(order) {
+  try {
+    await saveProgress(order, { ...progressOf(order), invoiced: 1 }, `${order.customer_name} marked invoiced`);
+  } catch (error) {
+    showStatus(error.message, 'error');
+  }
+}
+
+function openProgressDialog(order, focus = '') {
+  const values = progressOf(order);
+  if (focus === 'schedule') values.job_scheduled = 1;
+  state.editingProgress = order;
+  elements.progressCustomer.textContent = [order.customer_name, order.supplier, order.housecall_job_number ? `Job ${order.housecall_job_number}` : ''].filter(Boolean).join(' · ');
+  elements.progressShopLocation.value = values.shop_location;
+  elements.progressScheduled.checked = Boolean(values.job_scheduled);
+  elements.progressScheduledDate.value = values.scheduled_date;
+  elements.progressScheduleNote.value = values.schedule_note;
+  elements.progressCompleted.checked = Boolean(values.job_completed);
+  elements.progressCompletedDate.value = values.completed_date;
+  elements.progressInvoiced.checked = Boolean(values.invoiced);
+  elements.progressInvoiceReference.value = values.invoice_reference;
+  const count = Number(order.job_order_count || 1);
+  elements.progressJobHint.textContent = count > 1
+    ? `Scheduled, complete and invoiced apply to all ${count} orders on this job (${jobMaterials(order)}).`
+    : 'Scheduled, complete and invoiced apply to the whole job.';
+  elements.progressError.textContent = '';
+  syncProgressInputs();
+  elements.progressDialog.showModal();
+  if (focus === 'schedule') elements.progressScheduledDate.focus();
+}
+
+function syncProgressInputs() {
+  elements.progressScheduledDate.disabled = !elements.progressScheduled.checked;
+  elements.progressCompletedDate.disabled = !elements.progressCompleted.checked;
+  if (elements.progressCompleted.checked && !elements.progressCompletedDate.value) elements.progressCompletedDate.value = localToday();
+}
+
+async function saveProgressDialog() {
+  const order = state.editingProgress;
+  if (!order) return;
+  const values = {
+    shop_location: elements.progressShopLocation.value,
+    job_scheduled: elements.progressScheduled.checked ? 1 : 0,
+    scheduled_date: elements.progressScheduledDate.value,
+    schedule_note: elements.progressScheduleNote.value,
+    job_completed: elements.progressCompleted.checked ? 1 : 0,
+    completed_date: elements.progressCompletedDate.value,
+    invoiced: elements.progressInvoiced.checked ? 1 : 0,
+    invoice_reference: elements.progressInvoiceReference.value
+  };
+  try {
+    await saveProgress(order, values, 'Job progress saved');
+    elements.progressDialog.close();
+  } catch (error) {
+    elements.progressError.textContent = error.message;
+  }
+}
+
+function openSheetImport() {
+  state.sheetImport = null;
+  elements.sheetImportFile.value = '';
+  elements.sheetImportError.textContent = '';
+  elements.sheetImportPreview.classList.add('hidden');
+  elements.sheetImportDialog.querySelectorAll('input[name="sheetImportMode"]').forEach((input) => { input.checked = false; });
+  syncSheetImportConfirmation();
+  elements.sheetImportDialog.showModal();
+}
+
+async function previewSheetImport() {
+  const file = elements.sheetImportFile.files?.[0];
+  elements.sheetImportError.textContent = '';
+  if (!file) {
+    elements.sheetImportError.textContent = 'Choose the downloaded .xlsx file first.';
+    return;
+  }
+  elements.previewSheetImportButton.disabled = true;
+  elements.previewSheetImportButton.textContent = 'Reading…';
+  try {
+    const response = await fetch('/api/admin/sheet-import/preview', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Unable to read the sheet.');
+    state.sheetImport = data;
+    renderSheetImportPreview(data);
+  } catch (error) {
+    elements.sheetImportError.textContent = error.message;
+  } finally {
+    elements.previewSheetImportButton.disabled = false;
+    elements.previewSheetImportButton.textContent = 'Preview';
+  }
+}
+
+function renderSheetImportPreview(data) {
+  const stage = order => !order.date_received ? 'ordered' : order.job_completed ? (order.invoiced ? 'invoiced' : 'complete') : order.job_scheduled ? 'scheduled' : 'received';
+  const counts = { ordered: 0, received: 0, scheduled: 0, complete: 0, invoiced: 0 };
+  data.orders.forEach(order => { counts[stage(order)] += 1; });
+  const names = list => list.map(item => `${escapeHtml(item.name)}${item.existing ? '' : ' <small>(new)</small>'}`).join(', ');
+  const skippedReasons = data.skipped.reduce((all, row) => ({ ...all, [row.reason]: (all[row.reason] || 0) + 1 }), {});
+  const withJobNumber = data.orders.filter(order => order.housecall_job_number).length;
+  elements.sheetImportSummary.innerHTML = `
+    <p><strong>${data.orders.length} orders</strong> will come in: ${data.tabs.map(tab => `${tab.imported} from ${escapeHtml(tab.name)}`).join(', ')}.</p>
+    <ul class="import-stages">
+      <li>${counts.ordered} not received yet</li>
+      <li>${counts.received} received, not scheduled</li>
+      <li>${counts.scheduled} scheduled</li>
+      <li>${counts.complete} complete, need invoice</li>
+    </ul>
+    ${data.skipped.length ? `<p>${data.skipped.length} rows left out: ${Object.entries(skippedReasons).map(([reason, count]) => `${count} ${escapeHtml(reason.toLowerCase())}`).join(', ')}.</p>` : ''}
+    <p><strong>Suppliers:</strong> ${names(data.suppliers)}</p>
+    <p><strong>Ordered by:</strong> ${names(data.staff)}. These are the initials from the sheet; rename them to full names under Ordered By staff afterwards.</p>
+    <p><strong>Check after importing:</strong></p>
+    <ul>
+      <li>Received dates are estimated, because the sheet only has a Received box.</li>
+      <li>The glass tab is filed under Showers (Arcadia under Storefront). Change any that should be Flat Glass or Storefront.</li>
+      <li>${withJobNumber} orders got their Housecall Pro job number from the invoice column.</li>
+    </ul>
+    <p class="import-current">The tracker has ${data.current.orders} orders, ${data.current.jobs} approved jobs, ${data.current.suppliers} suppliers and ${data.current.staff} staff right now.</p>
+    <details>
+      <summary>See all ${data.orders.length} orders</summary>
+      <div class="import-table-wrap"><table>
+        <thead><tr><th>Customer</th><th>Supplier</th><th>Category</th><th>Ordered</th><th>Step</th></tr></thead>
+        <tbody>${data.orders.map(order => `<tr><td>${escapeHtml(order.customer_name)}</td><td>${escapeHtml(order.supplier)}</td><td>${escapeHtml(order.category)}</td><td>${formatDate(order.date_ordered)}</td><td>${STAGE_LABELS[stage(order)]}</td></tr>`).join('')}</tbody>
+      </table></div>
+    </details>`;
+  elements.sheetImportPreview.classList.remove('hidden');
+  syncSheetImportConfirmation();
+}
+
+function sheetImportMode() {
+  return elements.sheetImportDialog.querySelector('input[name="sheetImportMode"]:checked')?.value || '';
+}
+
+function syncSheetImportConfirmation() {
+  const mode = sheetImportMode();
+  const word = mode === 'replace' ? 'REPLACE' : 'IMPORT';
+  elements.sheetImportWord.textContent = word;
+  elements.applySheetImportButton.disabled = !state.sheetImport || !mode || elements.sheetImportConfirmation.value.trim() !== word;
+}
+
+async function applySheetImport() {
+  const mode = sheetImportMode();
+  elements.applySheetImportButton.disabled = true;
+  elements.sheetImportError.textContent = '';
+  try {
+    const result = await sendJson('/api/admin/sheet-import/apply', { token: state.sheetImport.token, mode, confirmation: elements.sheetImportConfirmation.value.trim() });
+    elements.sheetImportDialog.close();
+    elements.masterListsDialog.close();
+    state.sheetImport = null;
+    await Promise.all([loadSuppliers(), loadMasterLists(), loadJobDrafts(), loadOrders()]);
+    showStatus(`Imported ${result.orders} orders from the sheet${result.duplicates ? ` (${result.duplicates} already in the tracker were skipped)` : ''}. Added ${result.suppliers_added} suppliers and ${result.staff_added} staff.`, 'success');
+  } catch (error) {
+    elements.sheetImportError.textContent = error.message;
+    syncSheetImportConfirmation();
   }
 }
 

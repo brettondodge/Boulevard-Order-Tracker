@@ -13,6 +13,7 @@ import {
   createPostgresSessionStore,
   configureSessionMiddleware
 } from '../src/session-config.js';
+import { syntheticOrderSheet } from './sheet-fixture.js';
 
 const root = process.cwd();
 
@@ -900,4 +901,159 @@ test('order saves require existing active suppliers and never create or reactiva
     assert.equal((await api(`/api/orders/${created.body.order.id}`, { ...edited.body.order, supplier: 'Unknown Supplier', supplier_id: '' }, 'PUT')).status, 400);
     assert.equal((await api('/api/master-lists')).body.suppliers.length, lists.body.suppliers.length);
   } finally { child.kill('SIGTERM'); }
+});
+
+test('scheduled, complete and invoiced are saved for the whole job, feed the labor-meeting views and undo exactly', async () => {
+  const child = startServer();
+  const cookieJar = createCookieJar();
+  const api = (route, body, method = body ? 'POST' : 'GET') => requestJson('http://127.0.0.1:4100' + route, { method, headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), cookieJar });
+  const view = async (status) => (await api(`/api/orders?status=${encodeURIComponent(status)}&search=synthetic%20job`)).body.orders;
+  const find = async (id) => (await api('/api/orders?status=All%20Orders')).body.orders.find(row => row.id === id);
+  try {
+    await delay(1500);
+    assert.equal((await api('/api/login', { username: 'mary', password: 'staff123' })).status, 200);
+    const create = (number, supplier, extra = {}) => api('/api/orders', { customer_name: `Synthetic Job ${number}`, housecall_job_number: number, supplier, category: 'Windows', date_ordered: '2026-10-01', ordered_by: 'Admin User', ...extra });
+    const first = (await create('HC-77', 'Northline Glass', { shop_location: ' H ' })).body.order;
+    const second = (await create('hc-77', 'Oldcastle')).body.order;
+    const other = (await create('HC-78', 'Bayside Supply')).body.order;
+    assert.equal(first.shop_location, 'H');
+
+    assert.equal((await api(`/api/orders/${first.id}/mark-received`, {})).status, 200);
+    let row = await find(first.id);
+    assert.equal(row.job_order_count, 2);
+    assert.equal(row.job_received_count, 1);
+    assert.equal(row.job_ready, false);
+    assert.equal(row.stage, 'received');
+    assert.equal(row.job_group, (await find(second.id)).job_group);
+    assert.notEqual(row.job_group, (await find(other.id)).job_group);
+    // Half the material is here, so the job is not ready for the labor meeting.
+    assert.equal((await view('To Schedule')).length, 0);
+
+    assert.equal((await api(`/api/orders/${second.id}/mark-received`, {})).status, 200);
+    assert.deepEqual((await view('To Schedule')).map(order => order.id).sort(), [first.id, second.id].sort());
+
+    row = await find(first.id);
+    const stale = row.updated_at;
+    const saved = await api(`/api/orders/${first.id}/progress`, { job_scheduled: 1, scheduled_date: '2026-11-03', schedule_note: 'Two-man job', shop_location: 'G', updated_at: row.updated_at }, 'PUT');
+    assert.equal(saved.status, 200);
+    assert.deepEqual(saved.body.order_ids.sort(), [first.id, second.id].sort());
+    assert.deepEqual(saved.body.previous.find(item => item.id === first.id), { id: first.id, shop_location: 'H', job_scheduled: 0, scheduled_date: '', schedule_note: '', job_completed: 0, completed_date: '', invoiced: 0, invoice_reference: '' });
+    const firstAfter = await find(first.id);
+    const secondAfter = await find(second.id);
+    assert.equal(firstAfter.shop_location, 'G');
+    assert.equal(secondAfter.shop_location, '');
+    for (const order of [firstAfter, secondAfter]) {
+      assert.equal(order.job_scheduled, 1);
+      assert.equal(order.scheduled_date, '2026-11-03');
+      assert.equal(order.schedule_note, 'Two-man job');
+      assert.equal(order.stage, 'scheduled');
+      assert.equal(order.updated_by, 'mary');
+    }
+    assert.equal((await find(other.id)).job_scheduled, 0);
+    assert.equal((await view('To Schedule')).length, 0);
+    assert.equal((await view('Scheduled')).length, 2);
+    assert.equal((await api('/api/orders?status=All%20Orders&search=two-man')).body.orders.length, 2);
+    assert.equal((await api('/api/orders?status=All%20Orders&sort=scheduled_date&search=synthetic%20job')).body.orders.at(-1).id, other.id);
+
+    // An old screen cannot overwrite the newer save, and nothing is half-written.
+    const conflict = await api(`/api/orders/${first.id}/progress`, { job_scheduled: 0, updated_at: stale }, 'PUT');
+    assert.equal(conflict.status, 409);
+    assert.equal((await find(second.id)).job_scheduled, 1);
+    assert.equal((await api(`/api/orders/${first.id}/progress`, { job_scheduled: 0 }, 'PUT')).status, 400);
+
+    const undo = await api('/api/order-progress/restore', { updated_at: saved.body.updated_at, items: saved.body.previous });
+    assert.equal(undo.status, 200);
+    const restored = await find(first.id);
+    assert.equal(restored.shop_location, 'H');
+    assert.equal(restored.job_scheduled, 0);
+    assert.equal(restored.scheduled_date, '');
+    assert.equal((await find(second.id)).job_scheduled, 0);
+    assert.equal((await api('/api/order-progress/restore', { updated_at: saved.body.updated_at, items: saved.body.previous })).status, 409);
+
+    const complete = await api(`/api/orders/${second.id}/progress`, { job_scheduled: 1, job_completed: 1, updated_at: (await find(second.id)).updated_at }, 'PUT');
+    assert.equal(complete.status, 200);
+    const needInvoice = await view('Need Invoice');
+    assert.deepEqual(needInvoice.map(order => order.id).sort(), [first.id, second.id].sort());
+    assert.match(needInvoice[0].completed_date, /^\d{4}-\d{2}-\d{2}$/);
+    assert.equal(needInvoice[0].stage, 'complete');
+    const invoiced = await api(`/api/orders/${first.id}/progress`, { ...needInvoice.find(order => order.id === first.id), invoiced: 1, invoice_reference: '10239422', updated_at: (await find(first.id)).updated_at }, 'PUT');
+    assert.equal(invoiced.status, 200);
+    assert.equal((await view('Need Invoice')).length, 0);
+    assert.equal((await find(second.id)).stage, 'invoiced');
+    assert.equal((await find(second.id)).invoice_reference, '10239422');
+
+    // Deleted orders are not part of the job any more.
+    assert.equal((await api(`/api/orders/${second.id}/delete`, {})).status, 200);
+    assert.equal((await find(first.id)).job_order_count, 1);
+    assert.equal((await api(`/api/orders/${second.id}/progress`, { updated_at: 'x' }, 'PUT')).status, 404);
+  } finally {
+    child.kill('SIGTERM');
+  }
+});
+
+test('admins can preview and import the Google Sheet, adding or replacing what is there', async () => {
+  const child = startServer();
+  const cookieJar = createCookieJar();
+  const base = 'http://127.0.0.1:4100';
+  const api = (route, body, method = body ? 'POST' : 'GET') => requestJson(base + route, { method, headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), cookieJar });
+  const preview = file => requestJson(`${base}/api/admin/sheet-import/preview`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file, cookieJar });
+  try {
+    await delay(1500);
+    const sheet = await syntheticOrderSheet();
+    assert.equal((await preview(sheet)).status, 401);
+    assert.equal((await api('/api/admin/login', { username: 'admin', password: 'admin123' })).status, 200);
+    assert.equal((await preview(Buffer.from('not a spreadsheet'))).status, 400);
+
+    const before = (await api('/api/orders?status=All%20Orders')).body.orders.length;
+    let plan = await preview(sheet);
+    assert.equal(plan.status, 200);
+    assert.equal(plan.body.orders.length, 7);
+    assert.equal(plan.body.skipped.length, 2);
+    assert.equal(plan.body.current.orders >= before, true);
+    assert.ok(plan.body.suppliers.some(row => row.name === 'Jeld-Wen' && !row.existing));
+    assert.ok(plan.body.suppliers.some(row => row.name === 'Oldcastle' && row.existing));
+
+    assert.equal((await api('/api/admin/sheet-import/apply', { token: plan.body.token, mode: 'add', confirmation: 'REPLACE' })).status, 400);
+    assert.equal((await api('/api/admin/sheet-import/apply', { token: 'forged', mode: 'add', confirmation: 'IMPORT' })).status, 409);
+    const added = await api('/api/admin/sheet-import/apply', { token: plan.body.token, mode: 'add', confirmation: 'IMPORT' });
+    assert.equal(added.status, 200);
+    assert.equal(added.body.orders, 7);
+    assert.equal(added.body.jobs, 1);
+    assert.equal((await api('/api/admin/sheet-import/apply', { token: plan.body.token, mode: 'add', confirmation: 'IMPORT' })).status, 409);
+
+    let orders = (await api('/api/orders?status=All%20Orders')).body.orders;
+    assert.equal(orders.length, before + 7);
+    const alpha = orders.filter(order => order.customer_name.toLowerCase() === 'synthetic alpha');
+    assert.equal(alpha.length, 2);
+    assert.equal(alpha[0].job_group, alpha[1].job_group);
+    assert.equal(alpha[0].job_order_count, 2);
+    assert.equal(alpha[0].created_by, 'admin');
+    const bravo = orders.find(order => order.customer_name === 'Synthetic Bravo');
+    assert.equal(bravo.supplier, 'Andersen');
+    assert.equal(bravo.stage, 'complete');
+    assert.equal(bravo.housecall_job_number, '10238822');
+    assert.ok((await api('/api/orders?status=Need%20Invoice')).body.orders.some(order => order.id === bravo.id));
+    assert.ok((await api('/api/orders?status=To%20Schedule')).body.orders.some(order => order.customer_name === 'Synthetic Glass'));
+    // Imported jobs already have their materials ordered.
+    assert.ok((await api('/api/job-drafts')).body.drafts.some(draft => draft.customer_name === 'Synthetic Alpha' && draft.status === 'Completed'));
+
+    plan = await preview(sheet);
+    const again = await api('/api/admin/sheet-import/apply', { token: plan.body.token, mode: 'add', confirmation: 'IMPORT' });
+    assert.equal(again.body.orders, 0);
+    assert.equal(again.body.duplicates, 7);
+
+    plan = await preview(sheet);
+    const replaced = await api('/api/admin/sheet-import/apply', { token: plan.body.token, mode: 'replace', confirmation: 'REPLACE' });
+    assert.equal(replaced.status, 200);
+    orders = (await api('/api/orders?status=All%20Orders')).body.orders;
+    assert.equal(orders.length, 7);
+    const lists = (await api('/api/master-lists')).body;
+    assert.deepEqual(lists.suppliers.map(row => row.name).sort(), ['Andersen', 'Arcadia', 'CW', 'Jeld-Wen', 'Oldcastle', 'Unknown supplier (from sheet)']);
+    assert.deepEqual(lists.staff_names.map(row => row.name).sort(), ['AD', 'KL', 'RD', 'SD', 'Unknown']);
+    assert.equal((await api('/api/job-drafts')).body.drafts.length, 1);
+    // Logins survive a replace.
+    assert.equal((await api('/api/login', { username: 'mary', password: 'staff123' })).status, 200);
+  } finally {
+    child.kill('SIGTERM');
+  }
 });

@@ -13,6 +13,10 @@
   --warning-soft: #fff4df;
   --danger: #b3261e;
   --danger-soft: #fdecec;
+  --scheduled: #6b3fa0;
+  --scheduled-soft: #f1eafa;
+  --complete: #0f6b5c;
+  --complete-soft: #e0f3ef;
   --shadow: 0 12px 28px rgba(17, 24, 39, 0.08);
 }
 
@@ -374,7 +378,7 @@ input:focus, select:focus, textarea:focus {
 
 .condensed-orders th,
 .condensed-orders td {
-  padding: 0.4rem 0.55rem;
+  padding: 0.4rem 0.45rem;
   white-space: nowrap;
   font-size: 0.85rem;
 }
@@ -382,9 +386,14 @@ input:focus, select:focus, textarea:focus {
 .condensed-orders .condensed-customer,
 .condensed-orders .condensed-supplier,
 .condensed-orders .condensed-notes {
-  max-width: 200px;
+  max-width: 170px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.condensed-orders .condensed-supplier,
+.condensed-orders .condensed-notes {
+  max-width: 130px;
 }
 
 .condensed-orders .action-button {
@@ -715,9 +724,18 @@ input:focus, select:focus, textarea:focus {
   overflow-wrap: anywhere;
 }
 
-.order-card-header .status-badge {
+.order-card-status {
   flex-shrink: 0;
+  text-align: right;
+}
+
+.order-card-header .status-badge {
   padding: 0.2rem 0.5rem;
+}
+
+.order-card-line.schedule-note {
+  color: var(--scheduled);
+  font-weight: 600;
 }
 
 .order-card-line {
@@ -805,6 +823,46 @@ tr.overdue {
 .status-badge.overdue {
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+.status-badge.scheduled {
+  background: var(--scheduled-soft);
+  color: var(--scheduled);
+}
+
+.status-badge.complete {
+  background: var(--complete-soft);
+  color: var(--complete);
+}
+
+.status-badge.invoiced {
+  background: var(--panel-alt);
+  color: var(--muted);
+}
+
+.status-badge {
+  white-space: nowrap;
+}
+
+.stage-warning {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--danger);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.job-materials {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.condensed-actions {
+  display: flex;
+  gap: 0.35rem;
 }
 
 .notes-cell {
@@ -920,7 +978,9 @@ button:disabled {
 }
 
 #orderDialog,
-#masterListsDialog {
+#masterListsDialog,
+#progressDialog,
+#sheetImportDialog {
   border: none;
   border-radius: 18px;
   padding: 0;
@@ -929,13 +989,124 @@ button:disabled {
 }
 
 #orderDialog::backdrop,
-#masterListsDialog::backdrop {
+#masterListsDialog::backdrop,
+#progressDialog::backdrop,
+#sheetImportDialog::backdrop {
   background: rgba(15, 23, 42, 0.5);
 }
 
 #orderForm,
-#masterListsForm {
+#masterListsForm,
+#progressForm {
   padding: 1.2rem 1.25rem 1.4rem;
+}
+
+#progressDialog {
+  width: min(100%, 560px);
+}
+
+#sheetImportDialog {
+  width: min(100%, 820px);
+  max-height: calc(100vh - 2rem);
+  padding: 1.2rem 1.25rem 1.4rem;
+  overflow: auto;
+}
+
+.progress-customer {
+  margin: -0.5rem 0 1rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.progress-grid {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr);
+  gap: 0.85rem 1rem;
+  align-items: end;
+}
+
+.progress-grid label small {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.progress-check {
+  align-self: center;
+  padding-top: 1.2rem;
+}
+
+.progress-check input,
+.import-mode input {
+  width: auto;
+}
+
+.progress-hint,
+.import-hint,
+.import-current {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.import-steps {
+  margin: 0 0 1rem;
+  padding-left: 1.25rem;
+  color: var(--muted);
+}
+
+.import-file-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.import-file-row input {
+  flex: 1 1 260px;
+}
+
+.import-summary ul {
+  margin: 0.35rem 0 0.75rem;
+}
+
+
+.import-table-wrap {
+  max-height: 320px;
+  overflow: auto;
+  margin-top: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.import-table-wrap table {
+  min-width: 0;
+  font-size: 0.85rem;
+}
+
+.import-table-wrap th,
+.import-table-wrap td {
+  padding: 0.35rem 0.5rem;
+}
+
+.import-mode {
+  display: grid;
+  gap: 0.35rem;
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.import-mode legend {
+  font-weight: 700;
+  padding: 0 0.35rem;
+}
+
+.import-mode .import-hint {
+  margin: 0 0 0.5rem 1.6rem;
+}
+
+.import-confirm {
+  max-width: 320px;
 }
 
 .dialog-header {
@@ -1191,15 +1362,26 @@ button:disabled {
   }
 
   #orderDialog,
-  #masterListsDialog {
+  #masterListsDialog,
+  #progressDialog,
+  #sheetImportDialog {
     width: min(calc(100vw - 1rem), 760px);
     max-height: calc(100vh - 1rem);
     overflow: auto;
   }
 
   #orderForm,
-  #masterListsForm {
+  #masterListsForm,
+  #progressForm {
     padding: 1rem 0.9rem 1.1rem;
+  }
+
+  .progress-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .progress-check {
+    padding-top: 0.25rem;
   }
 
   .master-list-row {

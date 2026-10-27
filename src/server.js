@@ -22,15 +22,21 @@ import {
   deleteInactiveSupplierRecords,
   dbAll,
   dbGet,
-  dbRun
+  dbRun,
+  runInTransaction
 } from './db.js';
+import { importStatements, parseOrderSheet } from './sheet-import.js';
 import {
   ORDER_CATEGORIES,
   getOrderGroup,
+  groupOrdersByJob,
   isoNow,
   normalizeCategory,
   normalizeOrderInput,
+  normalizeProgressInput,
   normalizeText,
+  orderStage,
+  PROGRESS_FIELDS,
   statusFromOrder,
   todayPhoenixString
 } from './utils.js';
@@ -689,6 +695,22 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
     ordered_by: staffById.get(order.ordered_by_id)?.name || order.ordered_by
   }));
 
+  // How many of each job's orders have arrived, so the labor meeting only
+  // sees jobs with everything in the shop.
+  const activeRows = rows.filter(order => Number(order.is_archived || 0) !== 1);
+  const groupOf = groupOrdersByJob(activeRows);
+  const jobTotals = new Map();
+  for (const order of activeRows) {
+    const totals = jobTotals.get(groupOf.get(order.id)) || { orders: 0, received: 0 };
+    totals.orders += 1;
+    if (order.date_received) totals.received += 1;
+    jobTotals.set(groupOf.get(order.id), totals);
+  }
+  const jobInfo = (order) => {
+    const totals = jobTotals.get(groupOf.get(order.id)) || { orders: 1, received: order.date_received ? 1 : 0 };
+    return { job_group: groupOf.get(order.id) || order.id, job_order_count: totals.orders, job_received_count: totals.received, job_ready: totals.received === totals.orders };
+  };
+
   const statusFilter = (req.query.status || 'Outstanding').toString();
   const viewFilter = (req.query.view || 'All Orders').toString();
   const categoryFilter = (req.query.category || '').toString();
@@ -714,6 +736,9 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
       if (order.expected_delivery_date >= todayPhoenixString()) return false;
     }
     if (statusFilter === 'Received' && status !== 'Received') return false;
+    if (statusFilter === 'To Schedule' && !(status === 'Received' && jobInfo(order).job_ready && !Number(order.job_scheduled) && !Number(order.job_completed))) return false;
+    if (statusFilter === 'Scheduled' && !(Number(order.job_scheduled) && !Number(order.job_completed))) return false;
+    if (statusFilter === 'Need Invoice' && !(Number(order.job_completed) && !Number(order.invoiced))) return false;
 
     if (viewFilter === 'Windows / Flat Glass' && !['Windows / Flat Glass'].includes(resolvedGroup)) {
       return false;
@@ -733,7 +758,7 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
     if (!matchesFilter(order, orderedByFilters, 'ordered_by_id', 'ordered_by', staffNames, staffById)) return false;
 
     if (searchTerm) {
-      const haystack = [order.customer_name, order.housecall_job_number, order.supplier, order.po_number, order.category || '', resolvedGroup].join(' ').toLowerCase();
+      const haystack = [order.customer_name, order.housecall_job_number, order.supplier, order.po_number, order.category || '', resolvedGroup, order.shop_location, order.schedule_note, order.invoice_reference].join(' ').toLowerCase();
       if (!haystack.includes(searchTerm)) {
         return false;
       }
@@ -756,6 +781,12 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
       return aTie.localeCompare(bTie) || String(a.id || '').localeCompare(String(b.id || ''));
     }
 
+    if (sortKey === 'scheduled_date') {
+      const aDate = a.scheduled_date || '9999-12-31';
+      const bDate = b.scheduled_date || '9999-12-31';
+      return aDate.localeCompare(bDate) || String(a.customer_name || '').localeCompare(String(b.customer_name || '')) || String(a.id || '').localeCompare(String(b.id || ''));
+    }
+
     if (sortKey === 'order_date') {
       const aDate = a.date_ordered || '9999-12-31';
       const bDate = b.date_ordered || '9999-12-31';
@@ -769,9 +800,14 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
 
   const normalized = filtered.map((order) => ({
     ...order,
+    ...jobInfo(order),
     category: order.category || '',
     combined_group: order.category ? getOrderGroup(order.category) : (order.combined_group || ''),
     status: statusFromOrder(order),
+    stage: orderStage(order),
+    job_scheduled: Number(order.job_scheduled || 0),
+    job_completed: Number(order.job_completed || 0),
+    invoiced: Number(order.invoiced || 0),
     is_overdue: order.expected_delivery_date && order.status === 'Ordered' && order.expected_delivery_date < todayPhoenixString()
   }));
 
@@ -825,8 +861,8 @@ app.post('/api/orders', requireStaffAuth, asyncRoute(async (req, res) => {
     INSERT INTO orders (
       id, customer_name, housecall_job_number, housecall_job_link, supplier, supplier_id, category, combined_group,
       po_number, date_ordered, expected_delivery_date, date_received, ordered_by, ordered_by_id, status, notes, job_draft_id,
-      created_at, updated_at, created_by, updated_by, is_preview_data
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      created_at, updated_at, created_by, updated_by, is_preview_data, shop_location
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
   `, [
     orderId,
     orderData.customer_name,
@@ -848,7 +884,8 @@ app.post('/api/orders', requireStaffAuth, asyncRoute(async (req, res) => {
     now,
     now,
     actor(req),
-    actor(req)
+    actor(req),
+    orderData.shop_location
   ]);
 
   const created = await dbGet('SELECT * FROM orders WHERE id = ?', [orderId]);
@@ -914,6 +951,7 @@ app.put('/api/orders/:id', requireStaffAuth, asyncRoute(async (req, res) => {
       ordered_by_id = ?,
       status = ?,
       notes = ?,
+      shop_location = ?,
       updated_at = ?,
       updated_by = ?
     WHERE id = ? AND updated_at = ?
@@ -933,6 +971,7 @@ app.put('/api/orders/:id', requireStaffAuth, asyncRoute(async (req, res) => {
     orderData.ordered_by_id || null,
     orderData.date_received ? 'Received' : 'Ordered',
     orderData.notes,
+    orderData.shop_location,
     now,
     actor(req),
     req.params.id,
@@ -953,6 +992,92 @@ app.put('/api/orders/:id', requireStaffAuth, asyncRoute(async (req, res) => {
       is_overdue: updated.expected_delivery_date && updated.status === 'Ordered' && updated.expected_delivery_date < todayPhoenixString()
     }
   });
+}));
+
+function progressValues(row) {
+  return {
+    job_scheduled: Number(row.job_scheduled || 0),
+    scheduled_date: row.scheduled_date || '',
+    schedule_note: row.schedule_note || '',
+    job_completed: Number(row.job_completed || 0),
+    completed_date: row.completed_date || '',
+    invoiced: Number(row.invoiced || 0),
+    invoice_reference: row.invoice_reference || ''
+  };
+}
+
+const progressAssignments = PROGRESS_FIELDS.map((field) => `${field} = ?`).join(', ');
+
+// Saves Scheduled / Complete / Invoiced for the whole job (every active order
+// on it) and the shop location for this order, in one transaction. Returns
+// the previous values so the screen can undo exactly.
+app.put('/api/orders/:id/progress', requireStaffAuth, asyncRoute(async (req, res) => {
+  const order = await dbGet('SELECT * FROM orders WHERE id = ? AND is_archived = 0', [req.params.id]);
+  if (!order) {
+    return res.status(404).json({ error: 'Order not found.' });
+  }
+  const version = String(req.body.updated_at || '');
+  if (!version) {
+    return res.status(400).json({ error: 'Refresh the page and try again.' });
+  }
+
+  const progress = normalizeProgressInput(req.body);
+  const shopLocation = Object.hasOwn(req.body, 'shop_location') ? normalizeText(req.body.shop_location) : (order.shop_location || '');
+  const active = await dbAll('SELECT * FROM orders WHERE is_archived = 0');
+  const groupOf = groupOrdersByJob(active);
+  const siblings = active.filter((row) => row.id !== order.id && groupOf.get(row.id) === groupOf.get(order.id));
+  const now = isoNow();
+  const values = PROGRESS_FIELDS.map((field) => progress[field]);
+  try {
+    await runInTransaction([
+      { sql: `UPDATE orders SET ${progressAssignments}, shop_location = ?, updated_at = ?, updated_by = ? WHERE id = ? AND updated_at = ?`, params: [...values, shopLocation, now, actor(req), order.id, version], expect: 1 },
+      ...siblings.map((row) => ({ sql: `UPDATE orders SET ${progressAssignments}, updated_at = ?, updated_by = ? WHERE id = ? AND updated_at = ?`, params: [...values, now, actor(req), row.id, row.updated_at], expect: 1 }))
+    ]);
+  } catch (error) {
+    if (error.code === 'STATEMENT_EXPECTATION') {
+      return res.status(409).json({ error: 'Someone else changed this job. Close this window to see their changes, then try again.' });
+    }
+    throw error;
+  }
+
+  const orderIds = [order.id, ...siblings.map((row) => row.id)];
+  broadcastLiveEvent('orders', { action: 'progress', orderIds, time: isoNow() });
+  return res.json({
+    order_ids: orderIds,
+    updated_at: now,
+    previous: [{ id: order.id, shop_location: order.shop_location || '', ...progressValues(order) }, ...siblings.map((row) => ({ id: row.id, ...progressValues(row) }))]
+  });
+}));
+
+// Undo for a progress save: puts back each order's previous values, as long
+// as nobody has changed those orders since.
+app.post('/api/order-progress/restore', requireStaffAuth, asyncRoute(async (req, res) => {
+  const items = Array.isArray(req.body.items) ? req.body.items.filter((item) => item && typeof item.id === 'string') : [];
+  const version = String(req.body.updated_at || '');
+  if (!items.length || !version) {
+    return res.status(400).json({ error: 'Nothing to undo.' });
+  }
+
+  const now = isoNow();
+  try {
+    await runInTransaction(items.map((item) => {
+      const progress = normalizeProgressInput(item, { fillCompletedDate: false });
+      const restoreShop = Object.hasOwn(item, 'shop_location');
+      return {
+        sql: `UPDATE orders SET ${progressAssignments}${restoreShop ? ', shop_location = ?' : ''}, updated_at = ?, updated_by = ? WHERE id = ? AND updated_at = ?`,
+        params: [...PROGRESS_FIELDS.map((field) => progress[field]), ...(restoreShop ? [normalizeText(item.shop_location)] : []), now, actor(req), item.id, version],
+        expect: 1
+      };
+    }));
+  } catch (error) {
+    if (error.code === 'STATEMENT_EXPECTATION') {
+      return res.status(409).json({ error: 'Someone changed this job after you did.' });
+    }
+    throw error;
+  }
+
+  broadcastLiveEvent('orders', { action: 'progress-restored', orderIds: items.map((item) => item.id), time: isoNow() });
+  return res.json({ restored: items.length });
 }));
 
 app.post('/api/orders/:id/mark-received', requireStaffAuth, asyncRoute(async (req, res) => {
@@ -990,6 +1115,73 @@ app.post('/api/orders/:id/reopen', requireStaffAuth, asyncRoute(async (req, res)
   const updated = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   broadcastLiveEvent('orders', { action: 'reopened', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
   return res.json({ order: { ...updated, status: statusFromOrder(updated) } });
+}));
+
+// One-time import from the office's Google Sheet, downloaded as .xlsx.
+// Preview parses the file and keeps the plan for 30 minutes; nothing is
+// written until the admin confirms with IMPORT (add) or REPLACE.
+const sheetImports = new Map();
+
+app.post('/api/admin/sheet-import/preview', requireAdminAuth, express.raw({ type: () => true, limit: '25mb' }), asyncRoute(async (req, res) => {
+  if (!Buffer.isBuffer(req.body) || !req.body.length) {
+    return res.status(400).json({ error: 'Choose the sheet file (.xlsx) first.' });
+  }
+  let plan;
+  try {
+    plan = await parseOrderSheet(req.body, { today: todayPhoenixString() });
+  } catch {
+    return res.status(400).json({ error: 'That file is not the order sheet. In Google Sheets use File > Download > Microsoft Excel (.xlsx).' });
+  }
+
+  for (const [token, entry] of sheetImports) if (entry.expires < Date.now()) sheetImports.delete(token);
+  const token = randomUUID();
+  sheetImports.set(token, { plan, expires: Date.now() + 30 * 60 * 1000 });
+  const count = async (sql) => Number((await dbGet(sql))?.count || 0);
+  const existingSuppliers = (await dbAll('SELECT name FROM suppliers')).map((row) => row.name.trim().toLowerCase());
+  const existingStaff = (await dbAll('SELECT name FROM staff_names')).map((row) => row.name.trim().toLowerCase());
+  return res.json({
+    token,
+    tabs: plan.tabs,
+    orders: plan.orders.map((order) => ({
+      tab: order.tab, row: order.row, customer_name: order.customer_name, supplier: order.supplier, category: order.category,
+      date_ordered: order.date_ordered, date_received: order.date_received, job_scheduled: order.job_scheduled,
+      job_completed: order.job_completed, invoiced: order.invoiced, housecall_job_number: order.housecall_job_number
+    })),
+    jobs: plan.jobs.length,
+    suppliers: plan.suppliers.map((name) => ({ name, existing: existingSuppliers.includes(name.trim().toLowerCase()) })),
+    staff: plan.staff.map((name) => ({ name, existing: existingStaff.includes(name.trim().toLowerCase()) })),
+    skipped: plan.skipped,
+    current: {
+      orders: await count('SELECT COUNT(*) AS count FROM orders'),
+      jobs: await count('SELECT COUNT(*) AS count FROM job_drafts'),
+      suppliers: existingSuppliers.length,
+      staff: existingStaff.length
+    }
+  });
+}));
+
+app.post('/api/admin/sheet-import/apply', requireAdminAuth, asyncRoute(async (req, res) => {
+  const entry = sheetImports.get(String(req.body.token || ''));
+  if (!entry || entry.expires < Date.now()) {
+    return res.status(409).json({ error: 'Preview the sheet again before importing.' });
+  }
+  const mode = req.body.mode === 'replace' ? 'replace' : 'add';
+  if (req.body.confirmation !== (mode === 'replace' ? 'REPLACE' : 'IMPORT')) {
+    return res.status(400).json({ error: `Type ${mode === 'replace' ? 'REPLACE' : 'IMPORT'} to confirm.` });
+  }
+
+  const existing = {
+    suppliers: await dbAll('SELECT id, name, active FROM suppliers'),
+    staff: await dbAll('SELECT id, name FROM staff_names'),
+    orders: await dbAll('SELECT customer_name, supplier, date_ordered FROM orders WHERE is_archived = 0')
+  };
+  const { statements, result } = importStatements(entry.plan, { mode, existing, now: isoNow(), actor: actor(req) });
+  await runInTransaction(statements);
+  sheetImports.delete(String(req.body.token));
+  broadcastLiveEvent('master-lists', { action: 'sheet-import' });
+  broadcastLiveEvent('job-drafts', { action: 'sheet-import' });
+  broadcastLiveEvent('orders', { action: 'sheet-import' });
+  return res.json(result);
 }));
 
 app.use((error, req, res, next) => {

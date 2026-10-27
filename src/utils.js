@@ -73,6 +73,62 @@ export function isOrderOverdue(order) {
   return order.expected_delivery_date < todayPhoenixString();
 }
 
+// Orders on the same job: linked to the same approved job, or sharing a
+// Housecall Pro job number (in either direction). Returns order id -> group id.
+export function groupOrdersByJob(orders) {
+  const parent = new Map(orders.map(order => [order.id, order.id]));
+  const find = (id) => {
+    while (parent.get(id) !== id) {
+      parent.set(id, parent.get(parent.get(id)));
+      id = parent.get(id);
+    }
+    return id;
+  };
+  const firstOrderByKey = new Map();
+  for (const order of orders) {
+    const number = String(order.housecall_job_number ?? '').trim().toLowerCase();
+    const keys = [order.job_draft_id ? `draft:${order.job_draft_id}` : '', number ? `job:${number}` : ''].filter(Boolean);
+    for (const key of keys) {
+      if (!firstOrderByKey.has(key)) {
+        firstOrderByKey.set(key, order.id);
+        continue;
+      }
+      const [left, right] = [find(firstOrderByKey.get(key)), find(order.id)];
+      if (left !== right) parent.set(right, left);
+    }
+  }
+  return new Map(orders.map(order => [order.id, find(order.id)]));
+}
+
+// Furthest step an order has reached: ordered (or overdue), received,
+// scheduled, complete, invoiced. A job billed up front still has to be
+// scheduled and done, so invoiced only counts once the job is complete.
+export function orderStage(order) {
+  if (!order.date_received) return isOrderOverdue({ ...order, status: 'Ordered' }) ? 'overdue' : 'ordered';
+  if (Number(order.job_completed)) return Number(order.invoiced) ? 'invoiced' : 'complete';
+  if (Number(order.job_scheduled)) return 'scheduled';
+  return 'received';
+}
+
+export const PROGRESS_FIELDS = ['job_scheduled', 'scheduled_date', 'schedule_note', 'job_completed', 'completed_date', 'invoiced', 'invoice_reference'];
+
+// Job progress from a request. Marking a job complete without a date uses
+// today, unless restoring saved values exactly (fillCompletedDate: false).
+export function normalizeProgressInput(payload = {}, { fillCompletedDate = true } = {}) {
+  const flag = value => (value === true || value === 1 || value === '1' || value === 'true' ? 1 : 0);
+  const scheduled = flag(payload.job_scheduled);
+  const completed = flag(payload.job_completed);
+  return {
+    job_scheduled: scheduled,
+    scheduled_date: scheduled ? normalizeDate(payload.scheduled_date) : '',
+    schedule_note: normalizeText(payload.schedule_note),
+    job_completed: completed,
+    completed_date: completed ? (normalizeDate(payload.completed_date) || (fillCompletedDate ? todayPhoenixString() : '')) : '',
+    invoiced: flag(payload.invoiced),
+    invoice_reference: normalizeText(payload.invoice_reference)
+  };
+}
+
 export function normalizeOrderInput(payload = {}) {
   const customerName = normalizeText(payload.customer_name);
   const supplier = normalizeText(payload.supplier);
@@ -98,6 +154,7 @@ export function normalizeOrderInput(payload = {}) {
     date_received: receivedDate,
     ordered_by: orderedBy,
     ordered_by_id: orderedById,
+    shop_location: normalizeText(payload.shop_location),
     notes: typeof payload.notes === 'string' ? payload.notes.trim() : ''
   };
 }

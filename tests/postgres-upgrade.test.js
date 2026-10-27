@@ -9,7 +9,7 @@ import { migratePostgres } from '../src/postgres-migrations.js';
 
 // Production ran 002-freeport.sql before the omega_snapshot column was added to
 // it, so the column must arrive through a later migration. Synthetic data only.
-test('a database that ran the first 002-freeport.sql gets every newer Freeport column', { timeout: 90000 }, async () => {
+test('a database that ran the first 002-freeport.sql gets every newer Freeport and order column', { timeout: 90000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'boulevard-pg-upgrade-'));
   const cluster = new EmbeddedPostgres({ databaseDir: path.join(directory, 'cluster'), port: 55441, user: 'testuser', password: 'test-password', persistent: false, onLog: () => {}, onError: () => {} });
   let pool;
@@ -37,6 +37,8 @@ test('a database that ran the first 002-freeport.sql gets every newer Freeport c
     const table = async name => (await pool.query('SELECT to_regclass($1) AS name', [name])).rows[0].name;
     assert.equal(await table('freeport_months'), 'freeport_months');
     assert.equal(await table('freeport_month_sends'), 'freeport_month_sends');
+    const orderColumn = async name => (await pool.query("SELECT 1 FROM information_schema.columns WHERE table_name = 'orders' AND column_name = $1", [name])).rowCount;
+    for (const name of ['shop_location', 'job_scheduled', 'scheduled_date', 'schedule_note', 'job_completed', 'completed_date', 'invoiced', 'invoice_reference']) assert.equal(await orderColumn(name), 1, name);
   } finally {
     await pool?.end();
     await cluster.stop();

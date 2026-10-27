@@ -11,6 +11,7 @@ import pg from 'pg';
 import Database from 'better-sqlite3';
 import { generateKeyPair, exportJWK, SignJWT } from 'jose';
 import { recordFingerprint } from '../src/record-fingerprint.js';
+import { syntheticOrderSheet } from './sheet-fixture.js';
 
 // Uses a fresh temporary cluster and synthetic records only. No provider credentials.
 test('real Postgres production access, orders, admin gate and restart persistence', { timeout: 90000 }, async () => {
@@ -189,6 +190,28 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     assert.deepEqual((await request('/api/admin/inactive-suppliers/delete', {confirmation_token: preview.body.confirmation_token, confirmation:'DELETE'})).body, { deleted_suppliers: 0, deleted_orders: 2 });
     assert.equal((await pool.query('SELECT id FROM orders')).rows[0].id, other.body.order.id);
     assert.equal(Number((await pool.query('SELECT count(*) FROM job_drafts WHERE id=$1', ['cleanup-draft'])).rows[0].count), 1);
+
+    // Job progress and the sheet import run in real Postgres transactions.
+    const jobA = await request('/api/orders', { customer_name: 'Synthetic PG Job', housecall_job_number: 'PG-7', supplier: 'Active Supplier', ordered_by: 'Renamed Staff', category: 'Windows', date_ordered: '2026-10-10', shop_location: 'H' });
+    const jobB = await request('/api/orders', { customer_name: 'Synthetic PG Job', housecall_job_number: 'pg-7', supplier: 'Active Supplier', ordered_by: 'Renamed Staff', category: 'Windows', date_ordered: '2026-10-11' });
+    assert.equal(jobA.status, 201);
+    assert.equal(jobA.body.order.shop_location, 'H');
+    const progress = await request(`/api/orders/${jobA.body.order.id}/progress`, { job_scheduled: 1, scheduled_date: '2026-11-03', updated_at: jobA.body.order.updated_at }, token, 'tools.blvdglass.com', 'PUT');
+    assert.equal(progress.status, 200);
+    assert.equal(progress.body.order_ids.length, 2);
+    assert.deepEqual((await pool.query('SELECT job_scheduled, scheduled_date, updated_by FROM orders WHERE id = $1', [jobB.body.order.id])).rows[0], { job_scheduled: 1, scheduled_date: '2026-11-03', updated_by: 'staff@example.test' });
+    assert.equal((await request(`/api/orders/${jobA.body.order.id}/progress`, { job_scheduled: 0, updated_at: jobA.body.order.updated_at }, token, 'tools.blvdglass.com', 'PUT')).status, 409);
+    assert.equal((await request('/api/orders?status=Scheduled')).body.orders.length, 2);
+    assert.equal((await request('/api/order-progress/restore', { updated_at: progress.body.updated_at, items: progress.body.previous })).status, 200);
+    assert.equal((await pool.query('SELECT job_scheduled FROM orders WHERE id = $1', [jobB.body.order.id])).rows[0].job_scheduled, 0);
+    const sheetPreview = await fetch('http://127.0.0.1:4209/api/admin/sheet-import/preview', { method: 'POST', headers: { Host: 'tools.blvdglass.com', 'X-Forwarded-Host': 'tools.blvdglass.com', 'X-Forwarded-Proto': 'https', 'Cf-Access-Jwt-Assertion': token, 'Content-Type': 'application/octet-stream', Cookie: cookie }, body: await syntheticOrderSheet() }).then(response => response.json());
+    assert.equal(sheetPreview.orders.length, 7);
+    const sheetImport = await request('/api/admin/sheet-import/apply', { token: sheetPreview.token, mode: 'replace', confirmation: 'REPLACE' });
+    assert.equal(sheetImport.status, 200);
+    assert.equal(Number((await pool.query('SELECT count(*) FROM orders')).rows[0].count), 7);
+    assert.equal(Number((await pool.query('SELECT count(*) FROM job_drafts')).rows[0].count), 1);
+    assert.equal(Number((await pool.query("SELECT count(*) FROM orders WHERE created_by = 'staff@example.test' AND invoiced = 1")).rows[0].count), 1);
+    assert.equal(Number((await pool.query('SELECT count(*) FROM freeport_invoices')).rows[0].count), 1, 'Freeport is not touched by a replace');
     await stop();
     await cluster.createDatabase('import_test');
     const sqliteFile = path.join(directory, 'synthetic.db');

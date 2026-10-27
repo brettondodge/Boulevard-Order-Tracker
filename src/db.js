@@ -204,6 +204,22 @@ if (!isProduction) {
     db.exec('ALTER TABLE suppliers ADD COLUMN updated_at TEXT;');
   }
 
+  // Job progress columns (migrations/006-order-progress.sql for Postgres).
+  const progressColumns = {
+    shop_location: 'TEXT',
+    job_scheduled: 'INTEGER NOT NULL DEFAULT 0',
+    scheduled_date: 'TEXT',
+    schedule_note: 'TEXT',
+    job_completed: 'INTEGER NOT NULL DEFAULT 0',
+    completed_date: 'TEXT',
+    invoiced: 'INTEGER NOT NULL DEFAULT 0',
+    invoice_reference: 'TEXT'
+  };
+  for (const [column, type] of Object.entries(progressColumns)) {
+    const exists = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = ?").get(column);
+    if (Number(exists.count) === 0) db.exec(`ALTER TABLE orders ADD COLUMN ${column} ${type};`);
+  }
+
   const hasStaffTable = db.prepare("SELECT COUNT(*) as count FROM sqlite_master WHERE type = 'table' AND name = 'staff_names'").get();
   if (Number(hasStaffTable.count) === 0) {
     db.exec(`
@@ -290,6 +306,37 @@ export async function dbRun(sql, params = []) {
   }
 
   return db.prepare(sql).run(...params);
+}
+
+// Runs statements ({ sql, params, expect }) as one transaction. A statement
+// with `expect` must change exactly that many rows, or everything rolls back
+// with error code STATEMENT_EXPECTATION (used for version checks).
+export async function runInTransaction(statements) {
+  const check = (statement, changes) => {
+    if (statement.expect !== undefined && changes !== statement.expect) {
+      throw Object.assign(new Error('A record changed while saving.'), { code: 'STATEMENT_EXPECTATION' });
+    }
+    return changes;
+  };
+  if (!isProduction) {
+    return db.transaction(() => statements.map(statement => check(statement, db.prepare(statement.sql).run(...(statement.params || [])).changes)))();
+  }
+  const client = await (await getPool()).connect();
+  try {
+    await client.query('BEGIN');
+    const changes = [];
+    for (const statement of statements) {
+      const result = await client.query(normalizeQuestionMarks(statement.sql), statement.params || []);
+      changes.push(check(statement, Number(result.rowCount || 0)));
+    }
+    await client.query('COMMIT');
+    return changes;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export function ensureSupplierExists(name) {
