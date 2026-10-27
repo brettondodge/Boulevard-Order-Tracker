@@ -141,7 +141,8 @@ export function progressFromHcp(row, current) {
 export async function applyHcpJob(row) {
   const active = await dbAll('SELECT * FROM orders WHERE is_archived = 0');
   const number = String(row.invoice_number || '').trim().toLowerCase();
-  const direct = active.filter(order => order.hcp_job_id === row.id || (!order.hcp_job_id && number && String(order.housecall_job_number ?? '').trim().toLowerCase() === number));
+  const byNumber = /[1-9]/.test(number);
+  const direct = active.filter(order => order.hcp_job_id === row.id || (!order.hcp_job_id && byNumber && String(order.housecall_job_number ?? '').trim().toLowerCase() === number));
   if (!direct.length) return [];
   const groupOf = groupOrdersByJob(active);
   const groups = new Set(direct.map(order => groupOf.get(order.id)));

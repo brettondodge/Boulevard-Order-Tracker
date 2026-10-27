@@ -74,7 +74,9 @@ export function isOrderOverdue(order) {
 }
 
 // Orders on the same job: linked to the same approved job, or sharing a
-// Housecall Pro job number (in either direction). Returns order id -> group id.
+// Housecall Pro job number (in either direction). Placeholders typed into
+// the job number box ("TBD", "N/A", "0") have no real digit and link nothing.
+// Returns order id -> group id.
 export function groupOrdersByJob(orders) {
   const parent = new Map(orders.map(order => [order.id, order.id]));
   const find = (id) => {
@@ -87,7 +89,7 @@ export function groupOrdersByJob(orders) {
   const firstOrderByKey = new Map();
   for (const order of orders) {
     const number = String(order.housecall_job_number ?? '').trim().toLowerCase();
-    const keys = [order.job_draft_id ? `draft:${order.job_draft_id}` : '', number ? `job:${number}` : ''].filter(Boolean);
+    const keys = [order.job_draft_id ? `draft:${order.job_draft_id}` : '', /[1-9]/.test(number) ? `job:${number}` : ''].filter(Boolean);
     for (const key of keys) {
       if (!firstOrderByKey.has(key)) {
         firstOrderByKey.set(key, order.id);
@@ -101,11 +103,12 @@ export function groupOrdersByJob(orders) {
 }
 
 // Furthest step an order has reached: ordered (or overdue), received,
-// scheduled, complete, invoiced. A job billed up front still has to be
-// scheduled and done, so invoiced only counts once the job is complete.
+// scheduled, complete, invoiced. A finished job counts as finished even if
+// this order's Received box was never ticked. A job billed up front still
+// has to be scheduled and done, so invoiced only counts once it is complete.
 export function orderStage(order) {
-  if (!order.date_received) return isOrderOverdue({ ...order, status: 'Ordered' }) ? 'overdue' : 'ordered';
   if (Number(order.job_completed)) return Number(order.invoiced) ? 'invoiced' : 'complete';
+  if (!order.date_received) return isOrderOverdue({ ...order, status: 'Ordered' }) ? 'overdue' : 'ordered';
   if (Number(order.job_scheduled)) return 'scheduled';
   return 'received';
 }

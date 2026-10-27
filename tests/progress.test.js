@@ -140,3 +140,57 @@ test('supplier and staff names that differ only in capitals become one entry', a
   assert.deepEqual(plan.staff, ['RD']);
   assert.deepEqual(plan.orders.map(order => order.supplier), ['CW', 'CW']);
 });
+
+test('placeholder job numbers never join unrelated orders into one job', () => {
+  const groups = groupOrdersByJob([
+    { id: 'a', housecall_job_number: 'TBD' }, { id: 'b', housecall_job_number: 'tbd' },
+    { id: 'c', housecall_job_number: '0' }, { id: 'd', housecall_job_number: '0' },
+    { id: 'e', housecall_job_number: 'N/A' }, { id: 'f', housecall_job_number: 'n/a' },
+    { id: 'g', housecall_job_number: 'HC-1' }, { id: 'h', housecall_job_number: 'hc-1' }
+  ]);
+  assert.equal(new Set(['a', 'b', 'c', 'd', 'e', 'f'].map(id => groups.get(id))).size, 6);
+  assert.equal(groups.get('g'), groups.get('h'));
+});
+
+test('a finished job counts as finished even if one order was never ticked received', () => {
+  assert.equal(orderStage({ date_received: '', job_completed: 1 }), 'complete');
+  assert.equal(orderStage({ date_received: '', job_completed: 1, invoiced: 1 }), 'invoiced');
+});
+
+test('the sheet import refuses impossible dates, keeps names with "for", lists customer-less rows and keeps separate HCP jobs apart', async () => {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Window Orders');
+  sheet.addRow(['Window Orders']);
+  sheet.addRow(['Who Ordered', 'Customer', 'Vendor', 'Order Date', 'Date to Received', 'Received', 'Job Scheduled', 'Shop Location', 'To Schedule', 'Job Complete', 'Billed -Invoice#', 'Del Claim', 'Billed Out', 'Notes']);
+  sheet.addRow(['Ford', 'Synthetic Feb', 'JW', '2/30/2026', '1/5/99']);
+  sheet.addRow(['Clifford', 'Synthetic Two Jobs', 'JW', '10/1/26', null, false, false, null, null, false, 11111111]);
+  sheet.addRow(['KA for AD', 'Synthetic Two Jobs', 'AW', '10/2/26', null, false, false, null, null, false, 22222222]);
+  sheet.addRow(['RD', null, 'JW', '10/3/26', null, false, false, null, null, false, null, false, false, 'stock']);
+  sheet.addRow([null, null, null, null]);
+  const plan = await parseOrderSheet(Buffer.from(await workbook.xlsx.writeBuffer()), { today: '2026-10-26' });
+  const feb = plan.orders.find(order => order.customer_name === 'Synthetic Feb');
+  assert.equal(feb.date_ordered, '2026-10-26');
+  assert.equal(feb.missing_order_date, true);
+  assert.match(feb.notes, /No order date in the sheet \("2\/30\/2026"\)/);
+  assert.equal(feb.expected_delivery_date, '');
+  assert.match(feb.notes, /Expected date in the sheet could not be read: "1\/5\/99"/);
+  assert.deepEqual(plan.orders.map(order => order.ordered_by), ['FORD', 'CLIFFORD', 'KA']);
+  assert.equal(plan.orders.find(order => order.housecall_job_number === '11111111').date_ordered, '2026-10-01');
+  assert.equal(plan.jobs.length, 0, 'two HCP numbers for one customer are two jobs');
+  assert.deepEqual(plan.skipped.map(row => [row.row, row.reason]), [[6, 'No customer name']]);
+});
+
+test('re-running Add does not duplicate rows that had no order date', async () => {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Window Orders');
+  sheet.addRow(['Window Orders']);
+  sheet.addRow(['Who Ordered', 'Customer', 'Vendor', 'Order Date']);
+  sheet.addRow(['RD', 'Synthetic Undated', 'JW', null]);
+  const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+  const firstRun = await parseOrderSheet(buffer, { today: '2026-10-26' });
+  const secondRun = await parseOrderSheet(buffer, { today: '2026-10-27' });
+  const existing = { suppliers: [], staff: [], orders: [{ customer_name: 'Synthetic Undated', supplier: 'Jeld-Wen', date_ordered: firstRun.orders[0].date_ordered }] };
+  const again = importStatements(secondRun, { mode: 'add', existing, now: 'now', actor: 'admin' });
+  assert.equal(again.result.orders, 0);
+  assert.equal(again.result.duplicates, 1);
+});

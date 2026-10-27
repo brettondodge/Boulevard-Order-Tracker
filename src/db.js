@@ -617,9 +617,11 @@ export function sanitizeSupplierName(value) {
 }
 
 export function seedPreviewData() {
-  const existingPreview = db.prepare('SELECT COUNT(*) as count FROM orders WHERE is_preview_data = 1').get();
+  // Demo rows only go into an empty tracker, so they never mix with real or
+  // imported orders (for example after a Replace import).
+  const existingOrders = db.prepare('SELECT COUNT(*) as count FROM orders').get();
 
-  if (Number(existingPreview.count) > 0) {
+  if (Number(existingOrders.count) > 0) {
     return;
   }
 

@@ -1018,7 +1018,7 @@ app.put('/api/orders/:id', requireStaffAuth, asyncRoute(async (req, res) => {
     orderData.ordered_by_id || null,
     orderData.date_received ? 'Received' : 'Ordered',
     orderData.notes,
-    orderData.shop_location,
+    Object.hasOwn(req.body, 'shop_location') ? orderData.shop_location : (existing.shop_location || ''),
     hcpJobId || null,
     now,
     actor(req),
@@ -1057,6 +1057,10 @@ function progressValues(row) {
 
 const progressAssignments = PROGRESS_FIELDS.map((field) => `${field} = ?`).join(', ');
 
+// A version check that failed, or Postgres giving up on a deadlock or
+// serialization clash: either way someone else saved first.
+const isWriteConflict = (error) => ['STATEMENT_EXPECTATION', '40P01', '40001'].includes(error.code);
+
 // Saves Scheduled / Complete / Invoiced for the whole job (every active order
 // on it) and the shop location for this order, in one transaction. Returns
 // the previous values so the screen can undo exactly.
@@ -1070,31 +1074,38 @@ app.put('/api/orders/:id/progress', requireStaffAuth, asyncRoute(async (req, res
     return res.status(400).json({ error: 'Refresh the page and try again.' });
   }
 
-  const progress = normalizeProgressInput(req.body);
+  // A job that is already complete keeps its (possibly unknown) completion date.
+  const progress = normalizeProgressInput(req.body, { fillCompletedDate: !Number(order.job_completed) });
   const shopLocation = Object.hasOwn(req.body, 'shop_location') ? normalizeText(req.body.shop_location) : (order.shop_location || '');
   const active = await dbAll('SELECT * FROM orders WHERE is_archived = 0');
   const groupOf = groupOrdersByJob(active);
   const siblings = active.filter((row) => row.id !== order.id && groupOf.get(row.id) === groupOf.get(order.id));
   const now = isoNow();
-  const values = PROGRESS_FIELDS.map((field) => progress[field]);
+  // The other orders on the job get only what changed on this one, so a
+  // newer order's blank fields never wipe a sibling's date or invoice.
+  const before = progressValues(order);
+  const changed = PROGRESS_FIELDS.filter((field) => String(progress[field]) !== String(before[field]));
+  const statements = [
+    { id: order.id, sql: `UPDATE orders SET ${progressAssignments}, shop_location = ?, updated_at = ?, updated_by = ? WHERE id = ? AND updated_at = ?`, params: [...PROGRESS_FIELDS.map((field) => progress[field]), shopLocation, now, actor(req), order.id, version], expect: 1 },
+    ...(changed.length ? siblings : []).map((row) => ({ id: row.id, sql: `UPDATE orders SET ${changed.map((field) => `${field} = ?`).join(', ')}, updated_at = ?, updated_by = ? WHERE id = ? AND updated_at = ?`, params: [...changed.map((field) => progress[field]), now, actor(req), row.id, row.updated_at], expect: 1 }))
+  ];
   try {
-    await runInTransaction([
-      { sql: `UPDATE orders SET ${progressAssignments}, shop_location = ?, updated_at = ?, updated_by = ? WHERE id = ? AND updated_at = ?`, params: [...values, shopLocation, now, actor(req), order.id, version], expect: 1 },
-      ...siblings.map((row) => ({ sql: `UPDATE orders SET ${progressAssignments}, updated_at = ?, updated_by = ? WHERE id = ? AND updated_at = ?`, params: [...values, now, actor(req), row.id, row.updated_at], expect: 1 }))
-    ]);
+    // Same lock order for every request, so two saves on one job can't deadlock.
+    await runInTransaction(statements.sort((left, right) => left.id.localeCompare(right.id)));
   } catch (error) {
-    if (error.code === 'STATEMENT_EXPECTATION') {
+    if (isWriteConflict(error)) {
       return res.status(409).json({ error: 'Someone else changed this job. Close this window to see their changes, then try again.' });
     }
     throw error;
   }
+  const touchedSiblings = changed.length ? siblings : [];
 
-  const orderIds = [order.id, ...siblings.map((row) => row.id)];
+  const orderIds = [order.id, ...touchedSiblings.map((row) => row.id)];
   broadcastLiveEvent('orders', { action: 'progress', orderIds, time: isoNow() });
   return res.json({
     order_ids: orderIds,
     updated_at: now,
-    previous: [{ id: order.id, shop_location: order.shop_location || '', ...progressValues(order) }, ...siblings.map((row) => ({ id: row.id, ...progressValues(row) }))]
+    previous: [{ id: order.id, shop_location: order.shop_location || '', ...progressValues(order) }, ...touchedSiblings.map((row) => ({ id: row.id, ...progressValues(row) }))]
   });
 }));
 
@@ -1109,7 +1120,7 @@ app.post('/api/order-progress/restore', requireStaffAuth, asyncRoute(async (req,
 
   const now = isoNow();
   try {
-    await runInTransaction(items.map((item) => {
+    await runInTransaction([...items].sort((left, right) => left.id.localeCompare(right.id)).map((item) => {
       const progress = normalizeProgressInput(item, { fillCompletedDate: false });
       const restoreShop = Object.hasOwn(item, 'shop_location');
       return {
@@ -1119,7 +1130,7 @@ app.post('/api/order-progress/restore', requireStaffAuth, asyncRoute(async (req,
       };
     }));
   } catch (error) {
-    if (error.code === 'STATEMENT_EXPECTATION') {
+    if (isWriteConflict(error)) {
       return res.status(409).json({ error: 'Someone changed this job after you did.' });
     }
     throw error;
@@ -1186,6 +1197,7 @@ app.post('/api/hcp/sync', requireAdminAuth, asyncRoute(async (req, res) => {
 // Preview parses the file and keeps the plan for 30 minutes; nothing is
 // written until the admin confirms with IMPORT (add) or REPLACE.
 const sheetImports = new Map();
+let sheetImportRunning = false;
 
 app.post('/api/admin/sheet-import/preview', requireAdminAuth, express.raw({ type: () => true, limit: '25mb' }), asyncRoute(async (req, res) => {
   if (!Buffer.isBuffer(req.body) || !req.body.length) {
@@ -1235,24 +1247,39 @@ app.post('/api/admin/sheet-import/apply', requireAdminAuth, asyncRoute(async (re
     return res.status(400).json({ error: `Type ${mode === 'replace' ? 'REPLACE' : 'IMPORT'} to confirm.` });
   }
 
-  const existing = {
-    suppliers: await dbAll('SELECT id, name, active FROM suppliers'),
-    staff: await dbAll('SELECT id, name FROM staff_names'),
-    orders: await dbAll('SELECT customer_name, supplier, date_ordered FROM orders WHERE is_archived = 0')
-  };
-  const { statements, result } = importStatements(entry.plan, { mode, existing, now: isoNow(), actor: actor(req) });
-  await runInTransaction(statements);
+  if (sheetImportRunning) {
+    return res.status(409).json({ error: 'An import is already running.' });
+  }
+  // Claim the preview before anything async, so a double click imports once.
+  sheetImportRunning = true;
   sheetImports.delete(String(req.body.token));
-  broadcastLiveEvent('master-lists', { action: 'sheet-import' });
-  broadcastLiveEvent('job-drafts', { action: 'sheet-import' });
-  broadcastLiveEvent('orders', { action: 'sheet-import' });
-  return res.json(result);
+  try {
+    const existing = {
+      suppliers: await dbAll('SELECT id, name, active FROM suppliers'),
+      staff: await dbAll('SELECT id, name FROM staff_names'),
+      orders: await dbAll('SELECT customer_name, supplier, date_ordered FROM orders WHERE is_archived = 0')
+    };
+    const { statements, result } = importStatements(entry.plan, { mode, existing, now: isoNow(), actor: actor(req) });
+    await runInTransaction(statements);
+    broadcastLiveEvent('master-lists', { action: 'sheet-import' });
+    broadcastLiveEvent('job-drafts', { action: 'sheet-import' });
+    broadcastLiveEvent('orders', { action: 'sheet-import' });
+    return res.json(result);
+  } finally {
+    sheetImportRunning = false;
+  }
 }));
 
 app.use((error, req, res, next) => {
   // Log a code and route only: database errors can contain customer data or secrets.
   console.error('Request failed', { method: req.method, route: req.route?.path || 'middleware', code: error.code || 'REQUEST_ERROR' });
   if (res.headersSent) return next(error);
+  if (error.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'That file is too large. Download the sheet as .xlsx again without pictures, or ask for help.' });
+  }
+  if (error.expose && error.status >= 400 && error.status < 500) {
+    return res.status(error.status).json({ error: 'The request could not be read. Try again.' });
+  }
   return res.status(500).json({ error: 'Unable to complete this request right now.' });
 });
 

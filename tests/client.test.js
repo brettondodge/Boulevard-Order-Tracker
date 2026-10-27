@@ -438,3 +438,24 @@ test('the Housecall Pro panel says what is set up and what is missing', () => {
   assert.equal(node('hcpSyncButton').disabled, false);
   assert.match(node('hcpRecentEvents').innerHTML, /job\.&lt;scheduled&gt; · applied/);
 });
+
+test('finished jobs offer invoicing first, and an already-complete job keeps its blank completion date', () => {
+  const { node, tracker } = client();
+  assert.equal(tracker.nextStep({ id: 'x', date_received: '', job_completed: 1 }).action, 'mark-invoiced');
+  const imported = { id: 'imported', customer_name: 'Synthetic Imported', status: 'Received', date_received: '2026-10-20', job_completed: 1, completed_date: '', updated_at: 'v1' };
+  tracker.openProgressDialog(imported);
+  assert.equal(node('progressCompleted').checked, true);
+  assert.equal(node('progressCompletedDate').value, '', 'opening the window does not invent a date');
+});
+
+test('choosing another file clears the old preview and the typed word', () => {
+  const { node, tracker } = client();
+  tracker.bindEvents();
+  tracker.state.sheetImport = { token: 'old' };
+  node('sheetImportConfirmation').value = 'REPLACE';
+  node('sheetImportFile').listeners.change();
+  assert.equal(tracker.state.sheetImport, null);
+  assert.equal(node('sheetImportConfirmation').value, '');
+  assert.equal(node('sheetImportPreview').classList.contains('hidden'), true);
+  assert.equal(node('applySheetImportButton').disabled, true);
+});

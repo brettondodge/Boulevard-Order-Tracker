@@ -474,7 +474,7 @@
           <label class="checkbox-inline"><input type="radio" name="sheetImportMode" value="replace" /> Replace everything in the tracker</label>
           <p class="import-hint">Deletes the orders, approved jobs, suppliers and staff in the tracker now, then brings in the sheet. Logins and Freeport Billing are not touched.</p>
           <label class="checkbox-inline"><input type="radio" name="sheetImportMode" value="add" /> Add to what is in the tracker</label>
-          <p class="import-hint">Keeps everything and skips sheet rows already in the tracker (same customer, supplier and order date).</p>
+          <p class="import-hint">Keeps everything and skips sheet rows already in the tracker (same customer, supplier and order date; rows without an order date match on customer and supplier).</p>
         </fieldset>
         <label class="import-confirm">
           <span>Type <strong id="sheetImportWord">IMPORT</strong> to confirm</span>

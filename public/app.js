@@ -370,6 +370,7 @@ function bindEvents() {
   document.getElementById('openSheetImportButton').addEventListener('click', openSheetImport);
   for (const id of ['closeSheetImportButton', 'cancelSheetImportButton']) document.getElementById(id).addEventListener('click', () => elements.sheetImportDialog.close());
   elements.previewSheetImportButton.addEventListener('click', previewSheetImport);
+  elements.sheetImportFile.addEventListener('change', resetSheetImportPreview);
   elements.sheetImportDialog.addEventListener('change', (event) => {
     if (event.target.name === 'sheetImportMode') syncSheetImportConfirmation();
   });
@@ -1157,14 +1158,14 @@ function jobMaterials(order) {
 }
 
 function nextStep(order) {
+  if (Number(order.job_completed)) return Number(order.invoiced) ? null : { action: 'mark-invoiced', label: 'Mark invoiced' };
   if (!order.date_received) return { action: 'mark-received', label: 'Mark received' };
   // Linked jobs are scheduled and finished in Housecall Pro, which updates the tracker.
-  if (order.hcp && order.hcp.status !== 'canceled' && !Number(order.job_completed)) {
+  if (order.hcp && order.hcp.status !== 'canceled') {
     return Number(order.job_scheduled)
       ? { link: order.hcp.url, label: 'Open in HCP' }
       : { link: order.hcp.url, label: 'Schedule in HCP', primary: true };
   }
-  if (Number(order.job_completed)) return Number(order.invoiced) ? null : { action: 'mark-invoiced', label: 'Mark invoiced' };
   if (Number(order.job_scheduled)) return { action: 'mark-complete', label: 'Mark complete' };
   return { action: 'schedule', label: 'Mark scheduled' };
 }
@@ -1230,7 +1231,7 @@ function renderOrderCard(order) {
       <div class="order-card-actions">
         <button type="button" class="action-button" data-action="edit" data-id="${id}">Edit</button>
         ${nextStepButton(order) || `<button type="button" class="action-button" data-action="progress" data-id="${id}">Progress</button>`}
-        <button type="button" class="action-button" data-order-menu="${id}" aria-label="More actions for ${escapeAttr(order.customer_name)}">More</button>
+        <button type="button" class="action-button" data-order-menu="${id}" popovertarget="desktopOrderMenu" aria-label="More actions for ${escapeAttr(order.customer_name)}">More</button>
       </div>
     </article>
   `;
@@ -1709,13 +1710,14 @@ function openProgressDialog(order, focus = '') {
   if (focus === 'schedule') elements.progressScheduledDate.focus();
 }
 
-function syncProgressInputs() {
+function syncProgressInputs(event) {
   const locked = Boolean(state.progressFromHcp);
   elements.progressScheduled.disabled = locked;
   elements.progressCompleted.disabled = locked;
   elements.progressScheduledDate.disabled = locked || !elements.progressScheduled.checked;
   elements.progressCompletedDate.disabled = locked || !elements.progressCompleted.checked;
-  if (elements.progressCompleted.checked && !elements.progressCompletedDate.value) elements.progressCompletedDate.value = localToday();
+  // Ticking Complete suggests today; a job already complete keeps its date (or none).
+  if (event?.target === elements.progressCompleted && elements.progressCompleted.checked && !elements.progressCompletedDate.value) elements.progressCompletedDate.value = localToday();
 }
 
 async function saveProgressDialog() {
@@ -1745,13 +1747,23 @@ function openSheetImport() {
   elements.sheetImportError.textContent = '';
   elements.sheetImportPreview.classList.add('hidden');
   elements.sheetImportDialog.querySelectorAll('input[name="sheetImportMode"]').forEach((input) => { input.checked = false; });
+  elements.sheetImportConfirmation.value = '';
   syncSheetImportConfirmation();
   elements.sheetImportDialog.showModal();
+}
+
+// A different file, or a new preview, needs its own preview and confirmation.
+function resetSheetImportPreview() {
+  state.sheetImport = null;
+  elements.sheetImportConfirmation.value = '';
+  elements.sheetImportPreview.classList.add('hidden');
+  syncSheetImportConfirmation();
 }
 
 async function previewSheetImport() {
   const file = elements.sheetImportFile.files?.[0];
   elements.sheetImportError.textContent = '';
+  resetSheetImportPreview();
   if (!file) {
     elements.sheetImportError.textContent = 'Choose the downloaded .xlsx file first.';
     return;

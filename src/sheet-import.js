@@ -90,11 +90,15 @@ function sheetDate(value) {
     const typed = String(plain ?? '').trim();
     const iso = /^(\d{4})-(\d{2})-(\d{2})\b/.exec(typed);
     const us = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4}|\d{2})\b/.exec(typed);
+    // Two-digit years read like Google Sheets does: 00-29 are 20xx, 30-99 are 19xx (and refused below).
+    const century = year => (year.length === 4 ? year : Number(year) < 30 ? `20${year}` : `19${year}`);
     if (iso) date = `${iso[1]}-${iso[2]}-${iso[3]}`;
-    else if (us) date = `${us[3].length === 2 ? `20${us[3]}` : us[3]}-${us[1].padStart(2, '0')}-${us[2].padStart(2, '0')}`;
+    else if (us) date = `${century(us[3])}-${us[1].padStart(2, '0')}-${us[2].padStart(2, '0')}`;
   }
+  // Only real calendar days this century (no 2/30, no mistyped years).
   const [year, month, day] = date.split('-').map(Number);
-  return year >= 2000 && year <= 2099 && month >= 1 && month <= 12 && day >= 1 && day <= 31 ? date : '';
+  const real = new Date(Date.UTC(year, month - 1, day));
+  return year >= 2000 && year <= 2099 && real.getUTCFullYear() === year && real.getUTCMonth() === month - 1 && real.getUTCDate() === day ? date : '';
 }
 
 // The billing cell holds either an 8-digit Housecall Pro invoice/job number
@@ -123,10 +127,11 @@ function supplierName(vendor) {
   return VENDOR_NAMES[code.toUpperCase().replace(/\s+/g, '')] || code;
 }
 
-// "SD/RD", "KA for AD" and "AD/JC" are credited to the first person;
-// the full text is kept in the order notes.
+// "SD/RD", "KA for AD", "KLfor JC" and "AD/JC" are credited to the first
+// person; the full text is kept in the order notes. Names that merely
+// contain "for" (Ford, Clifford) are left whole.
 function staffName(orderedBy) {
-  const first = orderedBy.split(/\s*(?:\/|for|&|,)\s*/i)[0].trim();
+  const first = orderedBy.split(/\s*(?:[/&,]|\bfor\b|(?<=^[a-z]{1,3})for(?=\s))\s*/i)[0].trim();
   return /^[?]*$/.test(first) ? UNKNOWN_STAFF : first.toUpperCase();
 }
 
@@ -163,12 +168,16 @@ export async function parseOrderSheet(buffer, { today }) {
     for (let rowNumber = header.headerRow + 1; rowNumber <= worksheet.rowCount; rowNumber += 1) {
       const row = worksheet.getRow(rowNumber);
       const customer = text(cell(row, 'customer'));
-      if (!customer) continue;
-
       const skip = reason => {
         summary.skipped += 1;
         plan.skipped.push({ tab: summary.name, row: rowNumber, customer, reason });
       };
+      if (!customer) {
+        // Empty rows are ignored; a row with order details but no customer is listed.
+        const hasOrderData = ['orderedBy', 'vendor', 'orderDate', 'expectedDate', 'invoice', 'notes'].some(key => text(cell(row, key))) || checked(cell(row, 'received'));
+        if (hasOrderData) skip('No customer name');
+        continue;
+      }
       const invoiceReference = text(cell(row, 'invoice'));
       const jobNumber = housecallNumber(invoiceReference);
       const completed = checked(cell(row, 'completed'));
@@ -219,19 +228,24 @@ export async function parseOrderSheet(buffer, { today }) {
         job_completed: completed ? 1 : 0,
         invoiced: invoiced ? 1 : 0,
         invoice_reference: invoiceReference,
+        missing_order_date: missingOrderDate,
         notes
       };
       plan.orders.push(order);
       summary.imported += 1;
       const key = customerKey(customer);
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(order);
+      if (key) {
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(order);
+      }
     }
 
     // Several orders for the same customer on one tab become one job, so
     // scheduling one schedules them all and "all materials here" works.
+    // Rows carrying different HCP job numbers are separate jobs (rows that
+    // share a number are linked by that number anyway).
     for (const orders of groups.values()) {
-      if (orders.length < 2) continue;
+      if (orders.length < 2 || new Set(orders.map(order => order.housecall_job_number).filter(Boolean)).size > 1) continue;
       const job = { key: `job:${orders[0].key}`, customer_name: orders[0].customer_name, order_keys: orders.map(order => order.key) };
       orders.forEach(order => { order.job_key = job.key; });
       plan.jobs.push(job);
@@ -296,9 +310,15 @@ export function importStatements(plan, { mode, existing, now, actor }) {
     result.staff_added += 1;
   }
 
-  const already = new Set(keep(existing.orders).map(row => [row.customer_name, row.supplier, row.date_ordered].map(value => String(value || '').trim().toLowerCase()).join('|')));
+  const key = (...values) => values.map(value => String(value || '').trim().toLowerCase()).join('|');
+  const already = new Set(keep(existing.orders).map(row => key(row.customer_name, row.supplier, row.date_ordered)));
+  // A row with no order date got a stand-in date, which differs from run to
+  // run, so it matches on customer and supplier alone.
+  const alreadyAnyDate = new Set(keep(existing.orders).map(row => key(row.customer_name, row.supplier)));
   const orders = plan.orders.filter(order => {
-    const duplicate = already.has([order.customer_name, order.supplier, order.date_ordered].map(value => value.trim().toLowerCase()).join('|'));
+    const duplicate = order.missing_order_date
+      ? alreadyAnyDate.has(key(order.customer_name, order.supplier))
+      : already.has(key(order.customer_name, order.supplier, order.date_ordered));
     if (duplicate) result.duplicates += 1;
     return !duplicate;
   });

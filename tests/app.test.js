@@ -986,9 +986,42 @@ test('scheduled, complete and invoiced are saved for the whole job, feed the lab
     assert.equal((await find(second.id)).stage, 'invoiced');
     assert.equal((await find(second.id)).invoice_reference, '10239422');
 
+    // A newer order joining a finished job: saving it changes only what was
+    // changed, so the job's completion and invoice stay on the other order.
+    const late = (await create('HC-77', 'Bayside Supply')).body.order;
+    assert.equal((await api(`/api/orders/${late.id}/mark-received`, {})).status, 200);
+    const lateRow = await find(late.id);
+    assert.equal(lateRow.stage, 'received');
+    const lateSave = await api(`/api/orders/${late.id}/progress`, { ...lateRow, job_scheduled: 1, scheduled_date: '2026-11-20', updated_at: lateRow.updated_at }, 'PUT');
+    assert.equal(lateSave.status, 200);
+    const keptFirst = await find(first.id);
+    assert.equal(keptFirst.job_completed, 1);
+    assert.equal(keptFirst.invoiced, 1);
+    assert.equal(keptFirst.invoice_reference, '10239422');
+    assert.equal(keptFirst.scheduled_date, '2026-11-20');
+    const firstBefore = lateSave.body.previous.find(item => item.id === first.id);
+    assert.equal(firstBefore.job_completed, 1);
+    assert.equal(firstBefore.invoiced, 1);
+    assert.equal(firstBefore.scheduled_date, needInvoice.find(order => order.id === first.id).scheduled_date);
+    assert.equal((await api('/api/order-progress/restore', { updated_at: lateSave.body.updated_at, items: lateSave.body.previous })).status, 200);
+    assert.equal((await find(first.id)).scheduled_date, needInvoice.find(order => order.id === first.id).scheduled_date);
+
+    // Placeholder job numbers do not make a job.
+    const tbdOne = (await create('TBD', 'Northline Glass')).body.order;
+    const tbdTwo = (await api('/api/orders', { customer_name: 'Synthetic Other Customer', housecall_job_number: 'tbd', supplier: 'Oldcastle', category: 'Windows', date_ordered: '2026-10-01', ordered_by: 'Admin User' })).body.order;
+    assert.equal((await find(tbdOne.id)).job_order_count, 1);
+    assert.notEqual((await find(tbdOne.id)).job_group, (await find(tbdTwo.id)).job_group);
+
+    // An edit from a screen without the Shop location field keeps it.
+    const shopRow = await find(first.id);
+    const { shop_location: droppedShop, ...withoutShop } = shopRow;
+    assert.equal(droppedShop, 'H');
+    assert.equal((await api(`/api/orders/${first.id}`, { ...withoutShop, notes: 'Edited elsewhere' }, 'PUT')).status, 200);
+    assert.equal((await find(first.id)).shop_location, 'H');
+
     // Deleted orders are not part of the job any more.
     assert.equal((await api(`/api/orders/${second.id}/delete`, {})).status, 200);
-    assert.equal((await find(first.id)).job_order_count, 1);
+    assert.equal((await find(first.id)).job_order_count, 2, 'the late order is still on the job');
     assert.equal((await api(`/api/orders/${second.id}/progress`, { updated_at: 'x' }, 'PUT')).status, 404);
   } finally {
     child.kill('SIGTERM');
