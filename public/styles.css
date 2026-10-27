@@ -879,14 +879,6 @@ a.action-button {
   white-space: nowrap;
 }
 
-.job-materials {
-  display: block;
-  margin-top: 0.25rem;
-  color: var(--muted);
-  font-size: 0.75rem;
-  white-space: nowrap;
-}
-
 .condensed-actions {
   display: flex;
   gap: 0.35rem;

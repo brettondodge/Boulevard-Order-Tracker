@@ -1127,7 +1127,7 @@ function stageOf(order) {
 function orderStatusBadge(order) {
   const stage = stageOf(order);
   let label = STAGE_LABELS[stage];
-  if (stage === 'received' && order.job_ready === true) label = 'Ready to schedule';
+  if (stage === 'received') label = 'Ready to schedule';
   if (stage === 'scheduled' && order.scheduled_date) label = `Scheduled ${formatDate(order.scheduled_date)}`;
   const warning = Number(order.job_scheduled) && !Number(order.job_completed) && !order.date_received
     ? `<span class="stage-warning">Scheduled${order.scheduled_date ? ` ${formatDate(order.scheduled_date)}` : ''}, not here yet</span>`
@@ -1147,14 +1147,6 @@ function hcpStatusLine(order) {
   if (hcp.paid) parts.push('Paid');
   else if (hcp.invoice_sent) parts.push('Invoice sent');
   return `<span class="hcp-status ${hcp.status === 'canceled' ? 'canceled' : ''}">HCP: ${escapeHtml(parts.join(' · '))}</span>`;
-}
-
-// "1 of 2 here" when the job has more than one supplier order.
-function jobMaterials(order) {
-  const count = Number(order.job_order_count || 1);
-  if (count < 2) return '';
-  const here = Number(order.job_received_count || 0);
-  return here === count ? `All ${count} here` : `${here} of ${count} here`;
 }
 
 function nextStep(order) {
@@ -1186,7 +1178,6 @@ function jobNumberHtml(order) {
 }
 
 function renderOrderRow(order) {
-  const materials = jobMaterials(order);
   return `
     <tr class="${order.is_overdue ? 'overdue' : ''}">
       <td><strong>${escapeHtml(order.customer_name)}</strong></td>
@@ -1199,7 +1190,7 @@ function renderOrderRow(order) {
       <td class="nowrap">${order.expected_delivery_date ? formatDate(order.expected_delivery_date) : 'No ETA'}</td>
       <td class="nowrap">${order.date_received ? formatDate(order.date_received) : '—'}</td>
       <td>${escapeHtml(order.shop_location || '—')}</td>
-      <td class="status-cell">${orderStatusBadge(order)}${materials ? `<small class="job-materials">${materials}</small>` : ''}</td>
+      <td class="status-cell">${orderStatusBadge(order)}</td>
       <td class="notes-cell">${renderOrderNotesPreview(order)}</td>
       <td>${renderDesktopOrderActions(order)}</td>
     </tr>
@@ -1214,8 +1205,7 @@ function renderOrderCard(order) {
     received ? `Received ${formatDate(order.date_received)}` : order.expected_delivery_date ? `ETA ${formatDate(order.expected_delivery_date)}` : 'No ETA',
     order.shop_location ? `Shop ${escapeHtml(order.shop_location)}` : '',
     order.housecall_job_number || order.housecall_job_link ? `Job ${jobNumberHtml(order)}` : '',
-    order.po_number ? `PO ${escapeHtml(order.po_number)}` : '',
-    jobMaterials(order)
+    order.po_number ? `PO ${escapeHtml(order.po_number)}` : ''
   ].filter(Boolean).join(' · ');
   const notes = String(order.notes || '').trim();
   return `
@@ -1248,7 +1238,6 @@ function renderCondensedOrders() {
       <td class="condensed-supplier" title="${escapeAttr(order.supplier || '')}">${escapeHtml(order.supplier || '—')}</td>
       <td>${order.expected_delivery_date ? formatDate(order.expected_delivery_date) : 'No ETA'}</td>
       <td>${order.date_received ? formatDate(order.date_received) : '—'}</td>
-      <td>${jobMaterials(order) || '—'}</td>
       <td>${escapeHtml(order.shop_location || '—')}</td>
       <td class="status-cell">${orderStatusBadge(order)}</td>
       <td class="condensed-notes" title="${escapeAttr(order.schedule_note || '')}">${escapeHtml(order.schedule_note || '—')}</td>
@@ -1659,11 +1648,9 @@ function progressOf(order) {
   };
 }
 
-// Scheduled / complete / invoiced are saved for every order on the job.
 async function saveProgress(order, values, message) {
   const data = await sendJson(`/api/orders/${order.id}/progress`, { ...values, updated_at: order.updated_at }, 'PUT');
-  const count = data.order_ids.length;
-  offerUndo(count > 1 ? `${message} (all ${count} orders on this job).` : `${message}.`, () => sendJson('/api/order-progress/restore', { updated_at: data.updated_at, items: data.previous }));
+  offerUndo(`${message}.`, () => sendJson('/api/order-progress/restore', { updated_at: data.updated_at, items: data.previous }));
   await loadOrders();
 }
 
@@ -1697,12 +1684,8 @@ function openProgressDialog(order, focus = '') {
   elements.progressCompletedDate.value = values.completed_date;
   elements.progressInvoiced.checked = Boolean(values.invoiced);
   elements.progressInvoiceReference.value = values.invoice_reference;
-  const count = Number(order.job_order_count || 1);
   const fromHcp = Boolean(order.hcp && order.hcp.status !== 'canceled');
-  elements.progressJobHint.textContent = [
-    count > 1 ? `Scheduled, complete and invoiced apply to all ${count} orders on this job (${jobMaterials(order)}).` : 'Scheduled, complete and invoiced apply to the whole job.',
-    fromHcp ? 'Scheduled and complete come from Housecall Pro; change them there.' : ''
-  ].filter(Boolean).join(' ');
+  elements.progressJobHint.textContent = fromHcp ? 'Scheduled and complete come from Housecall Pro; change them there.' : '';
   elements.progressError.textContent = '';
   state.progressFromHcp = fromHcp;
   syncProgressInputs();

@@ -14,8 +14,9 @@ HCP account: that needs the steps below.
 ## What it does
 
 - **Scheduled / complete come from HCP.** When a job is scheduled,
-  rescheduled, unscheduled or finished in HCP, every tracker order on that job
-  updates within seconds (webhooks), with the date and the assigned techs.
+  rescheduled, unscheduled or finished in HCP, every tracker order for that
+  HCP job updates within seconds (webhooks), with the date and the assigned
+  techs.
   Each line shows a purple "HCP: Scheduled Nov 3 · tech" note.
 - **Invoiced.** When HCP sends or is paid an invoice for the job, the tracker
   marks the job invoiced ("HCP: Invoice sent" / "Paid"). The tracker never
@@ -51,8 +52,9 @@ HCP account: that needs the steps below.
    from the invoice column). HCP's API can't search by number, so the sync
    reads recent jobs, newest first (up to 30 pages), to find them.
 
-Everything on the same job (same approved job or job number) moves together.
-Placeholders like "TBD" or "0" never link anything.
+Otherwise each order stands on its own: two orders only share HCP status
+when they point at the same HCP job. Placeholders like "TBD" or "0" never
+match anything.
 
 ## Setting it up
 

@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { dbAll, dbGet, dbRun, runInTransaction } from '../db.js';
-import { groupOrdersByJob, isoNow, PROGRESS_FIELDS } from '../utils.js';
+import { isoNow, PROGRESS_FIELDS } from '../utils.js';
 import { createHcpClient, hcpApiConfigured } from './client.js';
 
 // Keeps tracker orders in step with their Housecall Pro jobs. HCP is the
@@ -155,8 +155,8 @@ export function progressFromHcp(row, current) {
 }
 
 // Applies an HCP job to its orders: those linked by id, by a pasted HCP link
-// or by an approved job from HCP, those with the same job number, and the
-// rest of their job (same approved job). Links them too.
+// or by an approved job from HCP, and those with the same job number. Links
+// them too.
 export async function applyHcpJob(row) {
   const active = await dbAll('SELECT * FROM orders WHERE is_archived = 0');
   const draftIds = new Set((await dbAll('SELECT id FROM job_drafts WHERE hcp_job_id = ?', [row.id])).map(draft => draft.id));
@@ -167,13 +167,10 @@ export async function applyHcpJob(row) {
     || draftIds.has(order.job_draft_id)
     || (byNumber && String(order.housecall_job_number ?? '').trim().toLowerCase() === number))));
   if (!direct.length) return [];
-  const groupOf = groupOrdersByJob(active);
-  const groups = new Set(direct.map(order => groupOf.get(order.id)));
   const now = isoNow();
   const statements = [];
   const changedIds = [];
-  for (const order of active) {
-    if (!groups.has(groupOf.get(order.id)) || (order.hcp_job_id && order.hcp_job_id !== row.id)) continue;
+  for (const order of direct) {
     const next = progressFromHcp(row, order);
     const changed = Boolean(next) && PROGRESS_FIELDS.some(field => String(next[field] ?? '') !== String(order[field] ?? ''));
     if (!changed && order.hcp_job_id === row.id) continue;

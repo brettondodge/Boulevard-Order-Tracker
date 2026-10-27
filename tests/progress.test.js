@@ -1,26 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupOrdersByJob, normalizeProgressInput, orderStage } from '../src/utils.js';
+import { normalizeProgressInput, orderStage } from '../src/utils.js';
 import { importStatements, parseOrderSheet } from '../src/sheet-import.js';
 import ExcelJS from 'exceljs';
 import { syntheticOrderSheet } from './sheet-fixture.js';
-
-test('orders join a job through a shared approved job or Housecall Pro job number, transitively', () => {
-  const groups = groupOrdersByJob([
-    { id: 'a', job_draft_id: 'draft-1', housecall_job_number: 'HC-1' },
-    { id: 'b', job_draft_id: null, housecall_job_number: ' hc-1 ' },
-    { id: 'c', job_draft_id: 'draft-1', housecall_job_number: '' },
-    { id: 'd', job_draft_id: null, housecall_job_number: 'HC-2' },
-    { id: 'e', job_draft_id: null, housecall_job_number: '' },
-    { id: 'f', job_draft_id: 'draft-9', housecall_job_number: 'HC-2' }
-  ]);
-  assert.equal(groups.get('a'), groups.get('b'));
-  assert.equal(groups.get('a'), groups.get('c'));
-  assert.equal(groups.get('d'), groups.get('f'));
-  assert.notEqual(groups.get('a'), groups.get('d'));
-  assert.notEqual(groups.get('e'), groups.get('a'));
-  assert.notEqual(groups.get('e'), groups.get('d'));
-});
 
 test('stage is the furthest step reached', () => {
   assert.equal(orderStage({ date_received: '', expected_delivery_date: '2000-01-01' }), 'overdue');
@@ -61,10 +44,9 @@ test('the sheet import reads both order tabs and leaves out finished work', asyn
   assert.equal(alpha.housecall_job_number, '');
   assert.equal(alpha.invoiced, 0);
   assert.equal(alpha.notes, 'Call first');
-  assert.ok(alpha.job_key);
-  assert.equal(byName['synthetic alpha'].job_key, alpha.job_key);
   assert.equal(byName['synthetic alpha'].schedule_note, 'IGU');
-  assert.equal(plan.jobs.length, 1);
+  // Every order stands on its own; nothing is grouped into jobs.
+  assert.ok(plan.orders.every(order => !order.job_key));
 
   const bravo = byName['Synthetic Bravo'];
   assert.equal(bravo.supplier, 'Andersen');
@@ -118,14 +100,12 @@ test('import statements reuse existing names when adding and skip orders already
   assert.equal(added.result.staff_added, 4);
   assert.ok(added.statements.some(statement => statement.sql.startsWith('UPDATE suppliers SET active = 1') && statement.params[1] === 'sup-jw'));
   assert.ok(!added.statements.some(statement => statement.sql.startsWith('DELETE')));
-  // The remaining Alpha order is alone now, so no job is created for it.
-  assert.equal(added.result.jobs, 0);
+  assert.ok(!added.statements.some(statement => statement.sql.includes('INSERT INTO job_drafts')));
 
   const replaced = importStatements(plan, { mode: 'replace', existing, now: '2026-10-26T00:00:00.000Z', actor: 'admin' });
   assert.deepEqual(replaced.statements.slice(0, 4).map(statement => statement.sql), ['DELETE FROM orders', 'DELETE FROM job_drafts', 'DELETE FROM suppliers', 'DELETE FROM staff_names']);
   assert.equal(replaced.result.orders, 7);
   assert.equal(replaced.result.suppliers_added, 6);
-  assert.equal(replaced.result.jobs, 1);
 });
 
 test('supplier and staff names that differ only in capitals become one entry', async () => {
@@ -141,23 +121,12 @@ test('supplier and staff names that differ only in capitals become one entry', a
   assert.deepEqual(plan.orders.map(order => order.supplier), ['CW', 'CW']);
 });
 
-test('placeholder job numbers never join unrelated orders into one job', () => {
-  const groups = groupOrdersByJob([
-    { id: 'a', housecall_job_number: 'TBD' }, { id: 'b', housecall_job_number: 'tbd' },
-    { id: 'c', housecall_job_number: '0' }, { id: 'd', housecall_job_number: '0' },
-    { id: 'e', housecall_job_number: 'N/A' }, { id: 'f', housecall_job_number: 'n/a' },
-    { id: 'g', housecall_job_number: 'HC-1' }, { id: 'h', housecall_job_number: 'hc-1' }
-  ]);
-  assert.equal(new Set(['a', 'b', 'c', 'd', 'e', 'f'].map(id => groups.get(id))).size, 6);
-  assert.equal(groups.get('g'), groups.get('h'));
-});
-
 test('a finished job counts as finished even if one order was never ticked received', () => {
   assert.equal(orderStage({ date_received: '', job_completed: 1 }), 'complete');
   assert.equal(orderStage({ date_received: '', job_completed: 1, invoiced: 1 }), 'invoiced');
 });
 
-test('the sheet import refuses impossible dates, keeps names with "for", lists customer-less rows and keeps separate HCP jobs apart', async () => {
+test('the sheet import refuses impossible dates, keeps names with "for" and lists customer-less rows', async () => {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('Window Orders');
   sheet.addRow(['Window Orders']);
@@ -176,7 +145,6 @@ test('the sheet import refuses impossible dates, keeps names with "for", lists c
   assert.match(feb.notes, /Expected date in the sheet could not be read: "1\/5\/99"/);
   assert.deepEqual(plan.orders.map(order => order.ordered_by), ['FORD', 'CLIFFORD', 'KA']);
   assert.equal(plan.orders.find(order => order.housecall_job_number === '11111111').date_ordered, '2026-10-01');
-  assert.equal(plan.jobs.length, 0, 'two HCP numbers for one customer are two jobs');
   assert.deepEqual(plan.skipped.map(row => [row.row, row.reason]), [[6, 'No customer name']]);
 });
 

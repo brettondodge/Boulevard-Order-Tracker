@@ -199,12 +199,13 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     assert.equal(jobA.body.order.shop_location, 'H');
     const progress = await request(`/api/orders/${jobA.body.order.id}/progress`, { job_scheduled: 1, scheduled_date: '2026-11-03', updated_at: jobA.body.order.updated_at }, token, 'tools.blvdglass.com', 'PUT');
     assert.equal(progress.status, 200);
-    assert.equal(progress.body.order_ids.length, 2);
-    assert.deepEqual((await pool.query('SELECT job_scheduled, scheduled_date, updated_by FROM orders WHERE id = $1', [jobB.body.order.id])).rows[0], { job_scheduled: 1, scheduled_date: '2026-11-03', updated_by: 'staff@example.test' });
+    assert.deepEqual(progress.body.order_ids, [jobA.body.order.id]);
+    assert.deepEqual((await pool.query('SELECT job_scheduled, scheduled_date, updated_by FROM orders WHERE id = $1', [jobA.body.order.id])).rows[0], { job_scheduled: 1, scheduled_date: '2026-11-03', updated_by: 'staff@example.test' });
+    assert.equal((await pool.query('SELECT job_scheduled FROM orders WHERE id = $1', [jobB.body.order.id])).rows[0].job_scheduled, 0, 'each order stands on its own');
     assert.equal((await request(`/api/orders/${jobA.body.order.id}/progress`, { job_scheduled: 0, updated_at: jobA.body.order.updated_at }, token, 'tools.blvdglass.com', 'PUT')).status, 409);
-    assert.equal((await request('/api/orders?status=Scheduled')).body.orders.length, 2);
+    assert.equal((await request('/api/orders?status=Scheduled')).body.orders.length, 1);
     assert.equal((await request('/api/order-progress/restore', { updated_at: progress.body.updated_at, items: progress.body.previous })).status, 200);
-    assert.equal((await pool.query('SELECT job_scheduled FROM orders WHERE id = $1', [jobB.body.order.id])).rows[0].job_scheduled, 0);
+    assert.equal((await pool.query('SELECT job_scheduled FROM orders WHERE id = $1', [jobA.body.order.id])).rows[0].job_scheduled, 0);
 
     // HCP webhooks reach the app without a Cloudflare Access token (HCP's
     // signature is the check) and are applied in Postgres, once.
@@ -225,7 +226,7 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     const sheetImport = await request('/api/admin/sheet-import/apply', { token: sheetPreview.token, mode: 'replace', confirmation: 'REPLACE' });
     assert.equal(sheetImport.status, 200);
     assert.equal(Number((await pool.query('SELECT count(*) FROM orders')).rows[0].count), 7);
-    assert.equal(Number((await pool.query('SELECT count(*) FROM job_drafts')).rows[0].count), 1);
+    assert.equal(Number((await pool.query('SELECT count(*) FROM job_drafts')).rows[0].count), 0);
     assert.equal(Number((await pool.query("SELECT count(*) FROM orders WHERE created_by = 'staff@example.test' AND invoiced = 1")).rows[0].count), 1);
     assert.equal(Number((await pool.query('SELECT count(*) FROM freeport_invoices')).rows[0].count), 1, 'Freeport is not touched by a replace');
     await stop();

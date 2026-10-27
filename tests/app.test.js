@@ -907,7 +907,7 @@ test('order saves require existing active suppliers and never create or reactiva
   } finally { child.kill('SIGTERM'); }
 });
 
-test('scheduled, complete and invoiced are saved for the whole job, feed the labor-meeting views and undo exactly', async () => {
+test('each order keeps its own schedule, completion and invoice, feeds the labor-meeting views and undoes exactly', async () => {
   const child = startServer();
   const cookieJar = createCookieJar();
   const api = (route, body, method = body ? 'POST' : 'GET') => requestJson('http://127.0.0.1:4100' + route, { method, headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), cookieJar });
@@ -917,6 +917,7 @@ test('scheduled, complete and invoiced are saved for the whole job, feed the lab
     await delay(1500);
     assert.equal((await api('/api/login', { username: 'mary', password: 'staff123' })).status, 200);
     const create = (number, supplier, extra = {}) => api('/api/orders', { customer_name: `Synthetic Job ${number}`, housecall_job_number: number, supplier, category: 'Windows', date_ordered: '2026-10-01', ordered_by: 'Admin User', ...extra });
+    // Two orders on the same job number still stand on their own.
     const first = (await create('HC-77', 'Northline Glass', { shop_location: ' H ' })).body.order;
     const second = (await create('hc-77', 'Oldcastle')).body.order;
     const other = (await create('HC-78', 'Bayside Supply')).body.order;
@@ -924,45 +925,34 @@ test('scheduled, complete and invoiced are saved for the whole job, feed the lab
 
     assert.equal((await api(`/api/orders/${first.id}/mark-received`, {})).status, 200);
     let row = await find(first.id);
-    assert.equal(row.job_order_count, 2);
-    assert.equal(row.job_received_count, 1);
-    assert.equal(row.job_ready, false);
     assert.equal(row.stage, 'received');
-    assert.equal(row.job_group, (await find(second.id)).job_group);
-    assert.notEqual(row.job_group, (await find(other.id)).job_group);
-    // Half the material is here, so the job is not ready for the labor meeting.
-    assert.equal((await view('To Schedule')).length, 0);
-
-    assert.equal((await api(`/api/orders/${second.id}/mark-received`, {})).status, 200);
-    assert.deepEqual((await view('To Schedule')).map(order => order.id).sort(), [first.id, second.id].sort());
+    assert.equal(row.job_order_count, undefined);
+    // The received order is ready even though the other HC-77 order isn't here.
+    assert.deepEqual((await view('To Schedule')).map(order => order.id), [first.id]);
 
     row = await find(first.id);
     const stale = row.updated_at;
     const saved = await api(`/api/orders/${first.id}/progress`, { job_scheduled: 1, scheduled_date: '2026-11-03', schedule_note: 'Two-man job', shop_location: 'G', updated_at: row.updated_at }, 'PUT');
     assert.equal(saved.status, 200);
-    assert.deepEqual(saved.body.order_ids.sort(), [first.id, second.id].sort());
-    assert.deepEqual(saved.body.previous.find(item => item.id === first.id), { id: first.id, shop_location: 'H', job_scheduled: 0, scheduled_date: '', schedule_note: '', job_completed: 0, completed_date: '', invoiced: 0, invoice_reference: '' });
+    assert.deepEqual(saved.body.order_ids, [first.id]);
+    assert.deepEqual(saved.body.previous, [{ id: first.id, shop_location: 'H', job_scheduled: 0, scheduled_date: '', schedule_note: '', job_completed: 0, completed_date: '', invoiced: 0, invoice_reference: '' }]);
     const firstAfter = await find(first.id);
-    const secondAfter = await find(second.id);
     assert.equal(firstAfter.shop_location, 'G');
-    assert.equal(secondAfter.shop_location, '');
-    for (const order of [firstAfter, secondAfter]) {
-      assert.equal(order.job_scheduled, 1);
-      assert.equal(order.scheduled_date, '2026-11-03');
-      assert.equal(order.schedule_note, 'Two-man job');
-      assert.equal(order.stage, 'scheduled');
-      assert.equal(order.updated_by, 'mary');
-    }
-    assert.equal((await find(other.id)).job_scheduled, 0);
+    assert.equal(firstAfter.job_scheduled, 1);
+    assert.equal(firstAfter.scheduled_date, '2026-11-03');
+    assert.equal(firstAfter.schedule_note, 'Two-man job');
+    assert.equal(firstAfter.stage, 'scheduled');
+    assert.equal(firstAfter.updated_by, 'mary');
+    for (const id of [second.id, other.id]) assert.equal((await find(id)).job_scheduled, 0, 'other orders are untouched');
     assert.equal((await view('To Schedule')).length, 0);
-    assert.equal((await view('Scheduled')).length, 2);
-    assert.equal((await api('/api/orders?status=All%20Orders&search=two-man')).body.orders.length, 2);
-    assert.equal((await api('/api/orders?status=All%20Orders&sort=scheduled_date&search=synthetic%20job')).body.orders.at(-1).id, other.id);
+    assert.deepEqual((await view('Scheduled')).map(order => order.id), [first.id]);
+    assert.equal((await api('/api/orders?status=All%20Orders&search=two-man')).body.orders.length, 1);
+    assert.equal((await api('/api/orders?status=All%20Orders&sort=scheduled_date&search=synthetic%20job')).body.orders[0].id, first.id);
 
-    // An old screen cannot overwrite the newer save, and nothing is half-written.
+    // An old screen cannot overwrite the newer save.
     const conflict = await api(`/api/orders/${first.id}/progress`, { job_scheduled: 0, updated_at: stale }, 'PUT');
     assert.equal(conflict.status, 409);
-    assert.equal((await find(second.id)).job_scheduled, 1);
+    assert.match(conflict.body.error, /Someone else changed this order/);
     assert.equal((await api(`/api/orders/${first.id}/progress`, { job_scheduled: 0 }, 'PUT')).status, 400);
 
     const undo = await api('/api/order-progress/restore', { updated_at: saved.body.updated_at, items: saved.body.previous });
@@ -971,46 +961,26 @@ test('scheduled, complete and invoiced are saved for the whole job, feed the lab
     assert.equal(restored.shop_location, 'H');
     assert.equal(restored.job_scheduled, 0);
     assert.equal(restored.scheduled_date, '');
-    assert.equal((await find(second.id)).job_scheduled, 0);
     assert.equal((await api('/api/order-progress/restore', { updated_at: saved.body.updated_at, items: saved.body.previous })).status, 409);
 
-    const complete = await api(`/api/orders/${second.id}/progress`, { job_scheduled: 1, job_completed: 1, updated_at: (await find(second.id)).updated_at }, 'PUT');
-    assert.equal(complete.status, 200);
-    const needInvoice = await view('Need Invoice');
-    assert.deepEqual(needInvoice.map(order => order.id).sort(), [first.id, second.id].sort());
+    const current = await find(first.id);
+    assert.equal((await api(`/api/orders/${first.id}/progress`, { job_scheduled: 1, job_completed: 1, updated_at: current.updated_at }, 'PUT')).status, 200);
+    let needInvoice = await view('Need Invoice');
+    assert.deepEqual(needInvoice.map(order => order.id), [first.id]);
     assert.match(needInvoice[0].completed_date, /^\d{4}-\d{2}-\d{2}$/);
     assert.equal(needInvoice[0].stage, 'complete');
-    const invoiced = await api(`/api/orders/${first.id}/progress`, { ...needInvoice.find(order => order.id === first.id), invoiced: 1, invoice_reference: '10239422', updated_at: (await find(first.id)).updated_at }, 'PUT');
+    const invoiced = await api(`/api/orders/${first.id}/progress`, { ...needInvoice[0], invoiced: 1, invoice_reference: '10239422', updated_at: needInvoice[0].updated_at }, 'PUT');
     assert.equal(invoiced.status, 200);
     assert.equal((await view('Need Invoice')).length, 0);
-    assert.equal((await find(second.id)).stage, 'invoiced');
-    assert.equal((await find(second.id)).invoice_reference, '10239422');
+    assert.equal((await find(first.id)).stage, 'invoiced');
+    assert.equal((await find(second.id)).stage, 'ordered');
 
-    // A newer order joining a finished job: saving it changes only what was
-    // changed, so the job's completion and invoice stay on the other order.
-    const late = (await create('HC-77', 'Bayside Supply')).body.order;
-    assert.equal((await api(`/api/orders/${late.id}/mark-received`, {})).status, 200);
-    const lateRow = await find(late.id);
-    assert.equal(lateRow.stage, 'received');
-    const lateSave = await api(`/api/orders/${late.id}/progress`, { ...lateRow, job_scheduled: 1, scheduled_date: '2026-11-20', updated_at: lateRow.updated_at }, 'PUT');
-    assert.equal(lateSave.status, 200);
-    const keptFirst = await find(first.id);
-    assert.equal(keptFirst.job_completed, 1);
-    assert.equal(keptFirst.invoiced, 1);
-    assert.equal(keptFirst.invoice_reference, '10239422');
-    assert.equal(keptFirst.scheduled_date, '2026-11-20');
-    const firstBefore = lateSave.body.previous.find(item => item.id === first.id);
-    assert.equal(firstBefore.job_completed, 1);
-    assert.equal(firstBefore.invoiced, 1);
-    assert.equal(firstBefore.scheduled_date, needInvoice.find(order => order.id === first.id).scheduled_date);
-    assert.equal((await api('/api/order-progress/restore', { updated_at: lateSave.body.updated_at, items: lateSave.body.previous })).status, 200);
-    assert.equal((await find(first.id)).scheduled_date, needInvoice.find(order => order.id === first.id).scheduled_date);
-
-    // Placeholder job numbers do not make a job.
-    const tbdOne = (await create('TBD', 'Northline Glass')).body.order;
-    const tbdTwo = (await api('/api/orders', { customer_name: 'Synthetic Other Customer', housecall_job_number: 'tbd', supplier: 'Oldcastle', category: 'Windows', date_ordered: '2026-10-01', ordered_by: 'Admin User' })).body.order;
-    assert.equal((await find(tbdOne.id)).job_order_count, 1);
-    assert.notEqual((await find(tbdOne.id)).job_group, (await find(tbdTwo.id)).job_group);
+    // Marking an already-complete order invoiced keeps its blank completion date.
+    const done = await find(second.id);
+    assert.equal((await api(`/api/orders/${second.id}/progress`, { ...done, job_completed: 1, completed_date: '2026-10-15', updated_at: done.updated_at }, 'PUT')).status, 200);
+    const doneRow = await find(second.id);
+    assert.equal((await api(`/api/orders/${second.id}/progress`, { ...doneRow, completed_date: '', invoiced: 1, updated_at: doneRow.updated_at }, 'PUT')).status, 200);
+    assert.equal((await find(second.id)).completed_date, '');
 
     // An edit from a screen without the Shop location field keeps it.
     const shopRow = await find(first.id);
@@ -1019,9 +989,7 @@ test('scheduled, complete and invoiced are saved for the whole job, feed the lab
     assert.equal((await api(`/api/orders/${first.id}`, { ...withoutShop, notes: 'Edited elsewhere' }, 'PUT')).status, 200);
     assert.equal((await find(first.id)).shop_location, 'H');
 
-    // Deleted orders are not part of the job any more.
     assert.equal((await api(`/api/orders/${second.id}/delete`, {})).status, 200);
-    assert.equal((await find(first.id)).job_order_count, 2, 'the late order is still on the job');
     assert.equal((await api(`/api/orders/${second.id}/progress`, { updated_at: 'x' }, 'PUT')).status, 404);
   } finally {
     child.kill('SIGTERM');
@@ -1055,15 +1023,13 @@ test('admins can preview and import the Google Sheet, adding or replacing what i
     const added = await api('/api/admin/sheet-import/apply', { token: plan.body.token, mode: 'add', confirmation: 'IMPORT' });
     assert.equal(added.status, 200);
     assert.equal(added.body.orders, 7);
-    assert.equal(added.body.jobs, 1);
     assert.equal((await api('/api/admin/sheet-import/apply', { token: plan.body.token, mode: 'add', confirmation: 'IMPORT' })).status, 409);
 
     let orders = (await api('/api/orders?status=All%20Orders')).body.orders;
     assert.equal(orders.length, before + 7);
     const alpha = orders.filter(order => order.customer_name.toLowerCase() === 'synthetic alpha');
     assert.equal(alpha.length, 2);
-    assert.equal(alpha[0].job_group, alpha[1].job_group);
-    assert.equal(alpha[0].job_order_count, 2);
+    assert.ok(alpha.every(order => !order.job_draft_id), 'imported orders stand on their own');
     assert.equal(alpha[0].created_by, 'admin');
     const bravo = orders.find(order => order.customer_name === 'Synthetic Bravo');
     assert.equal(bravo.supplier, 'Andersen');
@@ -1071,8 +1037,6 @@ test('admins can preview and import the Google Sheet, adding or replacing what i
     assert.equal(bravo.housecall_job_number, '10238822');
     assert.ok((await api('/api/orders?status=Need%20Invoice')).body.orders.some(order => order.id === bravo.id));
     assert.ok((await api('/api/orders?status=To%20Schedule')).body.orders.some(order => order.customer_name === 'Synthetic Glass'));
-    // Imported jobs already have their materials ordered.
-    assert.ok((await api('/api/job-drafts')).body.drafts.some(draft => draft.customer_name === 'Synthetic Alpha' && draft.status === 'Completed'));
 
     plan = await preview(sheet);
     const again = await api('/api/admin/sheet-import/apply', { token: plan.body.token, mode: 'add', confirmation: 'IMPORT' });
@@ -1087,7 +1051,7 @@ test('admins can preview and import the Google Sheet, adding or replacing what i
     const lists = (await api('/api/master-lists')).body;
     assert.deepEqual(lists.suppliers.map(row => row.name).sort(), ['Andersen', 'Arcadia', 'CW', 'Jeld-Wen', 'Oldcastle', 'Unknown supplier (from sheet)']);
     assert.deepEqual(lists.staff_names.map(row => row.name).sort(), ['AD', 'KL', 'RD', 'SD', 'Unknown']);
-    assert.equal((await api('/api/job-drafts')).body.drafts.length, 1);
+    assert.equal((await api('/api/job-drafts')).body.drafts.length, 0);
     // Logins survive a replace.
     assert.equal((await api('/api/login', { username: 'mary', password: 'staff123' })).status, 200);
   } finally {

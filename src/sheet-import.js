@@ -135,16 +135,12 @@ function staffName(orderedBy) {
   return /^[?]*$/.test(first) ? UNKNOWN_STAFF : first.toUpperCase();
 }
 
-function customerKey(name) {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-}
-
 // Reads the workbook and returns what would be imported, without touching
 // the database. Rows already complete and billed are left out.
 export async function parseOrderSheet(buffer, { today }) {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
-  const plan = { tabs: [], orders: [], jobs: [], suppliers: [], staff: [], skipped: [] };
+  const plan = { tabs: [], orders: [], suppliers: [], staff: [], skipped: [] };
   // Supplier and staff names are matched without regard to capitals, like
   // Master Lists; the first spelling seen is kept.
   const suppliers = new Map();
@@ -163,7 +159,6 @@ export async function parseOrderSheet(buffer, { today }) {
     const summary = { name: worksheet.name.trim(), category: tab.category, imported: 0, skipped: 0 };
     const { columns } = header;
     const cell = (row, key) => (columns[key] ? row.getCell(columns[key]).value : null);
-    const groups = new Map();
 
     for (let rowNumber = header.headerRow + 1; rowNumber <= worksheet.rowCount; rowNumber += 1) {
       const row = worksheet.getRow(rowNumber);
@@ -233,22 +228,6 @@ export async function parseOrderSheet(buffer, { today }) {
       };
       plan.orders.push(order);
       summary.imported += 1;
-      const key = customerKey(customer);
-      if (key) {
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(order);
-      }
-    }
-
-    // Several orders for the same customer on one tab become one job, so
-    // scheduling one schedules them all and "all materials here" works.
-    // Rows carrying different HCP job numbers are separate jobs (rows that
-    // share a number are linked by that number anyway).
-    for (const orders of groups.values()) {
-      if (orders.length < 2 || new Set(orders.map(order => order.housecall_job_number).filter(Boolean)).size > 1) continue;
-      const job = { key: `job:${orders[0].key}`, customer_name: orders[0].customer_name, order_keys: orders.map(order => order.key) };
-      orders.forEach(order => { order.job_key = job.key; });
-      plan.jobs.push(job);
     }
     plan.tabs.push(summary);
   }
@@ -276,7 +255,7 @@ const sameName = (left, right) => left.trim().toLowerCase() === right.trim().toL
 // the tracker (same customer, supplier and order date).
 export function importStatements(plan, { mode, existing, now, actor }) {
   const statements = [];
-  const result = { mode, orders: 0, duplicates: 0, jobs: 0, suppliers_added: 0, staff_added: 0 };
+  const result = { mode, orders: 0, duplicates: 0, suppliers_added: 0, staff_added: 0 };
   if (mode === 'replace') {
     for (const table of ['orders', 'job_drafts', 'suppliers', 'staff_names']) statements.push({ sql: `DELETE FROM ${table}` });
   }
@@ -323,21 +302,6 @@ export function importStatements(plan, { mode, existing, now, actor }) {
     return !duplicate;
   });
 
-  const jobIds = new Map();
-  for (const job of plan.jobs) {
-    if (orders.filter(order => order.job_key === job.key).length < 2) continue;
-    const id = `draft-${randomUUID()}`;
-    jobIds.set(job.key, id);
-    // Materials for these jobs are already ordered, so they skip the
-    // Approved – Need to Order list.
-    statements.push({
-      sql: `INSERT INTO job_drafts (id, customer_name, housecall_job_number, housecall_job_link, hcp_job_id, notes, deposit_status, status, created_at, updated_at, created_by, updated_by, is_preview_data)
-        VALUES (?, ?, '', '', '', ?, 'Deposit received', 'Completed', ?, ?, ?, ?, 0)`,
-      params: [id, job.customer_name, 'Imported from the Google Sheet.', now, now, actor, actor]
-    });
-    result.jobs += 1;
-  }
-
   for (const order of orders) {
     const row = {
       id: `order-${randomUUID()}`,
@@ -356,7 +320,7 @@ export function importStatements(plan, { mode, existing, now, actor }) {
       ordered_by_id: staffIds.get(order.ordered_by),
       status: order.date_received ? 'Received' : 'Ordered',
       notes: order.notes,
-      job_draft_id: jobIds.get(order.job_key) || null,
+      job_draft_id: null,
       created_at: now,
       updated_at: now,
       created_by: actor,

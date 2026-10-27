@@ -50,7 +50,7 @@ function client(fetch) {
     renderOrders = () => calls.push(['render', state.orders[0]?.id]);
     renderQueueVisibility = () => {};
     showStatus = message => errors.push(message);
-    globalThis.tracker = { state, bindEvents, loadOrders, renderJobDrafts, openDraftActionsMenu, renderCondensedOrders, renderOrderNotesPreview, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility, originalRenderOrders, offerUndo, runUndo, renderSupplierFilterOptions, formatDate, orderStatusBadge, nextStep, jobMaterials, openProgressDialog, saveProgressDialog, markJobComplete, renderSheetImportPreview, syncSheetImportConfirmation, renderHcpStatus };
+    globalThis.tracker = { state, bindEvents, loadOrders, renderJobDrafts, openDraftActionsMenu, renderCondensedOrders, renderOrderNotesPreview, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility, originalRenderOrders, offerUndo, runUndo, renderSupplierFilterOptions, formatDate, orderStatusBadge, nextStep, openProgressDialog, saveProgressDialog, markJobComplete, renderSheetImportPreview, syncSheetImportConfirmation, renderHcpStatus };
   `, context);
   return { context, node, tracker: context.tracker };
 }
@@ -296,11 +296,10 @@ test('supplier filter is a checkbox list: ticking boxes filters, the summary and
 
 test('each order shows its furthest step and offers the next one', () => {
   const { tracker } = client();
-  const base = { id: 'step', customer_name: 'Synthetic Step', status: 'Received', date_received: '2026-10-20', job_order_count: 2, job_received_count: 2, job_ready: true };
+  const base = { id: 'step', customer_name: 'Synthetic Step', status: 'Received', date_received: '2026-10-20' };
   const cases = [
-    [{ ...base, status: 'Ordered', date_received: '', stage: 'ordered', job_received_count: 1, job_ready: false }, /Ordered/, 'mark-received'],
+    [{ ...base, status: 'Ordered', date_received: '', stage: 'ordered' }, /Ordered/, 'mark-received'],
     [{ ...base, stage: 'received' }, /Ready to schedule/, 'schedule'],
-    [{ ...base, stage: 'received', job_received_count: 1, job_ready: false }, />Received</, 'schedule'],
     [{ ...base, stage: 'scheduled', job_scheduled: 1, scheduled_date: '2026-11-03' }, /Scheduled Nov 3/, 'mark-complete'],
     [{ ...base, stage: 'complete', job_scheduled: 1, job_completed: 1 }, /Complete/, 'mark-invoiced'],
     [{ ...base, stage: 'invoiced', job_completed: 1, invoiced: 1 }, /Invoiced/, null],
@@ -313,19 +312,16 @@ test('each order shows its furthest step and offers the next one', () => {
   }
   const early = { ...base, status: 'Ordered', date_received: '', stage: 'overdue', job_scheduled: 1, scheduled_date: '2026-10-28' };
   assert.match(tracker.orderStatusBadge(early), /Scheduled Oct 28, not here yet/);
-  assert.equal(tracker.jobMaterials({ job_order_count: 3, job_received_count: 1 }), '1 of 3 here');
-  assert.equal(tracker.jobMaterials({ job_order_count: 2, job_received_count: 2 }), 'All 2 here');
-  assert.equal(tracker.jobMaterials({ job_order_count: 1 }), '');
 });
 
-test('job progress window saves for the whole job and undo restores every order exactly', async () => {
+test('job progress window saves the order and undo restores it exactly', async () => {
   const requests = [];
   const { context, node, tracker } = client(async (url, options = {}) => {
     requests.push({ url, method: options.method || 'GET', body: options.body ? JSON.parse(options.body) : null });
-    if (url.includes('/progress')) return { ok: true, json: async () => ({ order_ids: ['p1', 'p2'], updated_at: 'v2', previous: [{ id: 'p1', shop_location: '', job_scheduled: 0 }, { id: 'p2', job_scheduled: 0 }] }) };
+    if (url.includes('/progress')) return { ok: true, json: async () => ({ order_ids: ['p1'], updated_at: 'v2', previous: [{ id: 'p1', shop_location: '', job_scheduled: 0 }] }) };
     return { ok: true, json: async () => ({ orders: [], drafts: [] }) };
   });
-  const order = { id: 'p1', customer_name: 'Synthetic Progress', supplier: 'Synthetic Supplier', updated_at: 'v1', status: 'Received', date_received: '2026-10-20', job_order_count: 2, job_received_count: 2 };
+  const order = { id: 'p1', customer_name: 'Synthetic Progress', supplier: 'Synthetic Supplier', updated_at: 'v1', status: 'Received', date_received: '2026-10-20' };
   tracker.state.orders = [order];
   tracker.bindEvents();
   await node('ordersTableBody').listeners.click({ target: { closest: () => ({ dataset: { action: 'schedule', id: 'p1' } }) } });
@@ -333,7 +329,7 @@ test('job progress window saves for the whole job and undo restores every order 
   assert.equal(node('progressScheduled').checked, true);
   assert.equal(node('progressScheduledDate').disabled, false);
   assert.equal(node('progressScheduledDate').focused, true);
-  assert.match(node('progressJobHint').textContent, /all 2 orders on this job \(All 2 here\)/);
+  assert.equal(node('progressJobHint').textContent, '');
   node('progressScheduledDate').value = '2026-11-03';
   node('progressShopLocation').value = 'H';
   await tracker.saveProgressDialog();
@@ -344,11 +340,11 @@ test('job progress window saves for the whole job and undo restores every order 
   assert.equal(save.body.shop_location, 'H');
   assert.equal(save.body.updated_at, 'v1');
   assert.equal(node('progressDialog').open, false);
-  assert.match(node('undoMessage').textContent, /Job progress saved \(all 2 orders on this job\)/);
+  assert.equal(node('undoMessage').textContent, 'Job progress saved.');
   await tracker.runUndo();
   const undo = requests.find(request => request.url === '/api/order-progress/restore');
   assert.equal(undo.body.updated_at, 'v2');
-  assert.deepEqual(undo.body.items.map(item => item.id), ['p1', 'p2']);
+  assert.deepEqual(undo.body.items.map(item => item.id), ['p1']);
 
   await tracker.markJobComplete({ ...order, job_scheduled: 1 });
   const complete = requests.filter(request => request.method === 'PUT').at(-1);

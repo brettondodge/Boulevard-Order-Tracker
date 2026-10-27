@@ -42,7 +42,6 @@ import {
 import {
   ORDER_CATEGORIES,
   getOrderGroup,
-  groupOrdersByJob,
   isoNow,
   normalizeCategory,
   normalizeOrderInput,
@@ -737,22 +736,6 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
     ordered_by: staffById.get(order.ordered_by_id)?.name || order.ordered_by
   }));
 
-  // How many of each job's orders have arrived, so the labor meeting only
-  // sees jobs with everything in the shop.
-  const activeRows = rows.filter(order => Number(order.is_archived || 0) !== 1);
-  const groupOf = groupOrdersByJob(activeRows);
-  const jobTotals = new Map();
-  for (const order of activeRows) {
-    const totals = jobTotals.get(groupOf.get(order.id)) || { orders: 0, received: 0 };
-    totals.orders += 1;
-    if (order.date_received) totals.received += 1;
-    jobTotals.set(groupOf.get(order.id), totals);
-  }
-  const jobInfo = (order) => {
-    const totals = jobTotals.get(groupOf.get(order.id)) || { orders: 1, received: order.date_received ? 1 : 0 };
-    return { job_group: groupOf.get(order.id) || order.id, job_order_count: totals.orders, job_received_count: totals.received, job_ready: totals.received === totals.orders };
-  };
-
   const statusFilter = (req.query.status || 'Outstanding').toString();
   const viewFilter = (req.query.view || 'All Orders').toString();
   const categoryFilter = (req.query.category || '').toString();
@@ -778,7 +761,7 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
       if (order.expected_delivery_date >= todayPhoenixString()) return false;
     }
     if (statusFilter === 'Received' && status !== 'Received') return false;
-    if (statusFilter === 'To Schedule' && !(status === 'Received' && jobInfo(order).job_ready && !Number(order.job_scheduled) && !Number(order.job_completed))) return false;
+    if (statusFilter === 'To Schedule' && !(status === 'Received' && !Number(order.job_scheduled) && !Number(order.job_completed))) return false;
     if (statusFilter === 'Scheduled' && !(Number(order.job_scheduled) && !Number(order.job_completed))) return false;
     if (statusFilter === 'Need Invoice' && !(Number(order.job_completed) && !Number(order.invoiced))) return false;
 
@@ -842,7 +825,6 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
 
   const normalized = filtered.map((order) => ({
     ...order,
-    ...jobInfo(order),
     category: order.category || '',
     combined_group: order.category ? getOrderGroup(order.category) : (order.combined_group || ''),
     status: statusFromOrder(order),
@@ -1064,9 +1046,8 @@ const progressAssignments = PROGRESS_FIELDS.map((field) => `${field} = ?`).join(
 // serialization clash: either way someone else saved first.
 const isWriteConflict = (error) => ['STATEMENT_EXPECTATION', '40P01', '40001'].includes(error.code);
 
-// Saves Scheduled / Complete / Invoiced for the whole job (every active order
-// on it) and the shop location for this order, in one transaction. Returns
-// the previous values so the screen can undo exactly.
+// Saves this order's shop location, Scheduled, Complete and Invoiced. Each
+// order stands on its own. Returns the previous values so the screen can undo.
 app.put('/api/orders/:id/progress', requireStaffAuth, asyncRoute(async (req, res) => {
   const order = await dbGet('SELECT * FROM orders WHERE id = ? AND is_archived = 0', [req.params.id]);
   if (!order) {
@@ -1080,35 +1061,20 @@ app.put('/api/orders/:id/progress', requireStaffAuth, asyncRoute(async (req, res
   // A job that is already complete keeps its (possibly unknown) completion date.
   const progress = normalizeProgressInput(req.body, { fillCompletedDate: !Number(order.job_completed) });
   const shopLocation = Object.hasOwn(req.body, 'shop_location') ? normalizeText(req.body.shop_location) : (order.shop_location || '');
-  const active = await dbAll('SELECT * FROM orders WHERE is_archived = 0');
-  const groupOf = groupOrdersByJob(active);
-  const siblings = active.filter((row) => row.id !== order.id && groupOf.get(row.id) === groupOf.get(order.id));
   const now = isoNow();
-  // The other orders on the job get only what changed on this one, so a
-  // newer order's blank fields never wipe a sibling's date or invoice.
-  const before = progressValues(order);
-  const changed = PROGRESS_FIELDS.filter((field) => String(progress[field]) !== String(before[field]));
-  const statements = [
-    { id: order.id, sql: `UPDATE orders SET ${progressAssignments}, shop_location = ?, updated_at = ?, updated_by = ? WHERE id = ? AND updated_at = ?`, params: [...PROGRESS_FIELDS.map((field) => progress[field]), shopLocation, now, actor(req), order.id, version], expect: 1 },
-    ...(changed.length ? siblings : []).map((row) => ({ id: row.id, sql: `UPDATE orders SET ${changed.map((field) => `${field} = ?`).join(', ')}, updated_at = ?, updated_by = ? WHERE id = ? AND updated_at = ?`, params: [...changed.map((field) => progress[field]), now, actor(req), row.id, row.updated_at], expect: 1 }))
-  ];
-  try {
-    // Same lock order for every request, so two saves on one job can't deadlock.
-    await runInTransaction(statements.sort((left, right) => left.id.localeCompare(right.id)));
-  } catch (error) {
-    if (isWriteConflict(error)) {
-      return res.status(409).json({ error: 'Someone else changed this job. Close this window to see their changes, then try again.' });
-    }
-    throw error;
+  const result = await dbRun(
+    `UPDATE orders SET ${progressAssignments}, shop_location = ?, updated_at = ?, updated_by = ? WHERE id = ? AND updated_at = ?`,
+    [...PROGRESS_FIELDS.map((field) => progress[field]), shopLocation, now, actor(req), order.id, version]
+  );
+  if (!result.changes) {
+    return res.status(409).json({ error: 'Someone else changed this order. Close this window to see their changes, then try again.' });
   }
-  const touchedSiblings = changed.length ? siblings : [];
 
-  const orderIds = [order.id, ...touchedSiblings.map((row) => row.id)];
-  broadcastLiveEvent('orders', { action: 'progress', orderIds, time: isoNow() });
+  broadcastLiveEvent('orders', { action: 'progress', orderIds: [order.id], time: isoNow() });
   return res.json({
-    order_ids: orderIds,
+    order_ids: [order.id],
     updated_at: now,
-    previous: [{ id: order.id, shop_location: order.shop_location || '', ...progressValues(order) }, ...touchedSiblings.map((row) => ({ id: row.id, ...progressValues(row) }))]
+    previous: [{ id: order.id, shop_location: order.shop_location || '', ...progressValues(order) }]
   });
 }));
 
@@ -1134,7 +1100,7 @@ app.post('/api/order-progress/restore', requireStaffAuth, asyncRoute(async (req,
     }));
   } catch (error) {
     if (isWriteConflict(error)) {
-      return res.status(409).json({ error: 'Someone changed this job after you did.' });
+      return res.status(409).json({ error: 'Someone changed this order after you did.' });
     }
     throw error;
   }
@@ -1227,7 +1193,6 @@ app.post('/api/admin/sheet-import/preview', requireAdminAuth, express.raw({ type
       date_ordered: order.date_ordered, date_received: order.date_received, job_scheduled: order.job_scheduled,
       job_completed: order.job_completed, invoiced: order.invoiced, housecall_job_number: order.housecall_job_number
     })),
-    jobs: plan.jobs.length,
     suppliers: plan.suppliers.map((name) => ({ name, existing: existingSuppliers.includes(name.trim().toLowerCase()) })),
     staff: plan.staff.map((name) => ({ name, existing: existingStaff.includes(name.trim().toLowerCase()) })),
     skipped: plan.skipped,

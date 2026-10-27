@@ -73,35 +73,6 @@ export function isOrderOverdue(order) {
   return order.expected_delivery_date < todayPhoenixString();
 }
 
-// Orders on the same job: linked to the same approved job, or sharing a
-// Housecall Pro job number (in either direction). Placeholders typed into
-// the job number box ("TBD", "N/A", "0") have no real digit and link nothing.
-// Returns order id -> group id.
-export function groupOrdersByJob(orders) {
-  const parent = new Map(orders.map(order => [order.id, order.id]));
-  const find = (id) => {
-    while (parent.get(id) !== id) {
-      parent.set(id, parent.get(parent.get(id)));
-      id = parent.get(id);
-    }
-    return id;
-  };
-  const firstOrderByKey = new Map();
-  for (const order of orders) {
-    const number = String(order.housecall_job_number ?? '').trim().toLowerCase();
-    const keys = [order.job_draft_id ? `draft:${order.job_draft_id}` : '', /[1-9]/.test(number) ? `job:${number}` : ''].filter(Boolean);
-    for (const key of keys) {
-      if (!firstOrderByKey.has(key)) {
-        firstOrderByKey.set(key, order.id);
-        continue;
-      }
-      const [left, right] = [find(firstOrderByKey.get(key)), find(order.id)];
-      if (left !== right) parent.set(right, left);
-    }
-  }
-  return new Map(orders.map(order => [order.id, find(order.id)]));
-}
-
 // Furthest step an order has reached: ordered (or overdue), received,
 // scheduled, complete, invoiced. A finished job counts as finished even if
 // this order's Received box was never ticked. A job billed up front still
