@@ -50,7 +50,7 @@ function client(fetch) {
     renderOrders = () => calls.push(['render', state.orders[0]?.id]);
     renderQueueVisibility = () => {};
     showStatus = message => errors.push(message);
-    globalThis.tracker = { state, bindEvents, loadOrders, renderJobDrafts, openDraftActionsMenu, renderCondensedOrders, renderOrderNotesPreview, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility, originalRenderOrders, offerUndo, runUndo, renderSupplierFilterOptions, formatDate, orderStatusBadge, nextStep, jobMaterials, openProgressDialog, saveProgressDialog, markJobComplete, renderSheetImportPreview, syncSheetImportConfirmation };
+    globalThis.tracker = { state, bindEvents, loadOrders, renderJobDrafts, openDraftActionsMenu, renderCondensedOrders, renderOrderNotesPreview, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility, originalRenderOrders, offerUndo, runUndo, renderSupplierFilterOptions, formatDate, orderStatusBadge, nextStep, jobMaterials, openProgressDialog, saveProgressDialog, markJobComplete, renderSheetImportPreview, syncSheetImportConfirmation, renderHcpStatus };
   `, context);
   return { context, node, tracker: context.tracker };
 }
@@ -393,4 +393,48 @@ test('sheet import preview explains what comes in and needs the matching word', 
   node('sheetImportConfirmation').value = 'REPLACE';
   tracker.syncSheetImportConfirmation();
   assert.equal(node('applySheetImportButton').disabled, false);
+});
+
+test('linked orders show what Housecall Pro says and send scheduling to HCP', async () => {
+  const { node, tracker } = client(async () => ({ ok: true, json: async () => ({ orders: [] }) }));
+  const url = 'https://pro.housecallpro.com/app/jobs/job_0000000000000000000000000000000a';
+  const base = { id: 'linked', customer_name: 'Synthetic Linked', status: 'Received', date_received: '2026-10-20', stage: 'received', job_ready: true, updated_at: 'v1', housecall_job_number: '10239422', hcp: { job_id: 'job_a', url, status: 'unscheduled', scheduled_date: '', assigned: '', invoice_sent: false, paid: false } };
+  assert.match(tracker.orderStatusBadge(base), /HCP: Needs scheduling/);
+  assert.deepEqual({ ...tracker.nextStep(base) }, { link: url, label: 'Schedule in HCP', primary: true });
+  const scheduled = { ...base, stage: 'scheduled', job_scheduled: 1, scheduled_date: '2026-11-03', hcp: { ...base.hcp, status: 'scheduled', scheduled_date: '2026-11-03', assigned: 'Synthetic <Tech>' } };
+  assert.match(tracker.orderStatusBadge(scheduled), /HCP: Scheduled Nov 3 · Synthetic &lt;Tech&gt;/);
+  assert.equal(tracker.nextStep(scheduled).label, 'Open in HCP');
+  const done = { ...scheduled, stage: 'complete', job_completed: 1, hcp: { ...scheduled.hcp, status: 'completed', invoice_sent: true } };
+  assert.match(tracker.orderStatusBadge(done), /HCP: Complete · Invoice sent/);
+  assert.equal(tracker.nextStep(done).action, 'mark-invoiced');
+  const canceled = { ...base, hcp: { ...base.hcp, status: 'canceled' } };
+  assert.match(tracker.orderStatusBadge(canceled), /class="hcp-status canceled">HCP: Canceled/);
+  assert.equal(tracker.nextStep(canceled).action, 'schedule', 'a canceled HCP job falls back to tracker steps');
+  assert.equal(tracker.nextStep({ ...base, date_received: '', status: 'Ordered' }).action, 'mark-received');
+
+  // In the progress window, HCP owns scheduled and complete.
+  tracker.state.orders = [scheduled];
+  tracker.openProgressDialog(scheduled);
+  assert.equal(node('progressScheduled').disabled, true);
+  assert.equal(node('progressCompleted').disabled, true);
+  assert.equal(node('progressScheduledDate').disabled, true);
+  assert.match(node('progressJobHint').textContent, /come from Housecall Pro/);
+  tracker.openProgressDialog({ ...base, hcp: null });
+  assert.equal(node('progressScheduled').disabled, false);
+});
+
+test('the Housecall Pro panel says what is set up and what is missing', () => {
+  const { node, tracker } = client();
+  tracker.renderHcpStatus({ api: false, webhooks: false, linked_jobs: 0, recent_events: [] });
+  assert.match(node('hcpStatusText').textContent, /Not connected yet/);
+  assert.equal(node('hcpSyncButton').disabled, true);
+  tracker.renderHcpStatus({ api: true, webhooks: false, linked_jobs: 3, last_event_at: '', last_sync_at: '2026-10-26T15:00:00Z', last_sync_summary: { jobs_refreshed: 2, jobs_found_by_number: 1, numbers_not_found: 4 }, last_error: '', recent_events: [{ event: 'job.<scheduled>', outcome: 'applied', received_at: '2026-10-26T15:00:00Z' }] });
+  const text = node('hcpStatusText').textContent;
+  assert.match(text, /API connected/);
+  assert.match(text, /webhooks not set up \(HCP_WEBHOOK_SECRET\)/);
+  assert.match(text, /3 linked jobs/);
+  assert.match(text, /last webhook never/);
+  assert.match(text, /2 refreshed, 1 found by job number, 4 job numbers not found/);
+  assert.equal(node('hcpSyncButton').disabled, false);
+  assert.match(node('hcpRecentEvents').innerHTML, /job\.&lt;scheduled&gt; · applied/);
 });

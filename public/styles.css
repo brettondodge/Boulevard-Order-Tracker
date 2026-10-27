@@ -852,6 +852,33 @@ tr.overdue {
   font-weight: 700;
 }
 
+.hcp-status {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--scheduled);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.hcp-status.canceled {
+  color: var(--danger);
+}
+
+.hcp-events {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+a.action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
 .job-materials {
   display: block;
   margin-top: 0.25rem;

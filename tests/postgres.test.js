@@ -12,6 +12,7 @@ import Database from 'better-sqlite3';
 import { generateKeyPair, exportJWK, SignJWT } from 'jose';
 import { recordFingerprint } from '../src/record-fingerprint.js';
 import { syntheticOrderSheet } from './sheet-fixture.js';
+import { signWebhook, syntheticHcpJob } from './hcp-fake.js';
 
 // Uses a fresh temporary cluster and synthetic records only. No provider credentials.
 test('real Postgres production access, orders, admin gate and restart persistence', { timeout: 90000 }, async () => {
@@ -28,7 +29,7 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     const preload = path.join(directory, 'jwks.mjs');
     // Only this test child intercepts Cloudflare JWKS; production has no bypass setting.
     await writeFile(preload, `const original=globalThis.fetch; globalThis.fetch=(url, options)=>String(url)==='https://test-team.cloudflareaccess.com/cdn-cgi/access/certs' ? Promise.resolve(new Response(${JSON.stringify(JSON.stringify({ keys: [jwk] }))}, {headers:{'content-type':'application/json'}})) : original(url,options);`);
-    const env = { ...process.env, NODE_ENV: 'production', RENDER: 'false', DATABASE_URL: connection, SESSION_SECRET: 'synthetic-test-secret-longer-than-32-characters', ADMIN_USERNAME: 'office-admin', ADMIN_PASSWORD: 'synthetic-admin-password', CF_ACCESS_TEAM_DOMAIN: 'test-team.cloudflareaccess.com', CF_ACCESS_AUD: 'test-audience', PREVIEW_MODE: 'false', APP_PORT: '4209', OMEGA_API_KEY: '' };
+    const env = { ...process.env, NODE_ENV: 'production', RENDER: 'false', DATABASE_URL: connection, SESSION_SECRET: 'synthetic-test-secret-longer-than-32-characters', ADMIN_USERNAME: 'office-admin', ADMIN_PASSWORD: 'synthetic-admin-password', CF_ACCESS_TEAM_DOMAIN: 'test-team.cloudflareaccess.com', CF_ACCESS_AUD: 'test-audience', PREVIEW_MODE: 'false', APP_PORT: '4209', OMEGA_API_KEY: '', HCP_API_KEY: '', HCP_WEBHOOK_SECRET: 'synthetic-signing-secret', HCP_SYNC_INTERVAL_MINUTES: '0' };
     async function start() {
       let output = '';
       server = spawn(process.execPath, ['--import', preload, 'src/server.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -204,6 +205,21 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     assert.equal((await request('/api/orders?status=Scheduled')).body.orders.length, 2);
     assert.equal((await request('/api/order-progress/restore', { updated_at: progress.body.updated_at, items: progress.body.previous })).status, 200);
     assert.equal((await pool.query('SELECT job_scheduled FROM orders WHERE id = $1', [jobB.body.order.id])).rows[0].job_scheduled, 0);
+
+    // HCP webhooks reach the app without a Cloudflare Access token (HCP's
+    // signature is the check) and are applied in Postgres, once.
+    const hookBody = JSON.stringify({ event: 'job.scheduled', event_occurred_at: '2026-10-26T15:00:00Z', job: syntheticHcpJob({ id: 'job_000000000000000000000000000000f7', invoice_number: 'PG-7', work_status: 'scheduled', schedule: { scheduled_start: '2026-11-03T15:00:00Z' } }) });
+    const hookHeaders = { 'Content-Type': 'application/json', Host: 'tools.blvdglass.com', ...signWebhook(hookBody, 'synthetic-signing-secret') };
+    const hook = await fetch('http://127.0.0.1:4209/api/hcp/webhooks', { method: 'POST', headers: hookHeaders, body: hookBody });
+    assert.equal(hook.status, 200);
+    assert.equal((await hook.json()).outcome, 'applied');
+    assert.equal((await (await fetch('http://127.0.0.1:4209/api/hcp/webhooks', { method: 'POST', headers: hookHeaders, body: hookBody })).json()).outcome, 'duplicate');
+    assert.equal((await fetch('http://127.0.0.1:4209/api/hcp/webhooks', { method: 'POST', headers: { ...hookHeaders, 'Api-Signature': 'f'.repeat(64) }, body: hookBody })).status, 401);
+    assert.deepEqual((await pool.query('SELECT hcp_job_id, job_scheduled, scheduled_date, updated_by FROM orders WHERE id = $1', [jobB.body.order.id])).rows[0], { hcp_job_id: 'job_000000000000000000000000000000f7', job_scheduled: 1, scheduled_date: '2026-11-03', updated_by: 'Housecall Pro' });
+    assert.equal((await request('/api/orders?status=Scheduled')).body.orders.find(order => order.id === jobA.body.order.id).hcp.status, 'scheduled');
+    assert.equal((await request('/api/hcp/status')).body.linked_jobs, 1);
+    // Other paths still need Cloudflare Access.
+    assert.equal((await fetch('http://127.0.0.1:4209/api/hcp/status', { headers: { Host: 'tools.blvdglass.com' } })).status, 403);
     const sheetPreview = await fetch('http://127.0.0.1:4209/api/admin/sheet-import/preview', { method: 'POST', headers: { Host: 'tools.blvdglass.com', 'X-Forwarded-Host': 'tools.blvdglass.com', 'X-Forwarded-Proto': 'https', 'Cf-Access-Jwt-Assertion': token, 'Content-Type': 'application/octet-stream', Cookie: cookie }, body: await syntheticOrderSheet() }).then(response => response.json());
     assert.equal(sheetPreview.orders.length, 7);
     const sheetImport = await request('/api/admin/sheet-import/apply', { token: sheetPreview.token, mode: 'replace', confirmation: 'REPLACE' });

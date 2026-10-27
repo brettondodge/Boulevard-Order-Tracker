@@ -20,6 +20,7 @@ const state = {
   editingOrder: null,
   editingDraft: null,
   editingProgress: null,
+  progressFromHcp: false,
   showFinishedJobs: false,
   sheetImport: null,
   undo: null,
@@ -102,6 +103,10 @@ const elements = {
   sheetImportWord: document.getElementById('sheetImportWord'),
   sheetImportConfirmation: document.getElementById('sheetImportConfirmation'),
   previewSheetImportButton: document.getElementById('previewSheetImportButton'),
+  hcpStatusText: document.getElementById('hcpStatusText'),
+  hcpWebhookUrl: document.getElementById('hcpWebhookUrl'),
+  hcpRecentEvents: document.getElementById('hcpRecentEvents'),
+  hcpSyncButton: document.getElementById('hcpSyncButton'),
   applySheetImportButton: document.getElementById('applySheetImportButton'),
   draftCustomerName: document.getElementById('draftCustomerName'),
   draftHousecallJobNumber: document.getElementById('draftHousecallJobNumber'),
@@ -427,7 +432,9 @@ function bindEvents() {
   elements.masterListsButton.addEventListener('click', async () => {
     elements.masterListsDialog.showModal();
     await loadMasterLists();
+    if (state.adminLoggedIn) await loadHcpStatus();
   });
+  elements.hcpSyncButton.addEventListener('click', syncHousecallPro);
 
   elements.closeMasterListsButton.addEventListener('click', () => {
     elements.masterListsDialog.close();
@@ -694,6 +701,7 @@ async function loginAsAdmin() {
     state.adminLoggedIn = true;
     updateAdminUi();
     await loadMasterLists();
+    await loadHcpStatus();
     elements.adminPasswordInput.value = '';
     elements.adminUsernameInput.value = '';
     showStatus('Administrator signed in.', 'success');
@@ -1123,7 +1131,21 @@ function orderStatusBadge(order) {
   const warning = Number(order.job_scheduled) && !Number(order.job_completed) && !order.date_received
     ? `<span class="stage-warning">Scheduled${order.scheduled_date ? ` ${formatDate(order.scheduled_date)}` : ''}, not here yet</span>`
     : '';
-  return `<span class="status-badge ${stage}">${escapeHtml(label)}</span>${warning}`;
+  return `<span class="status-badge ${stage}">${escapeHtml(label)}</span>${warning}${hcpStatusLine(order)}`;
+}
+
+const HCP_LABELS = { unscheduled: 'Needs scheduling', scheduled: 'Scheduled', in_progress: 'In progress', completed: 'Complete', canceled: 'Canceled' };
+
+// What Housecall Pro says about the job, under the tracker's own step.
+function hcpStatusLine(order) {
+  const hcp = order.hcp;
+  if (!hcp) return '';
+  const parts = [HCP_LABELS[hcp.status] || 'Linked'];
+  if (hcp.status === 'scheduled' && hcp.scheduled_date) parts[0] = `Scheduled ${formatDate(hcp.scheduled_date)}`;
+  if (hcp.assigned && ['scheduled', 'in_progress'].includes(hcp.status)) parts.push(hcp.assigned);
+  if (hcp.paid) parts.push('Paid');
+  else if (hcp.invoice_sent) parts.push('Invoice sent');
+  return `<span class="hcp-status ${hcp.status === 'canceled' ? 'canceled' : ''}">HCP: ${escapeHtml(parts.join(' · '))}</span>`;
 }
 
 // "1 of 2 here" when the job has more than one supplier order.
@@ -1136,6 +1158,12 @@ function jobMaterials(order) {
 
 function nextStep(order) {
   if (!order.date_received) return { action: 'mark-received', label: 'Mark received' };
+  // Linked jobs are scheduled and finished in Housecall Pro, which updates the tracker.
+  if (order.hcp && order.hcp.status !== 'canceled' && !Number(order.job_completed)) {
+    return Number(order.job_scheduled)
+      ? { link: order.hcp.url, label: 'Open in HCP' }
+      : { link: order.hcp.url, label: 'Schedule in HCP', primary: true };
+  }
   if (Number(order.job_completed)) return Number(order.invoiced) ? null : { action: 'mark-invoiced', label: 'Mark invoiced' };
   if (Number(order.job_scheduled)) return { action: 'mark-complete', label: 'Mark complete' };
   return { action: 'schedule', label: 'Mark scheduled' };
@@ -1143,13 +1171,15 @@ function nextStep(order) {
 
 function nextStepButton(order) {
   const step = nextStep(order);
-  return step ? `<button type="button" class="action-button primary" data-action="${step.action}" data-id="${escapeAttr(order.id)}">${step.label}</button>` : '';
+  if (!step) return '';
+  if (step.link) return `<a class="action-button ${step.primary ? 'primary' : ''}" href="${escapeAttr(step.link)}" target="_blank" rel="noreferrer">${step.label}</a>`;
+  return `<button type="button" class="action-button primary" data-action="${step.action}" data-id="${escapeAttr(order.id)}">${step.label}</button>`;
 }
 
 // The job number links to Housecall Pro when the order has a job link.
 function jobNumberHtml(order) {
   const number = escapeHtml(order.housecall_job_number || '');
-  const link = String(order.housecall_job_link || '');
+  const link = String(order.housecall_job_link || order.hcp?.url || '');
   if (!/^https?:\/\//i.test(link)) return number || '—';
   return `<a href="${escapeAttr(link)}" target="_blank" rel="noreferrer" title="Open in Housecall Pro">${number || 'Open'}</a>`;
 }
@@ -1667,18 +1697,24 @@ function openProgressDialog(order, focus = '') {
   elements.progressInvoiced.checked = Boolean(values.invoiced);
   elements.progressInvoiceReference.value = values.invoice_reference;
   const count = Number(order.job_order_count || 1);
-  elements.progressJobHint.textContent = count > 1
-    ? `Scheduled, complete and invoiced apply to all ${count} orders on this job (${jobMaterials(order)}).`
-    : 'Scheduled, complete and invoiced apply to the whole job.';
+  const fromHcp = Boolean(order.hcp && order.hcp.status !== 'canceled');
+  elements.progressJobHint.textContent = [
+    count > 1 ? `Scheduled, complete and invoiced apply to all ${count} orders on this job (${jobMaterials(order)}).` : 'Scheduled, complete and invoiced apply to the whole job.',
+    fromHcp ? 'Scheduled and complete come from Housecall Pro; change them there.' : ''
+  ].filter(Boolean).join(' ');
   elements.progressError.textContent = '';
+  state.progressFromHcp = fromHcp;
   syncProgressInputs();
   elements.progressDialog.showModal();
   if (focus === 'schedule') elements.progressScheduledDate.focus();
 }
 
 function syncProgressInputs() {
-  elements.progressScheduledDate.disabled = !elements.progressScheduled.checked;
-  elements.progressCompletedDate.disabled = !elements.progressCompleted.checked;
+  const locked = Boolean(state.progressFromHcp);
+  elements.progressScheduled.disabled = locked;
+  elements.progressCompleted.disabled = locked;
+  elements.progressScheduledDate.disabled = locked || !elements.progressScheduled.checked;
+  elements.progressCompletedDate.disabled = locked || !elements.progressCompleted.checked;
   if (elements.progressCompleted.checked && !elements.progressCompletedDate.value) elements.progressCompletedDate.value = localToday();
 }
 
@@ -1797,6 +1833,57 @@ async function applySheetImport() {
   } catch (error) {
     elements.sheetImportError.textContent = error.message;
     syncSheetImportConfirmation();
+  }
+}
+
+function formatDateTime(value) {
+  const parsed = new Date(value);
+  return value && !Number.isNaN(parsed.getTime())
+    ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(parsed)
+    : 'never';
+}
+
+async function loadHcpStatus() {
+  elements.hcpWebhookUrl.textContent = `${window.location.origin}/api/hcp/webhooks`;
+  try {
+    const response = await fetch('/api/hcp/status');
+    if (!response.ok) return;
+    renderHcpStatus(await response.json());
+  } catch {
+    elements.hcpStatusText.textContent = 'Could not check the Housecall Pro connection.';
+  }
+}
+
+function renderHcpStatus(status) {
+  const sync = status.last_sync_summary;
+  if (!status.api && !status.webhooks) {
+    elements.hcpStatusText.textContent = 'Not connected yet. The server needs HCP_API_KEY and HCP_WEBHOOK_SECRET (see docs/housecall-pro.md).';
+  } else {
+    elements.hcpStatusText.textContent = [
+      `API ${status.api ? 'connected' : 'not set up (HCP_API_KEY)'}`,
+      `webhooks ${status.webhooks ? 'set up' : 'not set up (HCP_WEBHOOK_SECRET)'}`,
+      `${status.linked_jobs} linked ${status.linked_jobs === 1 ? 'job' : 'jobs'}`,
+      `last webhook ${formatDateTime(status.last_event_at)}`,
+      `last sync ${formatDateTime(status.last_sync_at)}${sync ? ` (${sync.jobs_refreshed} refreshed, ${sync.jobs_found_by_number} found by job number, ${sync.numbers_not_found} job numbers not found)` : ''}`,
+      status.last_error ? `last problem: ${status.last_error}` : ''
+    ].filter(Boolean).join(' · ');
+  }
+  elements.hcpSyncButton.disabled = !status.api;
+  elements.hcpRecentEvents.innerHTML = (status.recent_events || []).map(event => `<li>${escapeHtml(formatDateTime(event.received_at))} · ${escapeHtml(event.event)} · ${escapeHtml(event.outcome)}</li>`).join('');
+}
+
+async function syncHousecallPro() {
+  elements.hcpSyncButton.disabled = true;
+  elements.hcpSyncButton.textContent = 'Syncing…';
+  try {
+    const result = await sendJson('/api/hcp/sync');
+    showStatus(`Synced with Housecall Pro: ${result.orders_updated} ${result.orders_updated === 1 ? 'order' : 'orders'} updated.`, 'success');
+    await loadOrders();
+  } catch (error) {
+    showStatus(error.message, 'error');
+  } finally {
+    elements.hcpSyncButton.textContent = 'Sync with Housecall Pro now';
+    await loadHcpStatus();
   }
 }
 

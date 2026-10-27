@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   resolveOrderSupplierAsync,
   getActiveSuppliersAsync,
@@ -26,6 +26,17 @@ import {
   runInTransaction
 } from './db.js';
 import { importStatements, parseOrderSheet } from './sheet-import.js';
+import { HcpError, hcpApiConfigured } from './hcp/client.js';
+import {
+  handleHcpWebhook,
+  hcpStatus,
+  hcpSummary,
+  hcpWebhookConfigured,
+  refreshHcpJobSoon,
+  resolveOrderHcpJobId,
+  syncHcp,
+  verifyWebhookSignature
+} from './hcp/sync.js';
 import {
   ORDER_CATEGORIES,
   getOrderGroup,
@@ -65,6 +76,32 @@ app.get('/healthz', asyncRoute(async (req, res) => {
   try { await dbGet('SELECT 1'); res.json({ ok: true }); }
   catch { res.status(503).json({ ok: false }); }
 }));
+// Housecall Pro webhooks come from HCP's servers, not a signed-in browser,
+// so they sit before the Cloudflare Access check and are authenticated by
+// HCP's signature instead (docs/housecall-pro.md).
+app.post('/api/hcp/webhooks', express.raw({ type: () => true, limit: '1mb' }), asyncRoute(async (req, res) => {
+  if (!hcpWebhookConfigured()) {
+    return res.status(503).json({ error: 'Housecall Pro webhooks are not set up.' });
+  }
+  const timestamp = req.get('Api-Timestamp');
+  const signature = req.get('Api-Signature');
+  const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  if (!verifyWebhookSignature({ secret: process.env.HCP_WEBHOOK_SECRET, timestamp, signature, rawBody })) {
+    return res.status(401).json({ error: 'Invalid signature.' });
+  }
+  let payload;
+  try {
+    payload = JSON.parse(rawBody.toString('utf8'));
+  } catch {
+    return res.status(400).json({ error: 'Invalid JSON.' });
+  }
+  const eventId = createHash('sha256').update(`${timestamp}.${signature}`).digest('hex');
+  const result = await handleHcpWebhook(payload, { eventId });
+  if (result.orderIds?.length) broadcastLiveEvent('orders', { action: 'housecall-pro', orderIds: result.orderIds });
+  if (result.draftId) broadcastLiveEvent('job-drafts', { action: 'housecall-pro', draftId: result.draftId });
+  return res.json({ received: true, outcome: result.outcome });
+}));
+
 if (isProduction) {
   app.use(createAccessMiddleware({ teamDomain: process.env.CF_ACCESS_TEAM_DOMAIN, audience: process.env.CF_ACCESS_AUD }));
 }
@@ -677,10 +714,12 @@ app.post('/api/orders/:id/restore', requireStaffAuth, asyncRoute(async (req, res
 }));
 
 app.get('/api/orders', asyncRoute(async (req, res) => {
-  const [storedRows, suppliers, staffNames] = await Promise.all([
+  const [storedRows, suppliers, staffNames, hcpRows] = await Promise.all([
     dbAll('SELECT * FROM orders ORDER BY date_ordered DESC, created_at DESC'),
-    getAllSuppliersAsync(), getAllStaffNamesAsync()
+    getAllSuppliersAsync(), getAllStaffNamesAsync(),
+    dbAll('SELECT * FROM hcp_jobs')
   ]);
+  const hcpJobById = new Map(hcpRows.map(row => [row.id, row]));
   const supplierById = new Map(suppliers.map(item => [item.id, item]));
   const staffById = new Map(staffNames.map(item => [item.id, item]));
   const normalizeFilter = value => String(value || '').trim().toLowerCase();
@@ -805,6 +844,7 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
     combined_group: order.category ? getOrderGroup(order.category) : (order.combined_group || ''),
     status: statusFromOrder(order),
     stage: orderStage(order),
+    hcp: hcpSummary(hcpJobById.get(order.hcp_job_id)),
     job_scheduled: Number(order.job_scheduled || 0),
     job_completed: Number(order.job_completed || 0),
     invoiced: Number(order.invoiced || 0),
@@ -853,6 +893,7 @@ app.post('/api/orders', requireStaffAuth, asyncRoute(async (req, res) => {
   if (!orderData.category) {
     return res.status(400).json({ error: 'Category is required.' });
   }
+  const hcpJobId = await resolveOrderHcpJobId({ link: orderData.housecall_job_link, number: orderData.housecall_job_number, draftId: orderData.job_draft_id });
 
   const orderId = `order-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const now = isoNow();
@@ -861,8 +902,8 @@ app.post('/api/orders', requireStaffAuth, asyncRoute(async (req, res) => {
     INSERT INTO orders (
       id, customer_name, housecall_job_number, housecall_job_link, supplier, supplier_id, category, combined_group,
       po_number, date_ordered, expected_delivery_date, date_received, ordered_by, ordered_by_id, status, notes, job_draft_id,
-      created_at, updated_at, created_by, updated_by, is_preview_data, shop_location
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+      created_at, updated_at, created_by, updated_by, is_preview_data, shop_location, hcp_job_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
   `, [
     orderId,
     orderData.customer_name,
@@ -885,11 +926,13 @@ app.post('/api/orders', requireStaffAuth, asyncRoute(async (req, res) => {
     now,
     actor(req),
     actor(req),
-    orderData.shop_location
+    orderData.shop_location,
+    hcpJobId || null
   ]);
 
   const created = await dbGet('SELECT * FROM orders WHERE id = ?', [orderId]);
   broadcastLiveEvent('orders', { action: 'created', orderId, updatedAt: created.updated_at, time: isoNow() });
+  refreshHcpJobSoon(hcpJobId, (orderIds) => broadcastLiveEvent('orders', { action: 'housecall-pro', orderIds }));
   return res.status(201).json({
     order: {
       ...created,
@@ -932,6 +975,9 @@ app.put('/api/orders/:id', requireStaffAuth, asyncRoute(async (req, res) => {
   } else if (req.body.status === 'Ordered') {
     orderData.date_received = '';
   }
+  const sameJob = String(existing.housecall_job_number || '').trim().toLowerCase() === orderData.housecall_job_number.toLowerCase()
+    && String(existing.housecall_job_link || '') === orderData.housecall_job_link;
+  const hcpJobId = await resolveOrderHcpJobId({ link: orderData.housecall_job_link, number: orderData.housecall_job_number, draftId: existing.job_draft_id, keep: sameJob ? existing.hcp_job_id : '' });
 
   const now = isoNow();
   const result = await dbRun(`
@@ -952,6 +998,7 @@ app.put('/api/orders/:id', requireStaffAuth, asyncRoute(async (req, res) => {
       status = ?,
       notes = ?,
       shop_location = ?,
+      hcp_job_id = ?,
       updated_at = ?,
       updated_by = ?
     WHERE id = ? AND updated_at = ?
@@ -972,6 +1019,7 @@ app.put('/api/orders/:id', requireStaffAuth, asyncRoute(async (req, res) => {
     orderData.date_received ? 'Received' : 'Ordered',
     orderData.notes,
     orderData.shop_location,
+    hcpJobId || null,
     now,
     actor(req),
     req.params.id,
@@ -983,6 +1031,7 @@ app.put('/api/orders/:id', requireStaffAuth, asyncRoute(async (req, res) => {
 
   const updated = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   broadcastLiveEvent('orders', { action: 'updated', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
+  if (hcpJobId && hcpJobId !== existing.hcp_job_id) refreshHcpJobSoon(hcpJobId, (orderIds) => broadcastLiveEvent('orders', { action: 'housecall-pro', orderIds }));
   return res.json({
     order: {
       ...updated,
@@ -1117,6 +1166,22 @@ app.post('/api/orders/:id/reopen', requireStaffAuth, asyncRoute(async (req, res)
   return res.json({ order: { ...updated, status: statusFromOrder(updated) } });
 }));
 
+app.get('/api/hcp/status', requireAdminAuth, asyncRoute(async (req, res) => res.json(await hcpStatus())));
+
+app.post('/api/hcp/sync', requireAdminAuth, asyncRoute(async (req, res) => {
+  if (!hcpApiConfigured()) {
+    return res.status(503).json({ error: "Housecall Pro isn't connected. Add HCP_API_KEY to the server settings." });
+  }
+  try {
+    const result = await syncHcp();
+    if (result.order_ids.length) broadcastLiveEvent('orders', { action: 'housecall-pro', orderIds: result.order_ids });
+    return res.json(result);
+  } catch (error) {
+    if (error instanceof HcpError) return res.status(502).json({ error: error.message });
+    throw error;
+  }
+}));
+
 // One-time import from the office's Google Sheet, downloaded as .xlsx.
 // Preview parses the file and keeps the plan for 30 minutes; nothing is
 // written until the admin confirms with IMPORT (add) or REPLACE.
@@ -1194,3 +1259,13 @@ app.use((error, req, res, next) => {
 app.listen(port, () => {
   console.log(`Boulevard Glass Order Tracker listening at http://localhost:${port}`);
 });
+
+// Hourly catch-up with Housecall Pro (HCP_SYNC_INTERVAL_MINUTES, 0 = off).
+const hcpSyncMinutes = Number(process.env.HCP_SYNC_INTERVAL_MINUTES ?? 60);
+if (hcpApiConfigured() && hcpSyncMinutes > 0) {
+  const runHcpSync = () => syncHcp()
+    .then((result) => { if (result.order_ids.length) broadcastLiveEvent('orders', { action: 'housecall-pro', orderIds: result.order_ids }); })
+    .catch(() => console.error('Housecall Pro sync failed; see the Housecall Pro section in Master Lists.'));
+  setTimeout(runHcpSync, 60 * 1000).unref();
+  setInterval(runHcpSync, hcpSyncMinutes * 60 * 1000).unref();
+}

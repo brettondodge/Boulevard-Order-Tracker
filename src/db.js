@@ -215,10 +215,12 @@ if (!isProduction) {
     invoiced: 'INTEGER NOT NULL DEFAULT 0',
     invoice_reference: 'TEXT'
   };
-  for (const [column, type] of Object.entries(progressColumns)) {
+  for (const [column, type] of Object.entries({ ...progressColumns, hcp_job_id: 'TEXT' })) {
     const exists = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = ?").get(column);
     if (Number(exists.count) === 0) db.exec(`ALTER TABLE orders ADD COLUMN ${column} ${type};`);
   }
+  // Housecall Pro tables (migrations/007-housecall.sql is portable SQL).
+  db.exec(fs.readFileSync(new URL('../migrations/007-housecall.sql', import.meta.url), 'utf8'));
 
   const hasStaffTable = db.prepare("SELECT COUNT(*) as count FROM sqlite_master WHERE type = 'table' AND name = 'staff_names'").get();
   if (Number(hasStaffTable.count) === 0) {

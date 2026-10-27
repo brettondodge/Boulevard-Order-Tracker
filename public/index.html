@@ -357,6 +357,14 @@
           </div>
 
           <div class="master-list-section">
+            <h3>Housecall Pro</h3>
+            <p id="hcpStatusText" aria-live="polite">Checking…</p>
+            <p class="import-hint">Webhook address to enter in Housecall Pro: <code id="hcpWebhookUrl"></code></p>
+            <ul id="hcpRecentEvents" class="hcp-events"></ul>
+            <button type="button" id="hcpSyncButton" class="secondary-button">Sync with Housecall Pro now</button>
+          </div>
+
+          <div class="master-list-section">
             <h3>Google Sheet</h3>
             <p>Bring the orders from the Misc. Parts Ordered sheet into the tracker.</p>
             <button type="button" id="openSheetImportButton" class="secondary-button">Import from Google Sheet…</button>
