@@ -65,6 +65,9 @@ const elements = {
   orderNotesDialog: document.getElementById('orderNotesDialog'),
   orderNotesCustomer: document.getElementById('orderNotesCustomer'),
   orderNotesText: document.getElementById('orderNotesText'),
+  orderDetailsDialog: document.getElementById('orderDetailsDialog'),
+  orderDetailsTitle: document.getElementById('orderDetailsTitle'),
+  orderDetailsBody: document.getElementById('orderDetailsBody'),
   mobileOrderCards: document.getElementById('mobileOrderCards'),
   condensedViewToggle: document.getElementById('condensedViewToggle'),
   condensedViewHint: document.getElementById('condensedViewHint'),
@@ -292,6 +295,7 @@ function renderQueueVisibility() {
 
 function bindEvents() {
   for (const id of ['closeOrderNotesButton', 'dismissOrderNotesButton']) document.getElementById(id).addEventListener('click', () => elements.orderNotesDialog.close());
+  document.getElementById('closeOrderDetailsButton').addEventListener('click', () => elements.orderDetailsDialog.close());
   elements.condensedViewToggle.addEventListener('click', () => {
     state.condensedView = !state.condensedView;
     try { window.localStorage.setItem('boulevard-condensed-view', String(state.condensedView)); } catch {}
@@ -564,7 +568,10 @@ function bindEvents() {
 
   const handleOrderAction = async (event) => {
     const button = event.target.closest('button[data-action], button[data-order-menu]');
-    if (!button) return;
+    if (!button) {
+      openDetailsFromRow(event);
+      return;
+    }
     if (button.dataset.orderMenu) {
       event.preventDefault();
       openDesktopOrderMenu(button.dataset.orderMenu, button);
@@ -615,6 +622,20 @@ function bindEvents() {
   elements.mobileOrderCards.addEventListener('click', handleOrderAction);
   elements.condensedOrdersBody.addEventListener('click', handleOrderAction);
   elements.desktopOrderMenu.addEventListener('click', handleOrderAction);
+  // An action chosen in the details window closes it first.
+  elements.orderDetailsDialog.addEventListener('click', (event) => {
+    if (event.target.closest('button[data-action]')) elements.orderDetailsDialog.close();
+    return handleOrderAction(event);
+  });
+  const openDetailsOnEnter = (event) => {
+    if (event.key !== 'Enter' || !event.target.matches?.('[data-order-row]')) return;
+    const order = state.orders.find(entry => entry.id === event.target.dataset.orderRow);
+    if (!order) return;
+    event.preventDefault();
+    openOrderDetails(order);
+  };
+  elements.tableBody.addEventListener('keydown', openDetailsOnEnter);
+  elements.condensedOrdersBody.addEventListener('keydown', openDetailsOnEnter);
   document.addEventListener('scroll', () => {
     elements.desktopOrderMenu.hidePopover?.();
     elements.draftActionsMenu.hidePopover?.();
@@ -1125,6 +1146,7 @@ function renderOrders() {
   const locations = [...new Set(state.orders.map(order => String(order.shop_location || '').trim()).filter(Boolean))].sort();
   elements.shopLocations.innerHTML = locations.map(location => `<option value="${escapeAttr(location)}"></option>`).join('');
   renderQueueVisibility();
+  refreshOrderDetails();
 }
 
 const STAGE_LABELS = { ordered: 'Ordered', overdue: 'Overdue', received: 'Received', scheduled: 'Scheduled', complete: 'Complete' };
@@ -1189,7 +1211,7 @@ function jobNumberHtml(order) {
 
 function renderOrderRow(order) {
   return `
-    <tr class="${order.is_overdue ? 'overdue' : ''}">
+    <tr class="order-row ${order.is_overdue ? 'overdue' : ''}" data-order-row="${escapeAttr(order.id)}" tabindex="0">
       <td><strong>${escapeHtml(order.customer_name)}</strong></td>
       <td>${escapeHtml(order.po_number || '—')}</td>
       <td>${escapeHtml(order.category || 'Unassigned')}</td>
@@ -1202,7 +1224,7 @@ function renderOrderRow(order) {
       <td>${escapeHtml(order.shop_location || '—')}</td>
       <td class="status-cell">${orderStatusBadge(order)}</td>
       <td class="notes-cell">${renderOrderNotesPreview(order)}</td>
-      <td>${renderDesktopOrderActions(order)}</td>
+      <td class="actions-col">${renderDesktopOrderActions(order)}</td>
     </tr>
   `;
 }
@@ -1218,7 +1240,7 @@ function renderOrderCard(order) {
   ].filter(Boolean).join(' · ');
   const notes = String(order.notes || '').trim();
   return `
-    <article class="order-card ${order.is_overdue ? 'overdue' : ''}">
+    <article class="order-card ${order.is_overdue ? 'overdue' : ''}" data-order-row="${id}">
       <div class="order-card-header">
         <h3>${escapeHtml(order.customer_name)}</h3>
         <div class="order-card-status">${orderStatusBadge(order)}</div>
@@ -1240,7 +1262,7 @@ function renderCondensedOrders() {
   elements.condensedOrderCount.textContent = `${state.orders.length} matching supplier ${state.orders.length === 1 ? 'order' : 'orders'}`;
   elements.condensedOrdersBody.innerHTML = state.orders.map(order => {
     const notes = order.notes || '—';
-    return `<tr class="${order.is_overdue ? 'overdue' : ''}">
+    return `<tr class="order-row ${order.is_overdue ? 'overdue' : ''}" data-order-row="${escapeAttr(order.id)}" tabindex="0">
       <td class="condensed-customer" title="${escapeAttr(order.customer_name)}"><strong>${escapeHtml(order.customer_name)}</strong></td>
       <td class="condensed-supplier" title="${escapeAttr(order.po_number || '')}">${escapeHtml(order.po_number || '—')}</td>
       <td>${jobNumberHtml(order)}</td>
@@ -1252,7 +1274,7 @@ function renderCondensedOrders() {
       <td class="status-cell">${orderStatusBadge(order)}</td>
       <td class="condensed-notes" title="${escapeAttr(order.schedule_note || '')}">${escapeHtml(order.schedule_note || '—')}</td>
       <td class="condensed-notes" title="${escapeAttr(notes)}">${escapeHtml(notes)}</td>
-      <td class="condensed-actions"><button type="button" class="action-button" data-action="edit" data-id="${escapeAttr(order.id)}" aria-label="Edit order for ${escapeAttr(order.customer_name)}">Edit</button>${nextStepButton(order)}</td>
+      <td class="actions-col"><div class="condensed-actions"><button type="button" class="action-button" data-action="edit" data-id="${escapeAttr(order.id)}" aria-label="Edit order for ${escapeAttr(order.customer_name)}">Edit</button>${nextStepButton(order)}</div></td>
     </tr>`;
   }).join('');
 }
@@ -1279,6 +1301,74 @@ function openOrderNotes(order) {
   elements.orderNotesDialog.showModal();
 }
 
+// A click anywhere on a row or phone card, other than a button or link, opens
+// its details. Selecting text to copy it doesn't.
+function openDetailsFromRow(event) {
+  if (event.target.closest('a, button, input, select, textarea, label')) return;
+  if (String(window.getSelection?.() || '')) return;
+  const row = event.target.closest('[data-order-row]');
+  const order = row && state.orders.find(entry => entry.id === row.dataset.orderRow);
+  if (order) openOrderDetails(order);
+}
+
+function openOrderDetails(order) {
+  elements.orderDetailsDialog.dataset.orderId = order.id;
+  renderOrderDetails(order);
+  if (!elements.orderDetailsDialog.open) elements.orderDetailsDialog.showModal();
+}
+
+// Keeps an open details window in step with live updates; closes it if the
+// order is no longer in the list.
+function refreshOrderDetails() {
+  const dialog = elements.orderDetailsDialog;
+  if (!dialog.open) return;
+  const order = state.orders.find(entry => entry.id === dialog.dataset.orderId);
+  if (order) renderOrderDetails(order);
+  else dialog.close();
+}
+
+function renderOrderDetails(order) {
+  const id = escapeAttr(order.id);
+  const field = (label, value, className = '') => `<div class="${className}"><dt>${label}</dt><dd>${value}</dd></div>`;
+  const text = value => escapeHtml(value || '—');
+  const hcp = order.hcp && HCP_LABELS[order.hcp.status]
+    ? `${escapeHtml(order.hcp.status === 'scheduled' && order.hcp.scheduled_date ? `Scheduled ${formatDate(order.hcp.scheduled_date)}` : HCP_LABELS[order.hcp.status])} · <a href="${escapeAttr(order.hcp.url)}" target="_blank" rel="noreferrer">Open in HCP</a>`
+    : '';
+  const scheduled = Number(order.job_scheduled) ? (order.scheduled_date ? formatDate(order.scheduled_date) : 'Yes') : 'Not yet';
+  const completed = Number(order.job_completed) ? (order.completed_date ? formatDate(order.completed_date) : 'Yes') : 'Not yet';
+  const who = [
+    order.created_at ? `Added ${formatDateTime(order.created_at)}${order.created_by ? ` by ${order.created_by}` : ''}` : '',
+    order.updated_at && order.updated_at !== order.created_at ? `last changed ${formatDateTime(order.updated_at)}${order.updated_by ? ` by ${order.updated_by}` : ''}` : ''
+  ].filter(Boolean).join(', ');
+  elements.orderDetailsTitle.textContent = order.customer_name || 'Order';
+  elements.orderDetailsBody.innerHTML = `
+    <div class="status-cell order-details-status">${orderStatusBadge(order)}</div>
+    <dl class="order-details-grid">
+      ${field('PO', text(order.po_number))}
+      ${field('Category', text(order.category || 'Unassigned'))}
+      ${field('Job #', jobNumberHtml(order))}
+      ${field('Supplier', text(order.supplier))}
+      ${field('Ordered by', text(order.ordered_by))}
+      ${field('Ordered', formatDate(order.date_ordered))}
+      ${field('ETA', order.expected_delivery_date ? formatDate(order.expected_delivery_date) : 'No ETA')}
+      ${field('Received', order.date_received ? formatDate(order.date_received) : 'Not yet')}
+      ${field('Shop', text(order.shop_location))}
+      ${field('Scheduled', scheduled)}
+      ${field('Completed', completed)}
+      ${hcp ? field('Housecall Pro', hcp) : ''}
+      ${order.schedule_note ? field('Schedule note', escapeHtml(order.schedule_note), 'full-width order-details-text') : ''}
+      ${field('Notes', escapeHtml(String(order.notes || '').trim() || 'No notes.'), 'full-width order-details-text')}
+    </dl>
+    ${who ? `<p class="order-details-meta">${escapeHtml(who)}.</p>` : ''}
+    <div class="dialog-actions order-details-actions">
+      <button type="button" class="action-button danger" data-action="delete-order" data-id="${id}">Delete</button>
+      ${(order.status || 'Ordered') === 'Received' ? `<button type="button" class="action-button" data-action="reopen" data-id="${id}">Reopen</button>` : ''}
+      <button type="button" class="action-button" data-action="progress" data-id="${id}">Job progress…</button>
+      <button type="button" class="action-button" data-action="edit" data-id="${id}">Edit</button>
+      ${nextStepButton(order)}
+    </div>`;
+}
+
 function openDesktopOrderMenu(orderId, trigger) {
   const order = state.orders.find(item => item.id === orderId);
   if (!order) return;
@@ -1289,7 +1379,7 @@ function openDesktopOrderMenu(orderId, trigger) {
   elements.desktopOrderMenu.dataset.orderId = orderId;
   const id = escapeAttr(order.id);
   elements.desktopOrderMenu.innerHTML = `<button type="button" class="action-button" data-action="progress" data-id="${id}" autofocus>Job progress…</button>
-    ${(order.status || 'Ordered') === 'Received' ? `<button type="button" class="action-button danger" data-action="reopen" data-id="${id}">Reopen</button>` : ''}
+    ${(order.status || 'Ordered') === 'Received' ? `<button type="button" class="action-button" data-action="reopen" data-id="${id}">Reopen</button>` : ''}
     <button type="button" class="action-button danger" data-action="delete-order" data-id="${id}">Delete</button>`;
   elements.desktopOrderMenu.setAttribute('aria-label', `More actions for ${order.customer_name}`);
   elements.desktopOrderMenu.showPopover();

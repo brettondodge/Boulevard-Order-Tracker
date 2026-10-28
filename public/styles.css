@@ -678,8 +678,9 @@ input:focus, select:focus, textarea:focus {
   position: fixed;
   inset: auto;
   margin: 0;
-  width: 150px;
-  padding: 0.4rem;
+  width: max-content;
+  min-width: 160px;
+  padding: 0.3rem;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--panel);
@@ -688,7 +689,62 @@ input:focus, select:focus, textarea:focus {
 
 .desktop-order-menu:popover-open {
   display: grid;
-  gap: 0.35rem;
+  gap: 0.1rem;
+}
+
+/* Menu entries read as a plain list, not as a stack of buttons. */
+.desktop-order-menu .action-button {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+  font-size: 0.85rem;
+}
+
+.desktop-order-menu .action-button:hover,
+.desktop-order-menu .action-button:focus-visible {
+  background: var(--panel-alt);
+}
+
+.desktop-order-menu .action-button.danger {
+  background: transparent;
+  color: var(--danger);
+}
+
+.desktop-order-menu .action-button.danger:hover,
+.desktop-order-menu .action-button.danger:focus-visible {
+  background: var(--danger-soft);
+}
+
+/* Rows open their details when clicked. */
+tr.order-row {
+  cursor: pointer;
+}
+
+tr.order-row:hover td,
+tr.order-row:focus-visible td {
+  background-color: var(--bg);
+}
+
+tr.order-row:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+/* The actions column stays in view when the table is wider than the screen. */
+.table-wrap .actions-col,
+.condensed-table-wrap .actions-col {
+  position: sticky;
+  right: 0;
+  background-color: var(--panel);
+  box-shadow: inset 1px 0 0 var(--border);
+}
+
+.table-wrap th.actions-col,
+.condensed-table-wrap th.actions-col {
+  z-index: 1;
+  background-color: var(--panel-alt);
 }
 
 .mobile-order-list {
@@ -916,6 +972,72 @@ a.action-button {
   font-size: 0.75rem;
   color: var(--primary);
   text-decoration: underline;
+}
+
+#orderDetailsDialog {
+  border: none;
+  border-radius: 18px;
+  width: min(calc(100vw - 2rem), 680px);
+  max-height: calc(100vh - 2rem);
+  padding: 1.2rem 1.25rem 1.4rem;
+  overflow: auto;
+  box-shadow: var(--shadow);
+}
+
+#orderDetailsDialog::backdrop {
+  background: rgba(15, 23, 42, 0.5);
+}
+
+#orderDetailsDialog .dialog-header {
+  margin-bottom: 0.5rem;
+}
+
+.order-details-status {
+  margin-bottom: 1rem;
+}
+
+.order-details-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.8rem 1rem;
+  margin: 0;
+}
+
+.order-details-grid dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.03rem;
+  text-transform: uppercase;
+}
+
+.order-details-grid dd {
+  margin: 0.15rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.order-details-text dd {
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.order-details-meta {
+  margin: 1rem 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.order-details-actions {
+  flex-wrap: wrap;
+}
+
+.order-details-actions .action-button {
+  padding: 0.55rem 0.9rem;
+  font-size: 0.85rem;
+}
+
+.order-details-actions .danger {
+  margin-right: auto;
 }
 
 #orderNotesDialog {
@@ -1400,6 +1522,10 @@ button:disabled {
 @media (max-width: 560px) {
   .topbar .brand-block h1 {
     font-size: 1.3rem;
+  }
+
+  .order-details-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .form-grid {

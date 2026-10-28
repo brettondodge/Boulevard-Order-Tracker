@@ -171,6 +171,46 @@ test('desktop notes preview stays short and clicking opens the complete original
   assert.equal(order.notes, notes);
 });
 
+test('clicking a row opens its details with every action; buttons, links and copying text do not', async () => {
+  const { node, tracker, context } = client();
+  const order = { id: 'row-order', customer_name: 'Synthetic <Customer>', po_number: 'SYN PO', category: 'Windows', supplier: 'Synthetic Supplier', ordered_by: 'AD', date_ordered: '2026-10-20', expected_delivery_date: '2026-10-30', status: 'Received', date_received: '2026-10-25', shop_location: 'H', notes: 'Line one\nLine <two>', created_by: 'office@example.com', created_at: '2026-10-20T16:00:00Z' };
+  tracker.state.orders = [order];
+  tracker.bindEvents();
+  const dialog = node('orderDetailsDialog');
+  const row = { dataset: { orderRow: 'row-order' } };
+  const clickRow = (inside = null) => node('ordersTableBody').listeners.click({ target: { closest: selector => (selector.includes('data-order-row') ? row : selector.startsWith('a,') ? inside : null) } });
+
+  await clickRow({});
+  assert.equal(dialog.open, undefined, 'a link or button inside the row keeps its own job');
+  context.window.getSelection = () => 'SYN PO';
+  await clickRow();
+  assert.equal(dialog.open, undefined, 'selecting text to copy does not open the details');
+  context.window.getSelection = () => '';
+  await clickRow();
+  assert.equal(dialog.open, true);
+  assert.equal(node('orderDetailsTitle').textContent, 'Synthetic <Customer>');
+  const body = node('orderDetailsBody').innerHTML;
+  for (const text of ['SYN PO', 'Synthetic Supplier', 'Oct 25', 'Line one\nLine &lt;two&gt;', 'office@example.com']) assert.ok(body.includes(text), text);
+  for (const action of ['edit', 'progress', 'reopen', 'delete-order', 'schedule']) assert.match(body, new RegExp(`data-action="${action}" data-id="row-order"`));
+
+  await dialog.listeners.click({ target: { closest: () => ({ dataset: { action: 'edit', id: 'row-order' } }) } });
+  assert.equal(dialog.open, false, 'choosing an action closes the details');
+  assert.deepEqual(Array.from(context.calls.at(-1)), ['edit', 'row-order']);
+
+  await node('ordersTableBody').listeners.keydown({ key: 'Enter', preventDefault() {}, target: { matches: () => true, dataset: { orderRow: 'row-order' } } });
+  assert.equal(dialog.open, true, 'Enter on a focused row opens it too');
+  order.notes = 'Changed by someone else';
+  tracker.originalRenderOrders();
+  assert.match(node('orderDetailsBody').innerHTML, /Changed by someone else/);
+  assert.match(node('ordersTableBody').innerHTML, /data-order-row="row-order" tabindex="0"/);
+  assert.match(node('ordersTableBody').innerHTML, /class="actions-col"/);
+  assert.match(node('condensedOrdersBody').innerHTML, /data-order-row="row-order"/);
+  assert.match(node('mobileOrderCards').innerHTML, /data-order-row="row-order"/);
+  tracker.state.orders = [];
+  tracker.originalRenderOrders();
+  assert.equal(dialog.open, false, 'an order that leaves the list closes its details');
+});
+
 test('condensed toggle preserves filters, uses the loaded orders and switches layout on desktop and phone', () => {
   const { context, node, tracker } = client(() => { throw new Error('Toggling layout must not request new data'); });
   tracker.state.orders = [{ id: 'filtered-order', customer_name: 'Synthetic <Customer>', supplier: 'Keep Supplier', status: 'Received', notes: 'Check clearance', date_received: '2026-10-12' }];
