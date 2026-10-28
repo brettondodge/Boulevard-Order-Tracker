@@ -260,7 +260,7 @@ async function startServer(dataDir, preview = false, extraEnv = {}) {
       ...process.env, NODE_ENV: 'test', RENDER: 'false', SESSION_SECRET: 'test-secret', APP_PORT: String(PORT),
       PREVIEW_MODE: preview ? 'true' : 'false', SQLITE_DATA_DIR: dataDir,
       DEMO_STAFF_PASSWORD: 'staff-test', ADMIN_USERNAME: 'admin', ADMIN_PASSWORD: 'admin-test',
-      OMEGA_API_KEY: '', OMEGA_API_BASE: 'http://127.0.0.1:9/api/2.0', ...extraEnv
+      OMEGA_API_KEY: '', OMEGA_API_BASE: 'http://127.0.0.1:9/api/2.0', HCP_API_KEY: '', HCP_WEBHOOK_SECRET: '', ...extraEnv
     },
     stdio: ['ignore', 'ignore', 'pipe']
   });

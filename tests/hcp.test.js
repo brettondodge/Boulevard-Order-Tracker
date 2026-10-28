@@ -11,6 +11,9 @@ import { startFakeHcp, syntheticHcpJob } from './hcp-fake.js';
 // at a throwaway folder so tests never touch data/.
 process.env.SQLITE_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'boulevard-hcp-unit-'));
 process.env.PREVIEW_MODE = 'false';
+// Never reach the real Housecall Pro API, even with a key in the local .env.
+process.env.HCP_API_KEY = '';
+process.env.HCP_WEBHOOK_SECRET = '';
 const { applyHcpJob, guessCategory, handleHcpWebhook, hcpJobIdFrom, hcpJobIdFromLink, hcpJobRow, hcpJobTypes, hcpOrderChanged, hcpSummary, lookupHcpJob, phoenixDate, progressFromHcp, saveJobTypeCategories, syncHcp, verifyWebhookSignature, webhookEventId, workStatusOf } = await import('../src/hcp/sync.js');
 const { dbRun, dbGet } = await import('../src/db.js');
 await (await import('../src/db.js')).initializeDatabase();
