@@ -14,7 +14,7 @@ process.env.PREVIEW_MODE = 'false';
 // Never reach the real Housecall Pro API, even with a key in the local .env.
 process.env.HCP_API_KEY = '';
 process.env.HCP_WEBHOOK_SECRET = '';
-const { applyHcpJob, guessCategory, handleHcpWebhook, hcpJobIdFrom, hcpJobIdFromLink, hcpJobRow, hcpJobTypes, hcpOrderChanged, hcpSummary, lookupHcpJob, phoenixDate, progressFromHcp, saveJobTypeCategories, syncHcp, verifyWebhookSignature, webhookEventId, workStatusOf } = await import('../src/hcp/sync.js');
+const { applyHcpJob, guessCategory, handleHcpWebhook, hcpApprovedJobChanged, hcpJobIdFrom, hcpJobIdFromLink, hcpJobRow, hcpJobTypes, hcpOrderChanged, hcpPipeline, hcpSummary, lookupHcpJob, phoenixDate, progressFromHcp, saveJobTypeCategories, savePipelineSteps, syncHcp, testPipelineMove, verifyWebhookSignature, webhookEventId, workStatusOf } = await import('../src/hcp/sync.js');
 const { dbRun, dbGet } = await import('../src/db.js');
 await (await import('../src/db.js')).initializeDatabase();
 
@@ -314,6 +314,118 @@ test('ordering and receiving tag the HCP job and add a note, after the Undo wind
     hcpOrderChanged('tag-2', 'received');
     for (let i = 0; i < 100 && !(await dbGet("SELECT value FROM hcp_state WHERE name = 'last_write_error'"))?.value; i += 1) await new Promise(resolve => setTimeout(resolve, 20));
     assert.match((await dbGet("SELECT value FROM hcp_state WHERE name = 'last_write_error'")).value, /needs Full access/);
+  } finally {
+    for (const [name, value] of [['HCP_API_KEY', saved.key], ['HCP_API_BASE', saved.base], ['HCP_WRITE_DELAY_MS', saved.delay]]) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    await fake.close();
+  }
+});
+
+// Kept last: its hourly catch-up reads every job the earlier tests left behind.
+test('the Pipeline jobs board follows approved jobs and orders, forward only, once the columns are saved', async () => {
+  const fake = await startFakeHcp();
+  const saved = { key: process.env.HCP_API_KEY, base: process.env.HCP_API_BASE, delay: process.env.HCP_WRITE_DELAY_MS };
+  Object.assign(process.env, { HCP_API_KEY: fake.apiKey, HCP_API_BASE: fake.url, HCP_WRITE_DELAY_MS: '0' });
+  const moves = () => fake.requests.filter(request => request.method === 'PUT' && request.path === '/pipeline/statuses');
+  const quiet = () => new Promise(resolve => setTimeout(resolve, 150));
+  const until = async (check, what) => {
+    for (let i = 0; i < 100; i += 1) {
+      if (await check()) return;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.fail(`timed out waiting for ${what}`);
+  };
+  const column = jobId => fake.pipeline.find(status => status.id === fake.jobs.get(jobId).pipeline_status_id)?.name;
+  const now = '2026-10-28T00:00:00.000Z';
+  const approvedJob = (id, jobId, deposit) => dbRun('INSERT INTO job_drafts (id, customer_name, hcp_job_id, deposit_status, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [id, 'Synthetic Pipeline Job', jobId, deposit, 'Open', now, now]);
+  try {
+    // Tag ids cached by an earlier test belong to that test's stand-in HCP.
+    await dbRun("DELETE FROM hcp_state WHERE name = 'tag_ids'");
+    fake.pipeline.push(...['New Job', 'Deposit Needed', 'Need to Order Materials', 'Waiting on Materials', 'Materials Received', 'Unscheduled', 'Scheduled', 'In Progress', 'Completed', 'Invoice Sent', 'On Hold', 'Invoice Paid'].map((name, index) => ({ id: `kcs_${index}`, name, status_type: 'custom' })));
+    const columnId = name => fake.pipeline.find(status => status.name === name).id;
+    const JOB = 'job_00000000000000000000000000000f01';
+    fake.jobs.set(JOB, syntheticHcpJob({ id: JOB, invoice_number: '10250001' }));
+    await approvedJob('pipe-job', JOB, 'Awaiting deposit');
+
+    // Nothing moves until an admin saves the columns; until then they are suggested by name.
+    hcpApprovedJobChanged('pipe-job');
+    await quiet();
+    assert.equal(moves().length, 0);
+    const board = await hcpPipeline();
+    assert.equal(board.saved, false);
+    assert.deepEqual(board.steps.map(step => [step.key, board.statuses.find(status => status.id === step.status_id)?.name]), [['deposit_needed', 'Deposit Needed'], ['need_to_order', 'Need to Order Materials'], ['waiting', 'Waiting on Materials'], ['received', 'Materials Received']]);
+    const chosen = Object.fromEntries(board.steps.map(step => [step.key, step.status_id]));
+    assert.equal((await savePipelineSteps({ ...chosen, waiting: 'kcs_not_a_column' })).waiting, '', 'only real columns are kept');
+    assert.deepEqual(await savePipelineSteps(chosen), chosen);
+    assert.equal((await hcpPipeline()).saved, true);
+
+    // Approved job waiting on its deposit, then the deposit is in.
+    hcpApprovedJobChanged('pipe-job');
+    await until(() => column(JOB) === 'Deposit Needed', 'Deposit Needed');
+    await dbRun("UPDATE job_drafts SET deposit_status = 'Deposit received' WHERE id = 'pipe-job'");
+    hcpApprovedJobChanged('pipe-job');
+    await until(() => column(JOB) === 'Need to Order Materials', 'Need to Order Materials');
+
+    // One supplier order, with the approved job kept open for another: it arriving isn't "all here".
+    await dbRun("INSERT INTO orders (id, customer_name, supplier, date_ordered, hcp_job_id, job_draft_id, created_at, updated_at, status) VALUES ('pipe-1', 'Synthetic Pipeline Job', 'Jeld-Wen', '2026-10-28', ?, 'pipe-job', ?, ?, 'Ordered')", [JOB, now, now]);
+    hcpOrderChanged('pipe-1', 'ordered');
+    await until(() => column(JOB) === 'Waiting on Materials', 'Waiting on Materials');
+    await dbRun("UPDATE orders SET date_received = '2026-10-30', status = 'Received' WHERE id = 'pipe-1'");
+    const beforeReceive = moves().length;
+    hcpOrderChanged('pipe-1', 'received');
+    await until(() => fake.jobs.get(JOB).notes.length === 2, 'the received note');
+    assert.equal(moves().length, beforeReceive, 'the approved job still waits on another supplier');
+
+    // The job is all ordered and everything is here: Materials Received.
+    await dbRun("UPDATE job_drafts SET status = 'Completed' WHERE id = 'pipe-job'");
+    hcpApprovedJobChanged('pipe-job');
+    await until(() => column(JOB) === 'Materials Received', 'Materials Received');
+
+    // Never backward: reopening the order re-matches the tags but leaves the column.
+    await dbRun("UPDATE orders SET date_received = NULL, status = 'Ordered' WHERE id = 'pipe-1'");
+    const settled = moves().length;
+    hcpOrderChanged('pipe-1', 'changed');
+    await until(() => (fake.jobs.get(JOB).tags || []).includes('Materials ordered'), 'tags re-matched');
+    assert.equal(moves().length, settled);
+    assert.equal(column(JOB), 'Materials Received');
+
+    // A job HCP has scheduled is past these columns and left alone.
+    const SCHEDULED = 'job_00000000000000000000000000000f02';
+    fake.jobs.set(SCHEDULED, syntheticHcpJob({ id: SCHEDULED, invoice_number: '10250002', work_status: 'scheduled', schedule: { scheduled_start: '2026-11-03T15:00:00Z' } }));
+    await approvedJob('pipe-scheduled', SCHEDULED, 'Deposit received');
+    hcpApprovedJobChanged('pipe-scheduled');
+    await until(async () => Boolean(await dbGet('SELECT id FROM hcp_jobs WHERE id = ?', [SCHEDULED])), 'the scheduled job read');
+    await quiet();
+    assert.equal(fake.jobs.get(SCHEDULED).pipeline_status_id, undefined);
+
+    // A job someone put further along (On Hold): HCP refuses, the tracker notes it once and stops trying.
+    const HELD = 'job_00000000000000000000000000000f03';
+    fake.jobs.set(HELD, { ...syntheticHcpJob({ id: HELD, invoice_number: '10250003' }), pipeline_status_id: columnId('On Hold') });
+    await approvedJob('pipe-held', HELD, 'Deposit waived / not required');
+    hcpApprovedJobChanged('pipe-held');
+    await until(async () => (await dbGet('SELECT pipeline_step FROM hcp_jobs WHERE id = ?', [HELD]))?.pipeline_step === 'need_to_order', 'the refusal noted');
+    assert.match((await dbGet("SELECT value FROM hcp_state WHERE name = 'last_pipeline_refusal'")).value, /job 10250003: Housecall Pro answered 422: Pipeline status can only move forward/);
+    assert.equal(column(HELD), 'On Hold');
+    const refused = moves().length;
+    hcpApprovedJobChanged('pipe-held');
+    await quiet();
+    assert.equal(moves().length, refused, 'not tried again');
+
+    // The hourly catch-up moves an approved job whose move never happened.
+    const MISSED = 'job_00000000000000000000000000000f04';
+    fake.jobs.set(MISSED, syntheticHcpJob({ id: MISSED, invoice_number: '10250004' }));
+    await approvedJob('pipe-missed', MISSED, 'Deposit received');
+    assert.ok((await syncHcp()).pipeline_moves >= 1);
+    assert.equal(column(MISSED), 'Need to Order Materials');
+    assert.equal(column(JOB), 'Materials Received', 'the catch-up never moves a job back');
+
+    // Try one job: moves right away and says what HCP answered.
+    assert.equal((await testPipelineMove({ job: '10250004', statusId: columnId('Materials Received') })).message, 'Moved job 10250004 (Synthetic Customer) to Materials Received. Check the Pipeline board.');
+    assert.match((await testPipelineMove({ job: '10250004', statusId: columnId('Deposit Needed') })).message, /422: Pipeline status can only move forward/);
+    assert.equal((await testPipelineMove({ job: '10250004', statusId: 'kcs_nope' })).message, 'Choose a Pipeline column.');
+    assert.equal((await testPipelineMove({ job: '99999999', statusId: columnId('Scheduled') })).moved, false);
   } finally {
     for (const [name, value] of [['HCP_API_KEY', saved.key], ['HCP_API_BASE', saved.base], ['HCP_WRITE_DELAY_MS', saved.delay]]) {
       if (value === undefined) delete process.env[name];

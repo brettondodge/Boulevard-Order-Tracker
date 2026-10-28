@@ -63,10 +63,10 @@ First check for an existing tracker web service. Reuse it if present. If none ex
 | CF_ACCESS_TEAM_DOMAIN | Zero Trust team hostname, no https:// or trailing slash |
 | CF_ACCESS_AUD | Exact Access application AUD tag |
 | OMEGA_API_KEY | Omega EDI API key for Freeport's read-only invoice import, entered directly (added October 22, 2026). Without it the import button is disabled; replace it here and in local `.env` if the key is ever regenerated |
-| HCP_API_KEY | Housecall Pro company API key (MAX plan, Full access so the tracker can add job tags and notes), entered directly. See docs/housecall-pro.md |
+| HCP_API_KEY | Housecall Pro company API key (MAX plan, Full access so the tracker can add job tags and notes and move jobs on the Pipeline board), entered directly. See docs/housecall-pro.md |
 | HCP_WEBHOOK_SECRET | Signing secret Housecall Pro shows after the webhook URL is saved, entered directly. Until it is set, /api/hcp/webhooks answers HCP's save-time test but changes nothing |
 | HCP_SYNC_INTERVAL_MINUTES | Optional. Housecall Pro catch-up interval, default 60; 0 turns it off |
-| HCP_WRITE_BACK | Optional. `off` stops the tracker adding tags and notes to HCP jobs |
+| HCP_WRITE_BACK | Optional. `off` stops the tracker adding tags and notes to HCP jobs and moving them on the Pipeline board |
 
 The Housecall Pro webhook address `/api/hcp/webhooks` must be reachable without a Google sign-in: add a Cloudflare Access self-hosted application for `tools.blvdglass.com/api/hcp/webhooks` with a single Bypass / Everyone policy. The app authenticates those requests by HCP's HMAC signature; every other path still requires Access.
 

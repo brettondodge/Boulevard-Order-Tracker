@@ -1,7 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { dbAll, dbGet, dbRun, runInTransaction } from '../db.js';
 import { isoNow, ORDER_CATEGORIES, PROGRESS_FIELDS } from '../utils.js';
-import { createHcpClient, hcpApiConfigured } from './client.js';
+import { HcpError, createHcpClient, hcpApiConfigured } from './client.js';
 
 // Keeps tracker orders in step with their Housecall Pro jobs. Staff paste an
 // HCP job link (or job number) on an order and the tracker fills in what HCP
@@ -9,7 +9,8 @@ import { createHcpClient, hcpApiConfigured } from './client.js';
 // complete; the tracker keeps what HCP doesn't know (supplier, PO, ETA,
 // received, shelf). Webhooks give changes as they happen; the hourly sync
 // catches anything missed, since HCP documents no retries. The tracker writes
-// back only job tags ("Materials ordered" / "Materials received") and notes.
+// back only job tags ("Materials ordered" / "Materials received"), notes, and
+// the job's column on the Pipeline jobs board (forward only).
 
 export const HCP_ACTOR = 'Housecall Pro';
 const PHOENIX = 'America/Phoenix';
@@ -412,28 +413,145 @@ async function writeForOrder(orderId, event) {
     await client.addJobNote(jobId, `Order Tracker: ${order.supplier} materials received${po ? ` (${po})` : ''}${order.shop_location ? `, shelf ${order.shop_location}` : ''}.`);
   }
   await updateJobTags(client, row);
+  await movePipeline(client, row);
   await setState('last_write_at', isoNow());
   await setState('last_write_error', '');
 }
 
-// Called after an order is created, received, reopened, deleted or relinked.
-// The write waits until the Undo window has passed, then looks at the order
-// as it is by then, so an undone change writes nothing (tags are re-matched).
+// Writes wait until the Undo window has passed, then look at the records as
+// they are by then, so an undone change writes nothing. The same change made
+// twice inside the delay (received, undone, received) writes once.
 const pendingWrites = new Map();
-export function hcpOrderChanged(orderId, event = 'changed') {
-  if (!hcpWritesEnabled() || !orderId) return;
-  // The same change made twice inside the delay (received, undone, received) writes once.
-  const key = `${orderId}:${event}`;
+function afterUndoWindow(key, write) {
   clearTimeout(pendingWrites.get(key));
   const delay = Number(process.env.HCP_WRITE_DELAY_MS ?? 20000);
   const timer = setTimeout(() => {
     pendingWrites.delete(key);
-    writeForOrder(orderId, event).catch(async (error) => {
+    write().catch(async (error) => {
       await setState('last_write_error', `${isoNow()} ${String(error.message || 'Failed').slice(0, 200)}`).catch(() => {});
     });
   }, delay);
   timer.unref?.();
   pendingWrites.set(key, timer);
+}
+
+// Called after an order is created, received, reopened, deleted or relinked
+// (tags are re-matched and the job moves on the Pipeline board).
+export function hcpOrderChanged(orderId, event = 'changed') {
+  if (!hcpWritesEnabled() || !orderId) return;
+  afterUndoWindow(`${orderId}:${event}`, () => writeForOrder(orderId, event));
+}
+
+// Called after an approved job is added, edited (its deposit or HCP link),
+// marked all ordered, reopened, deleted or restored: its HCP job moves on the
+// Pipeline board.
+export function hcpApprovedJobChanged(draftId) {
+  if (!hcpWritesEnabled() || !draftId) return;
+  afterUndoWindow(`draft:${draftId}`, async () => {
+    const draft = await dbGet('SELECT hcp_job_id FROM job_drafts WHERE id = ?', [draftId]);
+    const jobId = hcpJobIdFrom(draft?.hcp_job_id);
+    if (!jobId) return;
+    const client = createHcpClient();
+    const job = await client.getJob(jobId);
+    if (!job) return;
+    if (await movePipeline(client, await saveHcpJob(hcpJobRow(job, isoNow(), await getHcpJob(jobId))))) await setState('last_write_at', isoNow());
+    await setState('last_write_error', '');
+  });
+}
+
+// --- Moving jobs across the Pipeline jobs board ---
+
+// The tracker's steps, in board order. An admin picks the Pipeline column for
+// each in Master Lists; nothing moves until that choice is saved.
+export const PIPELINE_STEPS = [
+  { key: 'deposit_needed', label: 'Approved job waiting on its deposit', guess: /deposit/i },
+  { key: 'need_to_order', label: 'Deposit received or waived, materials not ordered', guess: /need.*order/i },
+  { key: 'waiting', label: 'Materials ordered, not all here', guess: /waiting/i },
+  { key: 'received', label: 'All materials here', guess: /received/i }
+];
+const stepIndex = key => PIPELINE_STEPS.findIndex(step => step.key === key);
+
+async function savedPipelineSteps() {
+  try {
+    const steps = JSON.parse((await getState('pipeline_steps')) || 'null');
+    return steps && typeof steps === 'object' ? steps : null;
+  } catch {
+    return null;
+  }
+}
+
+// The jobs board's columns from HCP, and the column chosen (or, until saved,
+// suggested by name) for each tracker step.
+export async function hcpPipeline(client = createHcpClient()) {
+  const statuses = (await client.listPipelineStatuses('job')).map(status => ({ id: status.id, name: status.name }));
+  const saved = await savedPipelineSteps();
+  return {
+    statuses,
+    saved: Boolean(saved),
+    steps: PIPELINE_STEPS.map(step => ({
+      key: step.key,
+      label: step.label,
+      status_id: saved ? saved[step.key] || '' : statuses.find(status => step.guess.test(status.name))?.id || ''
+    }))
+  };
+}
+
+// Keeps only columns that exist on the board; '' means "don't move".
+export async function savePipelineSteps(steps, client = createHcpClient()) {
+  const known = new Set((await client.listPipelineStatuses('job')).map(status => status.id));
+  const clean = Object.fromEntries(PIPELINE_STEPS.map(step => [step.key, known.has(steps?.[step.key]) ? steps[step.key] : '']));
+  await setState('pipeline_steps', JSON.stringify(clean));
+  return clean;
+}
+
+// Where the tracker's records put an HCP job on the board. Orders decide once
+// there are any: all here (with no approved job still waiting on another
+// supplier) is "received". Before that, the open approved job's deposit.
+export async function pipelineStepFor(jobId) {
+  const orders = await dbAll('SELECT date_received FROM orders WHERE is_archived = 0 AND hcp_job_id = ?', [jobId]);
+  const openJobs = await dbAll("SELECT deposit_status FROM job_drafts WHERE is_archived = 0 AND status <> 'Completed' AND hcp_job_id = ?", [jobId]);
+  if (orders.length) return orders.every(order => order.date_received) && !openJobs.length ? 'received' : 'waiting';
+  if (!openJobs.length) return '';
+  return openJobs.some(job => job.deposit_status === 'Awaiting deposit') ? 'deposit_needed' : 'need_to_order';
+}
+
+// Moves the job forward to its step's column, once per step. Left alone: jobs
+// HCP has scheduled or finished (they are past these columns), and jobs the
+// tracker already moved to this step or a later one. A move HCP refuses (the
+// job is further along, for example On Hold) is noted and not tried again.
+async function movePipeline(client, row) {
+  const steps = await savedPipelineSteps();
+  if (!steps || !row || ['scheduled', 'in_progress', 'completed', 'canceled'].includes(workStatusOf(row))) return false;
+  const step = await pipelineStepFor(row.id);
+  if (!step || !steps[step] || stepIndex(step) <= stepIndex(row.pipeline_step)) return false;
+  try {
+    const moved = await client.updatePipelineStatus({ resourceType: 'job', resourceId: row.id, statusId: steps[step] });
+    if (!moved) throw new Error("Housecall Pro couldn't find the job or the Pipeline column. Check the columns in Master Lists.");
+  } catch (error) {
+    if (!(error instanceof HcpError) || [401, 403, 429].includes(error.status) || error.status >= 500) throw error;
+    await setState('last_pipeline_refusal', `${isoNow()} job ${row.invoice_number || row.id}: ${error.message}`);
+  }
+  await dbRun('UPDATE hcp_jobs SET pipeline_step = ? WHERE id = ?', [step, row.id]);
+  return true;
+}
+
+// Master Lists › Housecall Pro › Try one job: moves a job to a column right
+// away and says what HCP answered.
+export async function testPipelineMove({ job, statusId }, client = createHcpClient()) {
+  const status = (await client.listPipelineStatuses('job')).find(entry => entry.id === statusId);
+  if (!status) return { moved: false, message: 'Choose a Pipeline column.' };
+  const found = await lookupHcpJob(job, { client });
+  if (!found) return { moved: false, message: "Couldn't find that job in Housecall Pro." };
+  const label = `job ${found.invoice_number || found.job_id}${found.customer_name ? ` (${found.customer_name})` : ''}`;
+  try {
+    const moved = await client.updatePipelineStatus({ resourceType: 'job', resourceId: found.job_id, statusId });
+    return moved
+      ? { moved: true, message: `Moved ${label} to ${moved.name || status.name}. Check the Pipeline board.` }
+      : { moved: false, message: `Housecall Pro couldn't find ${label} or that column.` };
+  } catch (error) {
+    if (error instanceof HcpError) return { moved: false, message: `${label}: ${error.message}` };
+    throw error;
+  }
 }
 
 let runningSync = null;
@@ -447,15 +565,18 @@ export function syncHcp(options = {}) {
 }
 
 async function runSync({ client = createHcpClient(), maxPages = 30 } = {}) {
-  const summary = { jobs_refreshed: 0, jobs_found_by_number: 0, numbers_not_found: 0, orders_updated: 0, tags_updated: 0 };
+  const summary = { jobs_refreshed: 0, jobs_found_by_number: 0, numbers_not_found: 0, orders_updated: 0, tags_updated: 0, pipeline_moves: 0 };
   const changed = new Set();
-  // Tags follow the orders; a tag that can't be written doesn't stop the sync.
-  const matchTags = async (row) => {
+  // Tags and the Pipeline column follow the tracker; one that can't be
+  // written doesn't stop the sync.
+  const writeBack = async (row) => {
     if (!hcpWritesEnabled()) return;
-    try {
-      if (await updateJobTags(client, row)) summary.tags_updated += 1;
-    } catch (error) {
-      await setState('last_write_error', `${isoNow()} ${String(error.message || 'Failed').slice(0, 200)}`);
+    for (const [count, write] of [['tags_updated', () => updateJobTags(client, row)], ['pipeline_moves', () => movePipeline(client, row)]]) {
+      try {
+        if (await write()) summary[count] += 1;
+      } catch (error) {
+        await setState('last_write_error', `${isoNow()} ${String(error.message || 'Failed').slice(0, 200)}`);
+      }
     }
   };
   try {
@@ -477,6 +598,11 @@ async function runSync({ client = createHcpClient(), maxPages = 30 } = {}) {
         wantedNumbers.add(number);
       }
     }
+    // Open approved jobs with no orders yet still need their Pipeline column.
+    for (const draft of await dbAll("SELECT hcp_job_id FROM job_drafts WHERE is_archived = 0 AND status <> 'Completed' AND hcp_job_id IS NOT NULL AND hcp_job_id <> ''")) {
+      const id = hcpJobIdFrom(draft.hcp_job_id);
+      if (id && !jobIds.has(id)) jobIds.set(id, false);
+    }
 
     // Finished jobs need no more checking. One job failing (for example a
     // mistyped link) doesn't stop the rest; a rejected key does.
@@ -487,7 +613,7 @@ async function runSync({ client = createHcpClient(), maxPages = 30 } = {}) {
         summary.jobs_refreshed += 1;
         if (!saved) continue;
         (await applyHcpJob(saved)).forEach(orderId => changed.add(orderId));
-        await matchTags(saved);
+        await writeBack(saved);
       } catch (error) {
         if (error.status === 401 || error.status === 403) throw error;
         summary.jobs_failed = (summary.jobs_failed || 0) + 1;
@@ -505,7 +631,7 @@ async function runSync({ client = createHcpClient(), maxPages = 30 } = {}) {
         const saved = await saveHcpJob(hcpJobRow(job, isoNow(), await getHcpJob(job.id)));
         summary.jobs_found_by_number += 1;
         (await applyHcpJob(saved)).forEach(orderId => changed.add(orderId));
-        await matchTags(saved);
+        await writeBack(saved);
       }
       if (!jobs.length || page >= Number(result?.total_pages || page)) break;
     }
@@ -581,6 +707,8 @@ export async function hcpStatus() {
     last_error: state.last_error || '',
     last_write_at: state.last_write_at || '',
     last_write_error: state.last_write_error || '',
+    pipeline: Boolean(await savedPipelineSteps()),
+    last_pipeline_refusal: state.last_pipeline_refusal || '',
     recent_events: (await dbAll('SELECT event, outcome, received_at FROM hcp_events ORDER BY received_at DESC LIMIT 10')).map(row => ({ event: row.event, outcome: row.outcome, received_at: row.received_at }))
   };
 }

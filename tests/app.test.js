@@ -1171,15 +1171,40 @@ test('Housecall Pro: a pasted link fills the order, webhooks and sync keep it in
     assert.equal((await api('/api/hcp/job-types', { categories: { jt_window: 'Flat Glass' } }, 'PUT')).status, 200);
     assert.equal((await api(`/api/hcp/lookup?q=${encodeURIComponent(link(JOB_A))}`)).body.job.category, 'Flat Glass');
 
+    // Pipeline: admins pick a column per step; the approved job and its order walk the job forward.
+    fake.pipeline.push(...['New Job', 'Deposit Needed', 'Need to Order Materials', 'Waiting on Materials', 'Materials Received', 'Unscheduled', 'Scheduled', 'On Hold'].map((name, index) => ({ id: `kcs_${index}`, name, status_type: 'custom' })));
+    const board = await api('/api/hcp/pipeline');
+    assert.equal(board.status, 200);
+    assert.equal(board.body.saved, false);
+    const steps = Object.fromEntries(board.body.steps.map(step => [step.key, step.status_id]));
+    assert.deepEqual(steps, { deposit_needed: 'kcs_1', need_to_order: 'kcs_2', waiting: 'kcs_3', received: 'kcs_4' });
+    assert.equal((await api('/api/hcp/pipeline', { steps }, 'PUT')).status, 200);
+    const JOB_P = 'job_0000000000000000000000000000000f';
+    fake.jobs.set(JOB_P, syntheticHcpJob({ id: JOB_P, invoice_number: '10239700' }));
+    const columnOfP = () => fake.jobs.get(JOB_P).pipeline_status_id;
+    const approved = (await api('/api/job-drafts', { customer_name: 'Synthetic Pipeline', housecall_job_link: link(JOB_P), deposit_status: 'Awaiting deposit' })).body.draft;
+    await waitFor(() => columnOfP() === 'kcs_1', 'Deposit Needed');
+    assert.equal((await api(`/api/job-drafts/${approved.id}`, { ...approved, deposit_status: 'Deposit received' }, 'PUT')).status, 200);
+    await waitFor(() => columnOfP() === 'kcs_2', 'Need to Order Materials');
+    const pipeOrder = await api('/api/orders', { customer_name: 'Synthetic Pipeline', job_draft_id: approved.id, supplier: 'Northline Glass', category: 'Windows', date_ordered: '2026-10-28', ordered_by: 'Admin User' });
+    assert.equal(pipeOrder.body.job_completed, true);
+    await waitFor(() => columnOfP() === 'kcs_3', 'Waiting on Materials');
+    assert.equal((await api(`/api/orders/${pipeOrder.body.order.id}/mark-received`, { updated_at: pipeOrder.body.order.updated_at, shop_location: 'H' })).status, 200);
+    await waitFor(() => columnOfP() === 'kcs_4', 'Materials Received');
+    const tried = await api('/api/hcp/pipeline/test', { job: link(JOB_B), status_id: 'kcs_7' });
+    assert.equal(tried.body.moved, true);
+    assert.equal(fake.jobs.get(JOB_B).pipeline_status_id, 'kcs_7');
+
     const status = (await api('/api/hcp/status')).body;
     assert.equal(status.api, true);
     assert.equal(status.webhooks, true);
     assert.equal(status.writes, true);
-    assert.equal(status.linked_jobs, 3, 'jobs that active orders point at');
+    assert.equal(status.linked_jobs, 4, 'jobs that active orders point at');
     assert.ok(status.last_event_at);
     assert.ok(status.last_sync_at);
     assert.ok(status.last_write_at);
     assert.equal(status.last_write_error, '');
+    assert.equal(status.pipeline, true);
     assert.ok(status.recent_events.some(event => event.event === 'job.scheduled' && event.outcome === 'applied'));
     assert.ok(fake.requests.every(request => request.auth === `Token ${fake.apiKey}`));
   } finally {

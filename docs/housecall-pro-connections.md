@@ -7,13 +7,13 @@ In short:
 
 - The tracker **reads** from HCP to fill in orders and to follow each job's
   schedule.
-- The tracker **writes** only two things to HCP: job **tags** and job
-  **notes**.
+- The tracker **writes** only three things to HCP: job **tags**, job
+  **notes**, and the job's column on the **Pipeline Jobs board**.
 - HCP **tells** the tracker when a job changes (webhooks), and the tracker
   double-checks once an hour.
 
-All of it uses HCP's public API, which is part of the MAX plan. Nothing uses
-the Pipeline add-on.
+All of it uses HCP's public API, which is part of the MAX plan. The Jobs
+board moves also need the Pipeline add-on, which you're keeping.
 
 ## 1. The tracker reads from HCP (API)
 
@@ -27,6 +27,7 @@ the Pipeline add-on.
 | Hourly catch-up, or Master Lists › **Sync with Housecall Pro now** | `GET /jobs/{id}` for every unfinished linked job, and `GET /jobs` (newest 3,000) for orders that only have a job # | Updates scheduled and complete. Links orders found by job #. Re-matches tags. |
 | An admin opens Master Lists › Housecall Pro | `GET /job_fields/job_types` | Lists your HCP job types so each can be given a tracker category. |
 | The first time a tag is needed | `GET /tags` | Finds the tracker's two tags in HCP. |
+| An admin opens Master Lists › Housecall Pro, or saves or tries the Pipeline columns | `GET /pipeline/statuses?resource_type=job` | Lists your Jobs board columns so each tracker step can be given one. |
 
 ## 2. The tracker writes to HCP (API)
 
@@ -50,10 +51,37 @@ all of them off.
 | Order edited | Depends on the edit | Newly linked to a job: note and tag, as for a new order. Newly received: the received note. Anything else: tags only. |
 | Order reopened, deleted or restored, or an approved job deleted or restored | Tag add or remove only | Tags re-matched to the orders still in the tracker. With no orders left for the job, both tags come off. |
 | A tag doesn't exist in HCP yet | `POST /tags` | Creates "Materials ordered" or "Materials received", once |
+| Approved job added or edited, order saved, all materials received (see section 2a) | `PUT /pipeline/statuses` | The job moves forward to the step's column on the Jobs board |
+| Master Lists › **Try one job** | `PUT /pipeline/statuses` | Moves that one job right away, to check the connection |
 
 Notes are only ever added. The tracker never edits or deletes an HCP note,
 even if the order is later deleted. It only adds or removes its own two
 tags.
+
+## 2a. The Pipeline Jobs board
+
+An admin picks the column for each tracker step in Master Lists ›
+Housecall Pro; nothing moves until that is saved.
+
+| Tracker step | Column (as set up October 28, 2026) |
+|---|---|
+| Approved job added with "Awaiting deposit" | Deposit Needed |
+| Deposit received or waived, materials not ordered | Need to Order Materials |
+| Supplier order saved, not everything here | Waiting on Materials |
+| Everything here, and the approved job isn't waiting on another supplier | Materials Received |
+
+- **Forward only:** HCP's API only moves a job forward (to a column with an
+  equal or higher order), and it can't tell the tracker which column a job is
+  in. So Undo, reopening an order or deleting one never moves a job back.
+- **Once per step:** each move happens once, after the Undo window. The
+  column the tracker last moved a job to is stored as
+  `hcp_jobs.pipeline_step`.
+- **Left alone:** jobs HCP has scheduled or finished, and jobs on hold or
+  moved further by hand. When HCP refuses a move, Master Lists shows it, and
+  the tracker doesn't try again.
+- **Missed moves:** the hourly catch-up makes any move that didn't happen.
+- **Never touched:** the estimate and lead boards, and Pipeline's automated
+  texts.
 
 ## 3. HCP tells the tracker (webhooks)
 
@@ -121,8 +149,9 @@ point at the same HCP job.
 
 ## 7. What it never does
 
-- **No Pipeline:** it doesn't use the Pipeline add-on, and HCP's API can't
-  read a job's Pipeline stage anyway.
+- **No moving back on the Pipeline board:** it only moves jobs forward on the
+  Jobs board, and never touches On Hold, the estimate or lead boards, or
+  Pipeline's automations.
 - **No changes to jobs:** it never creates, schedules, completes or cancels
   an HCP job. HCP's API can't mark a job complete.
 - **No other records:** it never touches customers, estimates, invoices or
@@ -135,10 +164,10 @@ point at the same HCP job.
 
 | Setting | Meaning |
 |---|---|
-| `HCP_API_KEY` | HCP company API key (My Apps › API Key Management). Full access for tags and notes; Read-only still allows everything in sections 1, 3 and 4. |
+| `HCP_API_KEY` | HCP company API key (My Apps › API Key Management). Full access for tags, notes and Pipeline moves; Read-only still allows everything in sections 1, 3 and 4. |
 | `HCP_WEBHOOK_SECRET` | The signing secret HCP shows after the webhook URL is saved. |
 | `HCP_SYNC_INTERVAL_MINUTES` | How often the catch-up runs. Default 60; `0` turns it off (the button still works). |
-| `HCP_WRITE_BACK` | `off` stops the tags and notes. On by default. |
+| `HCP_WRITE_BACK` | `off` stops the tags, notes and Pipeline moves. On by default. |
 
 For tests and local copies only: `HCP_API_BASE` points the tracker at a
 stand-in HCP, and `HCP_WRITE_DELAY_MS` changes the 20-second wait.
@@ -151,8 +180,9 @@ stand-in HCP, and `HCP_WRITE_DELAY_MS` changes the 20-second wait.
 - A call gives up after 20 seconds.
 - One job that can't be read doesn't stop the hourly catch-up. A rejected API
   key does.
-- Problems show in Master Lists › Housecall Pro: the last error, and the last
-  error writing tags or notes.
+- Problems show in Master Lists › Housecall Pro: the last error, the last
+  error writing tags, notes or Pipeline moves, and the last Pipeline move HCP
+  refused.
 
 ## 10. The tracker's own Housecall Pro addresses
 
@@ -163,16 +193,19 @@ stand-in HCP, and `HCP_WRITE_DELAY_MS` changes the 20-second wait.
 | `GET`, `PUT /api/hcp/job-types` | Admin | Category for each HCP job type |
 | `GET /api/hcp/status` | Admin | The Housecall Pro panel in Master Lists |
 | `POST /api/hcp/sync` | Admin | The Sync now button |
+| `GET`, `PUT /api/hcp/pipeline` | Admin | Pipeline column for each tracker step |
+| `POST /api/hcp/pipeline/test` | Admin | The Try one job button |
 
 ## 11. Where it lives in the code
 
 - `src/hcp/client.js`: every call to HCP's API.
-- `src/hcp/sync.js`: matching, webhooks, the hourly catch-up, and the tags
-  and notes.
+- `src/hcp/sync.js`: matching, webhooks, the hourly catch-up, the tags and
+  notes, and the Pipeline moves.
 - `src/server.js`: the `/api/hcp/*` addresses, and the hooks on order
   changes that trigger the writes.
-- `migrations/007-housecall.sql`, `migrations/008-orders-hcp-job.sql`: the
-  `hcp_jobs`, `hcp_events` and `hcp_state` tables, and `orders.hcp_job_id`.
+- `migrations/007-housecall.sql`, `migrations/008-orders-hcp-job.sql`,
+  `migrations/009-hcp-pipeline.sql`: the `hcp_jobs`, `hcp_events` and
+  `hcp_state` tables, `orders.hcp_job_id`, and `hcp_jobs.pipeline_step`.
 - `tests/hcp-fake.js`: the stand-in HCP the tests run against.
 
 HCP's documentation leaves a few things open, such as exact status spellings

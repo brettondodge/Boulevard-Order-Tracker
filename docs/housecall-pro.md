@@ -4,8 +4,10 @@ The Order Tracker works alongside Housecall Pro (HCP). Staff paste an HCP job
 link on an order and the tracker fills in what HCP knows. HCP is then where
 jobs are scheduled and finished, and the tracker follows along. The tracker
 keeps what HCP doesn't know: the supplier, the PO on the supplier order, ETA,
-when it arrived and which shelf it's on. This replaces the HCP Pipeline
-add-on ($100/month), which you can cancel.
+when it arrived and which shelf it's on. It also moves each job across the
+Pipeline **Jobs board**, so the board shows which jobs are waiting on a
+deposit, waiting to be ordered, waiting on materials, or ready to schedule
+(see [The Pipeline Jobs board](#the-pipeline-jobs-board)).
 
 Built against HCP's official documentation (docs.housecallpro.com,
 help.housecallpro.com) and tested against a stand-in for HCP. The live site
@@ -45,6 +47,77 @@ Undoing a change in the tracker inside the Undo window writes nothing to HCP.
 If an order is deleted, the HCP tags are put back to match the remaining
 orders. Jobs already complete or canceled in HCP are never re-tagged.
 
+## The Pipeline Jobs board
+
+Pipeline is kept (October 28, 2026), for its estimate follow-ups and for this
+board. Its Jobs columns, in order:
+
+New Job → Deposit Needed → Need to Order Materials → Waiting on Materials →
+Materials Received → Unscheduled → Scheduled → In Progress → Completed →
+Invoice Sent → On Hold → Invoice Paid
+
+New jobs land in the first column. The tracker moves a job through the
+middle four, and HCP moves it from Scheduled on as the work is done:
+
+| Column | Moved there by | When |
+|---|---|---|
+| New Job | HCP | The job is created. A job with no materials stays here until it is scheduled. |
+| Deposit Needed | Tracker | An approved job is added with "Awaiting deposit" |
+| Need to Order Materials | Tracker | An approved job is added, or edited, with the deposit received or waived |
+| Waiting on Materials | Tracker | A supplier order is saved |
+| Materials Received | Tracker | Every order for the job is here, and the approved job isn't waiting on another supplier (Save + another supplier) |
+| Unscheduled (required by HCP) | HCP | Past the materials steps and needs a date |
+| Scheduled → Invoice Paid | HCP | As the job is scheduled, worked, completed and invoiced |
+| On Hold | By hand | The tracker never moves a job into or out of it |
+
+Rules the tracker keeps:
+
+- **Forward only.** HCP's API can only move a job forward, so Undo, reopening
+  an order or deleting one never moves a job back. The tags still correct
+  themselves.
+- **Once per step,** after the Undo window, like the tags.
+- **Hands off:** jobs HCP has scheduled or finished, jobs on hold, and jobs
+  someone moved further by hand. When HCP refuses a move, Master Lists shows
+  it, and the tracker doesn't try again.
+- **Nothing moves until an admin saves the columns** in Master Lists ›
+  Housecall Pro.
+- **Missed moves come back:** the hourly catch-up makes any move that didn't
+  happen (for example while HCP was unreachable).
+- **No texts:** the Jobs board's automated texts are off for now. Pipeline's
+  estimate follow-ups are separate, and the tracker doesn't touch the estimate
+  or lead boards.
+
+### Office rule
+
+Share with the office:
+
+```
+JOB BOARD RULE (Housecall Pro Pipeline)
+
+Don't drag job cards on the Jobs board. Do the real step and the card moves itself.
+
+New jobs start in New Job. A job with no materials stays there until you schedule it.
+
+Deposit and materials -> in the Order Tracker
+  - Add the job under Approved - Need to Order (paste the HCP link)
+      -> Deposit Needed, or Need to Order Materials if the deposit is in or waived
+  - Deposit received or waived: edit the approved job
+      -> Need to Order Materials
+  - Save the supplier order
+      -> Waiting on Materials
+  - Mark everything received
+      -> Materials Received
+
+Scheduling, finishing, invoicing -> in Housecall Pro
+  - Schedule the job -> Scheduled
+  - In Progress, Completed, Invoice Sent and Invoice Paid follow as you do the work
+
+On Hold is the only column you move by hand.
+
+Card in the wrong column? Don't drag it. Find the step that wasn't entered
+(usually an order missing from the Order Tracker) and enter it.
+```
+
 ### How orders are matched to HCP jobs
 
 1. The HCP job link on the order (`https://pro.housecallpro.com/app/jobs/job_…`)
@@ -66,8 +139,9 @@ secrets into chat or email: enter them only in Render.
 1. **Create the API key in HCP** (an HCP Admin must do this):
    My Apps › All Apps › **API Key Management** › Generate API Key. Name it
    "Order Tracker" and choose **Full access**. Full access is what lets the
-   tracker add the tags and notes; with Read-only everything else still
-   works and Master Lists says the tags and notes aren't being written.
+   tracker add the tags and notes and move jobs on the Pipeline board; with
+   Read-only everything else still works and Master Lists says those aren't
+   being written.
    Copy the key.
 2. **Add it to Render:** boulevard-order-tracker › Environment › add
    `HCP_API_KEY` with the key as its value.
@@ -94,21 +168,25 @@ secrets into chat or email: enter them only in Render.
 7. **Add the secret to Render:** `HCP_WEBHOOK_SECRET` = the signing secret.
    Save and let Render restart the service.
 8. **Check it** in Master Lists (admin) › Housecall Pro. It should say "API
-   connected · webhooks set up · tags and notes in HCP on". Under
+   connected · webhooks set up · tags and notes in HCP on · Pipeline moves
+   on". Under
    **Category for each Housecall Pro job type**, check the suggested category
    for each of your HCP job types and press Save categories.
    Then paste a real job's link on a new order and watch it fill in.
-9. **Cancel the Pipeline add-on** in HCP once you're happy. Nothing in the
-   tracker uses Pipeline.
+9. **Pipeline columns:** in Master Lists › Housecall Pro › **Pipeline column
+   for each step**, check the suggested column for each step and press Save
+   Pipeline columns. Then use **Try one job** on a test job to check that HCP
+   takes the move. Moves only go forward, so don't use a customer's job. Once
+   it works, share the office rule above.
 
 ### Settings
 
 | Render variable | Needed | Meaning |
 |---|---|---|
-| `HCP_API_KEY` | Yes | HCP company API key (MAX plan). Full access for tags and notes. |
+| `HCP_API_KEY` | Yes | HCP company API key (MAX plan). Full access for tags, notes and Pipeline moves. |
 | `HCP_WEBHOOK_SECRET` | Yes | Signing secret HCP shows after saving the webhook URL. Until it is set, the webhook address answers HCP's test but changes nothing; once set, only requests signed with it are accepted. |
 | `HCP_SYNC_INTERVAL_MINUTES` | No | Catch-up interval, default 60. `0` turns the automatic sync off (the button still works). |
-| `HCP_WRITE_BACK` | No | `off` stops the tags and notes. Default on. |
+| `HCP_WRITE_BACK` | No | `off` stops the tags, notes and Pipeline moves. Default on. |
 
 To disconnect, remove both keys (and turn off the HCP Webhooks app). Orders
 keep the values they had, and the tracker's own Mark scheduled / Mark complete
@@ -123,12 +201,15 @@ buttons come back.
   than what the tracker last read, it reads the job from HCP again rather
   than miss a change.
 - **Hourly catch-up.** HCP documents no retries, so once an hour the tracker
-  re-reads every unfinished linked job, re-matches its tags, and finds the HCP
-  job for orders that only have a job number. Master Lists › Sync with
+  re-reads every unfinished linked job and open approved job, re-matches its
+  tags and Pipeline column, and finds the HCP job for orders that only have a
+  job number. Master Lists › Sync with
   Housecall Pro now does the same on demand.
 - **Every call to HCP goes one at a time**, waits out HCP's rate limits, and
-  gives up after 20 seconds. The only writes are job tags and job notes.
-- **Not used:** invoices and payments, tech names, deposits, and approved
+  gives up after 20 seconds. The only writes are job tags, job notes and the
+  job's Pipeline column.
+- **Not used:** invoices and payments, tech names, HCP's own deposits (the
+  tracker's deposit status on approved jobs drives the board), and approved
   estimates (approved jobs are added by staff, with the paste-to-fill box).
 
 ## What could not be checked without the live account
@@ -147,3 +228,7 @@ the first real events (Master Lists › Housecall Pro lists the last 10):
   (`expand[]=attachments`); if not, the "photos or files" count is simply
   left out.
 - Rate limits aren't published.
+- Pipeline moves: HCP's docs call the job's id a "UUID", while job ids look
+  like `job_…`; **Try one job** shows whether HCP takes them. Also not
+  documented: what HCP answers when a move is refused, and whether Pipeline
+  automations run for jobs the tracker moves (texts are off for now).

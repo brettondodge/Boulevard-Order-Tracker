@@ -114,6 +114,13 @@ const elements = {
   hcpJobTypesSection: document.getElementById('hcpJobTypesSection'),
   hcpJobTypesList: document.getElementById('hcpJobTypesList'),
   saveHcpJobTypesButton: document.getElementById('saveHcpJobTypesButton'),
+  hcpPipelineSection: document.getElementById('hcpPipelineSection'),
+  hcpPipelineList: document.getElementById('hcpPipelineList'),
+  saveHcpPipelineButton: document.getElementById('saveHcpPipelineButton'),
+  hcpPipelineTestJob: document.getElementById('hcpPipelineTestJob'),
+  hcpPipelineTestColumn: document.getElementById('hcpPipelineTestColumn'),
+  hcpPipelineTestButton: document.getElementById('hcpPipelineTestButton'),
+  hcpPipelineTestResult: document.getElementById('hcpPipelineTestResult'),
   hcpStatusText: document.getElementById('hcpStatusText'),
   hcpWebhookUrl: document.getElementById('hcpWebhookUrl'),
   hcpRecentEvents: document.getElementById('hcpRecentEvents'),
@@ -400,6 +407,8 @@ function bindEvents() {
   elements.startFreshConfirmation.addEventListener('input', syncStartFresh);
   elements.applyStartFreshButton.addEventListener('click', applyStartFresh);
   elements.saveHcpJobTypesButton.addEventListener('click', saveHcpJobTypes);
+  elements.saveHcpPipelineButton.addEventListener('click', saveHcpPipeline);
+  elements.hcpPipelineTestButton.addEventListener('click', testHcpPipeline);
   elements.dismissUndoButton.addEventListener('click', hideUndo);
 
   elements.groupFilter.addEventListener('change', (event) => {
@@ -1864,12 +1873,19 @@ function renderHcpStatus(status) {
       `last webhook ${formatDateTime(status.last_event_at)}`,
       `last sync ${formatDateTime(status.last_sync_at)}${sync ? ` (${sync.jobs_refreshed} refreshed, ${sync.jobs_found_by_number} found by job number, ${sync.numbers_not_found} job numbers not found)` : ''}`,
       `tags and notes in HCP ${!status.writes ? 'off' : status.last_write_error ? `not working: ${status.last_write_error}` : 'on'}`,
+      `Pipeline moves ${!status.writes ? 'off' : status.pipeline ? 'on' : 'off until the columns are saved'}`,
+      status.last_pipeline_refusal ? `last Pipeline move HCP refused: ${status.last_pipeline_refusal}` : '',
       status.last_error ? `last problem: ${status.last_error}` : ''
     ].filter(Boolean).join(' · ');
   }
   elements.hcpSyncButton.disabled = !status.api;
-  if (status.api) loadHcpJobTypes();
-  else elements.hcpJobTypesSection.classList.add('hidden');
+  if (status.api) {
+    loadHcpJobTypes();
+    loadHcpPipeline();
+  } else {
+    elements.hcpJobTypesSection.classList.add('hidden');
+    elements.hcpPipelineSection.classList.add('hidden');
+  }
   elements.hcpRecentEvents.innerHTML = (status.recent_events || []).map(event => `<li>${escapeHtml(formatDateTime(event.received_at))} · ${escapeHtml(event.event)} · ${escapeHtml(event.outcome)}</li>`).join('');
 }
 
@@ -1973,6 +1989,57 @@ async function saveHcpJobTypes() {
   } catch (error) {
     elements.saveHcpJobTypesButton.textContent = 'Save categories';
     showStatus(error.message, 'error');
+  }
+}
+
+async function loadHcpPipeline() {
+  try {
+    const response = await fetch('/api/hcp/pipeline');
+    if (!response.ok) {
+      elements.hcpPipelineSection.classList.add('hidden');
+      return;
+    }
+    renderHcpPipeline(await response.json());
+  } catch {
+    elements.hcpPipelineSection.classList.add('hidden');
+  }
+}
+
+// One column choice per tracker step. Without Pipeline, HCP lists no columns.
+function renderHcpPipeline({ statuses = [], steps = [], saved = false }) {
+  elements.hcpPipelineSection.classList.toggle('hidden', !statuses.length);
+  const options = selected => statuses.map(status => `<option value="${escapeAttr(status.id)}" ${status.id === selected ? 'selected' : ''}>${escapeHtml(status.name)}${!saved && status.id === selected ? ' (suggested)' : ''}</option>`).join('');
+  elements.hcpPipelineList.innerHTML = steps.map(step => `<label class="hcp-job-type"><span>${escapeHtml(step.label)}</span><select data-pipeline-step="${escapeAttr(step.key)}"><option value="">Don't move</option>${options(step.status_id)}</select></label>`).join('');
+  elements.hcpPipelineTestColumn.innerHTML = `<option value="">Column…</option>${options('')}`;
+}
+
+async function saveHcpPipeline() {
+  const steps = Object.fromEntries(Array.from(elements.hcpPipelineList.querySelectorAll('select[data-pipeline-step]'), select => [select.dataset.pipelineStep, select.value]));
+  try {
+    await sendJson('/api/hcp/pipeline', { steps }, 'PUT');
+    elements.saveHcpPipelineButton.textContent = 'Saved';
+    setTimeout(() => { elements.saveHcpPipelineButton.textContent = 'Save Pipeline columns'; }, 2000);
+    await loadHcpPipeline();
+  } catch (error) {
+    showStatus(error.message, 'error');
+  }
+}
+
+async function testHcpPipeline() {
+  const job = elements.hcpPipelineTestJob.value.trim();
+  const statusId = elements.hcpPipelineTestColumn.value;
+  if (!job || !statusId) {
+    elements.hcpPipelineTestResult.textContent = 'Paste a test job and choose a column.';
+    return;
+  }
+  elements.hcpPipelineTestButton.disabled = true;
+  elements.hcpPipelineTestResult.textContent = 'Moving…';
+  try {
+    elements.hcpPipelineTestResult.textContent = (await sendJson('/api/hcp/pipeline/test', { job, status_id: statusId })).message;
+  } catch (error) {
+    elements.hcpPipelineTestResult.textContent = error.message;
+  } finally {
+    elements.hcpPipelineTestButton.disabled = false;
   }
 }
 

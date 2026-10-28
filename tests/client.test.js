@@ -52,7 +52,7 @@ function client(fetch) {
     renderOrders = () => calls.push(['render', state.orders[0]?.id]);
     renderQueueVisibility = () => {};
     showStatus = message => errors.push(message);
-    globalThis.tracker = { state, bindEvents, loadOrders, renderJobDrafts, openDraftActionsMenu, renderCondensedOrders, renderOrderNotesPreview, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility, originalRenderOrders, offerUndo, runUndo, renderSupplierFilterOptions, formatDate, orderStatusBadge, nextStep, openProgressDialog, saveProgressDialog, markJobComplete, renderHcpStatus, renderHcpJobTypes, fillFromHousecallPro, originalMarkReceived, saveReceive, syncStartFresh, applyStartFresh, saveOrder };
+    globalThis.tracker = { state, bindEvents, loadOrders, renderJobDrafts, openDraftActionsMenu, renderCondensedOrders, renderOrderNotesPreview, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility, originalRenderOrders, offerUndo, runUndo, renderSupplierFilterOptions, formatDate, orderStatusBadge, nextStep, openProgressDialog, saveProgressDialog, markJobComplete, renderHcpStatus, renderHcpJobTypes, fillFromHousecallPro, originalMarkReceived, saveReceive, syncStartFresh, applyStartFresh, saveOrder, renderHcpPipeline, saveHcpPipeline, testHcpPipeline };
   `, context);
   return { context, node, tracker: context.tracker };
 }
@@ -496,6 +496,7 @@ test('the Housecall Pro panel says what is set up and what is missing', () => {
   assert.match(text, /last webhook never/);
   assert.match(text, /2 refreshed, 1 found by job number, 4 job numbers not found/);
   assert.match(text, /tags and notes in HCP not working: .*Full access/);
+  assert.match(text, /Pipeline moves off until the columns are saved/);
   assert.equal(node('hcpSyncButton').disabled, false);
   assert.match(node('hcpRecentEvents').innerHTML, /job\.&lt;scheduled&gt; · applied/);
 
@@ -505,6 +506,41 @@ test('the Housecall Pro panel says what is set up and what is missing', () => {
   assert.match(list, /Shower &lt;Door&gt;/);
   assert.match(list, /<option value="Showers" selected>Showers \(suggested\)<\/option>/);
   assert.match(list, /data-job-type="jt_2"><option value="">No category<\/option>/);
+});
+
+test('Master Lists: a Pipeline column for each step, saved on request, and a one-job try', async () => {
+  const requests = [];
+  const { node, tracker } = client(async (url, options = {}) => {
+    requests.push({ url, method: options.method || 'GET', body: options.body ? JSON.parse(options.body) : null });
+    if (url === '/api/hcp/pipeline/test') return { ok: true, json: async () => ({ moved: true, message: 'Moved job 21 (Sample Customer) to On Hold. Check the Pipeline board.' }) };
+    return { ok: true, json: async () => ({ statuses: [], steps: [], saved: true }) };
+  });
+  tracker.bindEvents();
+  const statuses = [{ id: 'kcs_1', name: 'Deposit <Needed>' }, { id: 'kcs_2', name: 'Need to Order Materials' }];
+  tracker.renderHcpPipeline({ statuses, saved: false, steps: [{ key: 'deposit_needed', label: 'Approved job waiting on its deposit', status_id: 'kcs_1' }, { key: 'received', label: 'All materials here', status_id: '' }] });
+  assert.equal(node('hcpPipelineSection').classList.contains('hidden'), false);
+  const list = node('hcpPipelineList').innerHTML;
+  assert.match(list, /<option value="kcs_1" selected>Deposit &lt;Needed&gt; \(suggested\)<\/option>/);
+  assert.match(list, /data-pipeline-step="received"><option value="">Don't move<\/option>/);
+  assert.match(node('hcpPipelineTestColumn').innerHTML, /<option value="kcs_2" >Need to Order Materials<\/option>/);
+
+  node('hcpPipelineList').inputs = [{ dataset: { pipelineStep: 'deposit_needed' }, value: 'kcs_1' }, { dataset: { pipelineStep: 'received' }, value: '' }];
+  await tracker.saveHcpPipeline();
+  assert.deepEqual(requests.find(request => request.method === 'PUT').body, { steps: { deposit_needed: 'kcs_1', received: '' } });
+
+  node('hcpPipelineTestJob').value = '';
+  node('hcpPipelineTestColumn').value = '';
+  await tracker.testHcpPipeline();
+  assert.equal(node('hcpPipelineTestResult').textContent, 'Paste a test job and choose a column.');
+  node('hcpPipelineTestJob').value = ' https://pro.housecallpro.com/app/jobs/job_1 ';
+  node('hcpPipelineTestColumn').value = 'kcs_2';
+  await tracker.testHcpPipeline();
+  assert.deepEqual(requests.at(-1).body, { job: 'https://pro.housecallpro.com/app/jobs/job_1', status_id: 'kcs_2' });
+  assert.match(node('hcpPipelineTestResult').textContent, /Moved job 21/);
+  assert.equal(node('hcpPipelineTestButton').disabled, false);
+
+  tracker.renderHcpPipeline({ statuses: [], steps: [], saved: false });
+  assert.equal(node('hcpPipelineSection').classList.contains('hidden'), true, 'without Pipeline the section stays hidden');
 });
 
 test('finished jobs have no next step, and an already-complete job keeps its blank completion date', () => {

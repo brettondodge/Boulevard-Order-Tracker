@@ -28,7 +28,9 @@ import {
 import { HcpError, hcpApiConfigured } from './hcp/client.js';
 import {
   handleHcpWebhook,
+  hcpApprovedJobChanged,
   hcpJobIdFrom,
+  hcpPipeline,
   hcpJobTypes,
   hcpOrderChanged,
   hcpStatus,
@@ -38,7 +40,9 @@ import {
   resolveOrderHcpJobId,
   lookupHcpJob,
   saveJobTypeCategories,
+  savePipelineSteps,
   syncHcp,
+  testPipelineMove,
   verifyWebhookSignature,
   webhookEventId,
   hcpConfigured
@@ -477,6 +481,7 @@ app.post('/api/job-drafts', requireStaffAuth, asyncRoute(async (req, res) => {
 
   const draft = await serializeJobDraft(await getJobDraftById(id));
   broadcastLiveEvent('job-drafts', { action: 'created', draftId: id, time: isoNow() });
+  hcpApprovedJobChanged(id);
   return res.status(201).json({ draft });
 }));
 
@@ -538,6 +543,7 @@ app.put('/api/job-drafts/:id', requireStaffAuth, asyncRoute(async (req, res) => 
 
   const updated = await serializeJobDraft(await getJobDraftById(req.params.id));
   broadcastLiveEvent('job-drafts', { action: 'updated', draftId: req.params.id, time: isoNow() });
+  hcpApprovedJobChanged(req.params.id);
   return res.json({ draft: updated });
 }));
 
@@ -551,6 +557,7 @@ app.post('/api/job-drafts/:id/complete', requireStaffAuth, asyncRoute(async (req
   await dbRun('UPDATE job_drafts SET status = ?, updated_at = ?, updated_by = ? WHERE id = ?', ['Completed', now, actor(req), req.params.id]);
   const updated = await serializeJobDraft(await getJobDraftById(req.params.id));
   broadcastLiveEvent('job-drafts', { action: 'completed', draftId: req.params.id, time: isoNow() });
+  hcpApprovedJobChanged(req.params.id);
   return res.json({ draft: updated });
 }));
 
@@ -566,6 +573,7 @@ app.post('/api/job-drafts/:id/delete', requireStaffAuth, asyncRoute(async (req, 
   const deletedOrderIds = await markOrdersArchived(linkedOrders.map((order) => order.id), metadata);
 
   broadcastLiveEvent('job-drafts', { action: 'deleted', draftId: draft.id, time: isoNow() });
+  hcpApprovedJobChanged(draft.id);
   broadcastLiveEvent('orders', { action: 'deleted', orderIds: deletedOrderIds, time: isoNow() });
   deletedOrderIds.forEach((orderId) => hcpOrderChanged(orderId));
   return res.json({ deleted: true, draft_id: draft.id, order_ids: deletedOrderIds });
@@ -585,6 +593,7 @@ app.post('/api/job-drafts/:id/restore', requireStaffAuth, asyncRoute(async (req,
   await restoreOrders(deletedWithJob);
 
   broadcastLiveEvent('job-drafts', { action: 'restored', draftId: draft.id, time: isoNow() });
+  hcpApprovedJobChanged(draft.id);
   broadcastLiveEvent('orders', { action: 'restored', orderIds: deletedWithJob, time: isoNow() });
   deletedWithJob.forEach((orderId) => hcpOrderChanged(orderId));
   return res.json({ restored: restoredDraftIds.length > 0, draft_id: draft.id, order_ids: deletedWithJob });
@@ -600,6 +609,7 @@ app.post('/api/job-drafts/:id/reopen', requireStaffAuth, asyncRoute(async (req, 
   await dbRun('UPDATE job_drafts SET status = ?, updated_at = ?, updated_by = ? WHERE id = ?', ['Open', now, actor(req), req.params.id]);
   const updated = await serializeJobDraft(await getJobDraftById(req.params.id));
   broadcastLiveEvent('job-drafts', { action: 'reopened', draftId: req.params.id, time: isoNow() });
+  hcpApprovedJobChanged(req.params.id);
   return res.json({ draft: updated });
 }));
 
@@ -717,6 +727,7 @@ app.post('/api/orders/:id/restore', requireStaffAuth, asyncRoute(async (req, res
     if (linkedDraft && Number(linkedDraft.is_archived) === 1) {
       await restoreDrafts([linkedDraft.id]);
       broadcastLiveEvent('job-drafts', { action: 'restored', draftId: linkedDraft.id, time: isoNow() });
+      hcpApprovedJobChanged(linkedDraft.id);
     }
   }
 
@@ -1219,6 +1230,23 @@ app.get('/api/hcp/job-types', requireAdminAuth, asyncRoute(async (req, res) => {
 app.put('/api/hcp/job-types', requireAdminAuth, asyncRoute(async (req, res) => {
   return res.json({ categories: await saveJobTypeCategories(req.body.categories) });
 }));
+
+// Answers 503 until the API key is set, and 502 with HCP's problem.
+async function answerFromHcp(res, work) {
+  if (!hcpApiConfigured()) return res.status(503).json({ error: "Housecall Pro isn't connected yet." });
+  try {
+    return res.json(await work());
+  } catch (error) {
+    if (error instanceof HcpError) return res.status(502).json({ error: error.message });
+    throw error;
+  }
+}
+
+// Which Pipeline column (jobs board) each tracker step moves a job to.
+app.get('/api/hcp/pipeline', requireAdminAuth, asyncRoute((req, res) => answerFromHcp(res, () => hcpPipeline())));
+app.put('/api/hcp/pipeline', requireAdminAuth, asyncRoute((req, res) => answerFromHcp(res, async () => ({ steps: await savePipelineSteps(req.body.steps) }))));
+// Moves one job right away, to try the connection on a test job.
+app.post('/api/hcp/pipeline/test', requireAdminAuth, asyncRoute((req, res) => answerFromHcp(res, () => testPipelineMove({ job: req.body.job, statusId: req.body.status_id }))));
 
 // Start fresh: empties the tracker (orders and approved jobs, and optionally
 // suppliers and staff) for go-live. Logins, Freeport Billing and the Housecall

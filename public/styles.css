@@ -1189,6 +1189,12 @@ button:disabled {
   margin: 0;
 }
 
+.hcp-pipeline-test {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 13rem auto;
+  gap: 0.4rem;
+}
+
 .hcp-job-types-list {
   display: grid;
   gap: 0.4rem;
@@ -1509,7 +1515,8 @@ button:disabled {
     padding: 1rem 0.9rem 1.1rem;
   }
 
-  .hcp-job-type {
+  .hcp-job-type,
+  .hcp-pipeline-test {
     grid-template-columns: 1fr;
     gap: 0.25rem;
   }

@@ -3,11 +3,14 @@ import { createHmac } from 'node:crypto';
 
 // A stand-in for the Housecall Pro API so tests never reach the real service.
 // It answers the endpoints the tracker uses (jobs, job types, tags, job tags,
-// job notes) in the shapes of HCP's published spec. Synthetic records only.
+// job notes, Pipeline statuses) in the shapes of HCP's published spec.
+// Synthetic records only.
 export async function startFakeHcp({ apiKey = 'synthetic-hcp-key' } = {}) {
   const jobs = new Map();
   const jobTypes = [];
   const tags = [];
+  // Jobs board columns, in board order.
+  const pipeline = [];
   const requests = [];
   const failing = new Map();
   let rateLimitNext = 0;
@@ -45,6 +48,16 @@ export async function startFakeHcp({ apiKey = 'synthetic-hcp-key' } = {}) {
       const tag = { id: `tag_${nextId++}`, name: body.name };
       tags.push(tag);
       return send(201, tag);
+    }
+    if (url.pathname === '/pipeline/statuses' && req.method === 'GET') return send(200, page(url.searchParams.get('resource_type') === 'job' ? pipeline : [], url, 'statuses'));
+    if (url.pathname === '/pipeline/statuses' && req.method === 'PUT') {
+      const target = jobs.get(body.resource_type === 'job' ? body.resource_id : '');
+      const column = pipeline.findIndex(status => status.id === body.status_id);
+      if (!target || column < 0) return send(404, { error: 'Not found' });
+      // As documented: only forward, to a column with an equal or higher order.
+      if (column < pipeline.findIndex(status => status.id === target.pipeline_status_id)) return send(422, { error: 'Pipeline status can only move forward' });
+      target.pipeline_status_id = body.status_id;
+      return send(200, { status_id: body.status_id, resource_id: target.id, resource_type: 'job', name: pipeline[column].name });
     }
     if (parts[0] !== 'jobs') return send(404, {});
     if (parts.length === 1) {
@@ -85,6 +98,7 @@ export async function startFakeHcp({ apiKey = 'synthetic-hcp-key' } = {}) {
     jobs,
     jobTypes,
     tags,
+    pipeline,
     requests,
     writes: () => requests.filter(request => request.method !== 'GET'),
     rateLimitOnce(count = 1, headers = null) { rateLimitNext = count; rateLimitHeaders = headers; },

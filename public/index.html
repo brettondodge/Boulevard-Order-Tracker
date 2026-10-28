@@ -367,6 +367,20 @@
               <div id="hcpJobTypesList" class="hcp-job-types-list"></div>
               <button type="button" id="saveHcpJobTypesButton" class="secondary-button">Save categories</button>
             </div>
+            <div id="hcpPipelineSection" class="hcp-job-types hidden">
+              <h4>Pipeline column for each step (Jobs board)</h4>
+              <p class="import-hint">The tracker moves a job forward to these columns, never back, and leaves jobs HCP has scheduled alone. Nothing moves until you save. A suggestion is shown until then.</p>
+              <div id="hcpPipelineList" class="hcp-job-types-list"></div>
+              <button type="button" id="saveHcpPipelineButton" class="secondary-button">Save Pipeline columns</button>
+              <h4>Try one job</h4>
+              <p class="import-hint">Moves the job right away. Housecall Pro only moves jobs forward, so use a test job.</p>
+              <div class="hcp-pipeline-test">
+                <input id="hcpPipelineTestJob" type="text" placeholder="HCP job link or job #" autocomplete="off" />
+                <select id="hcpPipelineTestColumn" aria-label="Pipeline column"></select>
+                <button type="button" id="hcpPipelineTestButton" class="secondary-button">Move this job</button>
+              </div>
+              <p id="hcpPipelineTestResult" class="import-hint" aria-live="polite"></p>
+            </div>
           </div>
 
           <div class="master-list-section">

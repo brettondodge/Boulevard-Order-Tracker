@@ -35,6 +35,17 @@ function rateLimitWait(headers) {
   return reset < 1e9 ? reset * 1000 : reset * 1000 - Date.now();
 }
 
+// HCP's own explanation of a refused request, when it sends one.
+async function problemText(response) {
+  try {
+    const data = JSON.parse(await response.text());
+    const message = String(data?.error || data?.message || '').trim();
+    return message ? `: ${message.slice(0, 200)}` : '';
+  } catch {
+    return '';
+  }
+}
+
 export function createHcpClient({ apiKey = process.env.HCP_API_KEY, baseUrl = process.env.HCP_API_BASE || DEFAULT_BASE, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   if (!apiKey) throw new HcpError("Housecall Pro isn't connected. Add HCP_API_KEY to the server settings.", 503);
 
@@ -67,19 +78,19 @@ export function createHcpClient({ apiKey = process.env.HCP_API_KEY, baseUrl = pr
       if (response.status === 401 || response.status === 403) {
         throw new HcpError(method === 'GET'
           ? 'Housecall Pro rejected the API key. Check HCP_API_KEY.'
-          : "Housecall Pro didn't allow the change. The API key needs Full access to add tags and notes.", response.status);
+          : "Housecall Pro didn't allow the change. The API key needs Full access to add tags, notes and Pipeline moves.", response.status);
       }
       if (response.status === 404) return null;
-      if (!response.ok) throw new HcpError(`Housecall Pro answered ${response.status}.`, response.status);
+      if (!response.ok) throw new HcpError(`Housecall Pro answered ${response.status}${await problemText(response)}.`, response.status);
       const text = await response.text();
       return text ? JSON.parse(text) : {};
     }
   }
 
-  async function allPages(path, key) {
+  async function allPages(path, key, query = {}) {
     const items = [];
     for (let page = 1; page <= 20; page += 1) {
-      const result = await call('GET', path, { query: { page, page_size: 100 } });
+      const result = await call('GET', path, { query: { ...query, page, page_size: 100 } });
       const batch = result?.[key] || [];
       items.push(...batch);
       if (!batch.length || page >= Number(result?.total_pages || page)) break;
@@ -96,6 +107,9 @@ export function createHcpClient({ apiKey = process.env.HCP_API_KEY, baseUrl = pr
     createTag: name => call('POST', '/tags', { body: { name } }),
     addJobTag: (jobId, tagId) => call('POST', `${job(jobId)}/tags`, { body: { tag_id: tagId } }),
     removeJobTag: (jobId, tagId) => call('DELETE', `${job(jobId)}/tags/${encodeURIComponent(tagId)}`),
-    addJobNote: (jobId, content) => call('POST', `${job(jobId)}/notes`, { body: { content } })
+    addJobNote: (jobId, content) => call('POST', `${job(jobId)}/notes`, { body: { content } }),
+    // Pipeline add-on. HCP only moves a record forward on the board.
+    listPipelineStatuses: resourceType => allPages('/pipeline/statuses', 'statuses', { resource_type: resourceType }),
+    updatePipelineStatus: ({ resourceType, resourceId, statusId }) => call('PUT', '/pipeline/statuses', { body: { resource_type: resourceType, resource_id: resourceId, status_id: statusId } })
   };
 }
