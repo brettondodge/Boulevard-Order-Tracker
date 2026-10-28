@@ -680,6 +680,9 @@ input:focus, select:focus, textarea:focus {
   margin: 0;
   width: max-content;
   min-width: 160px;
+  /* Safari 18 stretches the popover default (height: fit-content) on a grid
+     to the full screen height. */
+  height: auto;
   padding: 0.3rem;
   border: 1px solid var(--border);
   border-radius: 10px;
