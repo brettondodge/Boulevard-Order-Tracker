@@ -88,6 +88,14 @@ function customerName(customer = {}) {
   return person && company ? `${person} (${company})` : person || company;
 }
 
+// The job's service address on one line: "12 Main St, Unit 4, Phoenix, AZ 85001".
+export function addressText(address) {
+  if (!address) return '';
+  const part = value => String(value ?? '').trim();
+  const cityLine = [part(address.city), [part(address.state), part(address.zip)].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  return [part(address.street), part(address.street_line_2), cityLine].filter(Boolean).join(', ');
+}
+
 const parseTags = text => {
   try {
     const tags = JSON.parse(text || '[]');
@@ -384,6 +392,7 @@ export async function lookupHcpJob(query, { client = createHcpClient(), maxPages
     url: hcpJobUrl(job.id),
     invoice_number: String(job.invoice_number ?? '').trim(),
     customer_name: customerName(job.customer),
+    address: addressText(job.address),
     job_type: job.job_fields?.job_type?.name || '',
     category: await categoryForJobType(job.job_fields?.job_type),
     notes: [...new Set(notes)].join('\n'),

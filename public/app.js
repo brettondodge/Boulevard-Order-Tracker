@@ -139,6 +139,27 @@ const elements = {
   draftActionsMenu: document.getElementById('draftActionsMenu'),
   closeDraftDialogButton: document.getElementById('closeDraftDialogButton'),
   cancelDraftButton: document.getElementById('cancelDraftButton'),
+  warrantySection: document.getElementById('warrantySection'),
+  warrantySummary: document.getElementById('warrantySummary'),
+  warrantyList: document.getElementById('warrantyList'),
+  addWarrantyButton: document.getElementById('addWarrantyButton'),
+  warrantyDialog: document.getElementById('warrantyDialog'),
+  warrantyForm: document.getElementById('warrantyForm'),
+  warrantyFormError: document.getElementById('warrantyFormError'),
+  warrantyDialogTitle: document.getElementById('warrantyDialogTitle'),
+  warrantyId: document.getElementById('warrantyId'),
+  warrantyUpdatedAt: document.getElementById('warrantyUpdatedAt'),
+  warrantyHcpFillStatus: document.getElementById('warrantyHcpFillStatus'),
+  warrantyOriginalJobLink: document.getElementById('warrantyOriginalJobLink'),
+  warrantyOriginalJobNumber: document.getElementById('warrantyOriginalJobNumber'),
+  warrantyJobLink: document.getElementById('warrantyJobLink'),
+  warrantyJobNumber: document.getElementById('warrantyJobNumber'),
+  warrantyCustomerName: document.getElementById('warrantyCustomerName'),
+  warrantyPoNumber: document.getElementById('warrantyPoNumber'),
+  warrantyAddress: document.getElementById('warrantyAddress'),
+  warrantyLineItems: document.getElementById('warrantyLineItems'),
+  warrantyProblem: document.getElementById('warrantyProblem'),
+  warrantyNeeded: document.getElementById('warrantyNeeded'),
   form: document.getElementById('orderForm'),
   jobDraftId: document.getElementById('jobDraftId'),
   orderDraftHint: document.getElementById('orderDraftHint'),
@@ -218,9 +239,14 @@ function condensedActive() {
   return state.condensedView && !isPhoneLayout();
 }
 
+// Approved jobs and warranties are lists of cards, not orders.
+function queueView() {
+  return state.status === 'Approved – Need to Order' || state.status === 'Warranty';
+}
+
 function updateLayoutMode() {
   const mobile = isPhoneLayout();
-  const draftView = state.status === 'Approved – Need to Order';
+  const draftView = queueView();
   const condensed = condensedActive();
 
   if (elements.tableWrap) {
@@ -238,8 +264,9 @@ function updateLayoutMode() {
   elements.condensedViewHint.classList.toggle('hidden', draftView || !condensed);
 
   if (elements.draftQueueSection) {
-    elements.draftQueueSection.classList.toggle('hidden', !draftView);
+    elements.draftQueueSection.classList.toggle('hidden', state.status !== 'Approved – Need to Order');
   }
+  elements.warrantySection.classList.toggle('hidden', state.status !== 'Warranty');
 }
 
 function setupLiveUpdates() {
@@ -302,7 +329,7 @@ function refreshAllData() {
 function renderQueueVisibility() {
   updateLayoutMode();
   if (elements.emptyState) {
-    elements.emptyState.classList.toggle('hidden', state.status === 'Approved – Need to Order' || !!state.orders.length);
+    elements.emptyState.classList.toggle('hidden', queueView() || !!state.orders.length);
   }
 }
 
@@ -343,7 +370,7 @@ function bindEvents() {
       showStatus('');
       elements.draftActionsMenu.hidePopover?.();
       renderQueueVisibility();
-      if (state.status === 'Approved – Need to Order') {
+      if (queueView()) {
         loadJobDrafts();
         return;
       }
@@ -397,13 +424,15 @@ function bindEvents() {
   for (const id of ['closeReceiveButton', 'cancelReceiveButton']) document.getElementById(id).addEventListener('click', () => elements.receiveDialog.close());
 
   // Paste an HCP job link (or type its job #) and the form fills itself in.
-  for (const [kind, linkId, numberId] of [['order', 'housecallJobLink', 'housecallJobNumber'], ['draft', 'draftHousecallJobLink', 'draftHousecallJobNumber']]) {
-    const link = document.getElementById(linkId);
+  for (const [kind, form] of Object.entries(HCP_FILL_FORMS)) {
+    const link = document.getElementById(form.link);
     link.addEventListener('change', () => fillFromHousecallPro(kind, link.value));
     link.addEventListener('paste', () => setTimeout(() => fillFromHousecallPro(kind, link.value), 0));
-    document.getElementById(numberId).addEventListener('change', (event) => {
-      if (!String(link.value || '').trim()) fillFromHousecallPro(kind, event.target.value);
-    });
+    if (form.number) {
+      document.getElementById(form.number).addEventListener('change', (event) => {
+        if (!String(link.value || '').trim()) fillFromHousecallPro(kind, event.target.value);
+      });
+    }
   }
 
   document.getElementById('openStartFreshButton').addEventListener('click', openStartFresh);
@@ -453,7 +482,7 @@ function bindEvents() {
 
   elements.sortSelect.addEventListener('change', (event) => {
     state.sort = event.target.value;
-    if (state.status === 'Approved – Need to Order') {
+    if (queueView()) {
       loadJobDrafts();
       return;
     }
@@ -466,6 +495,12 @@ function bindEvents() {
   elements.cancelOrderButton.addEventListener('click', () => closeDialog());
   elements.closeDraftDialogButton.addEventListener('click', () => closeDraftDialog());
   elements.cancelDraftButton.addEventListener('click', () => closeDraftDialog());
+  elements.addWarrantyButton.addEventListener('click', () => openWarrantyDialog());
+  for (const id of ['closeWarrantyDialogButton', 'cancelWarrantyButton']) document.getElementById(id).addEventListener('click', () => elements.warrantyDialog.close());
+  elements.warrantyForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await saveWarranty();
+  });
 
   elements.masterListsButton.addEventListener('click', async () => {
     elements.masterListsDialog.showModal();
@@ -646,7 +681,8 @@ function bindEvents() {
     const draft = state.jobDrafts.find((entry) => entry.id === id);
 
     if (action === 'edit-draft' && draft) {
-      openDraftDialog(draft);
+      if (draft.kind === 'warranty') openWarrantyDialog(draft);
+      else openDraftDialog(draft);
       return;
     }
 
@@ -671,6 +707,7 @@ function bindEvents() {
     }
   };
   elements.jobDraftList.addEventListener('click', handleDraftAction);
+  elements.warrantyList.addEventListener('click', handleDraftAction);
   elements.draftActionsMenu.addEventListener('click', handleDraftAction);
 }
 
@@ -1030,6 +1067,7 @@ async function loadJobDrafts() {
       return left.localeCompare(right) || String(a.id || '').localeCompare(String(b.id || ''));
     });
     renderJobDrafts();
+    renderWarranties();
   } catch (error) {
     // no-op: queue can refresh on the next pass
   }
@@ -1040,8 +1078,10 @@ async function loadOrders() {
   const requestId = ++state.orderRequestCounter;
   state.orderRequestController?.abort();
   state.orderRequestController = null;
-  if (state.status === 'Approved – Need to Order') {
+  if (queueView()) {
     renderQueueVisibility();
+    // The search box also narrows the warranty list.
+    if (state.status === 'Warranty') renderWarranties();
     return;
   }
 
@@ -1081,10 +1121,11 @@ async function loadOrders() {
 function renderJobDrafts() {
   elements.draftActionsMenu.hidePopover?.();
   // Jobs with all materials ordered move on to the order views; they stay
-  // reachable behind the "Show" button.
-  const openJobs = state.jobDrafts.filter(draft => draft.status !== 'Completed');
-  const finishedCount = state.jobDrafts.length - openJobs.length;
-  const visible = state.showFinishedJobs ? state.jobDrafts : openJobs;
+  // reachable behind the "Show" button. Warranties have their own tab.
+  const jobs = state.jobDrafts.filter(draft => draft.kind !== 'warranty');
+  const openJobs = jobs.filter(draft => draft.status !== 'Completed');
+  const finishedCount = jobs.length - openJobs.length;
+  const visible = state.showFinishedJobs ? jobs : openJobs;
   const readyCount = openJobs.filter(draft => draft.deposit_status !== 'Awaiting deposit').length;
   elements.draftQueueSummary.textContent = `${openJobs.length} ${openJobs.length === 1 ? 'job' : 'jobs'} · ${readyCount} ready to order`;
   elements.showFinishedJobsButton.classList.toggle('hidden', !finishedCount);
@@ -1163,7 +1204,8 @@ function orderStatusBadge(order) {
   const warning = Number(order.job_scheduled) && !Number(order.job_completed) && !order.date_received
     ? `<span class="stage-warning">Scheduled${order.scheduled_date ? ` ${formatDate(order.scheduled_date)}` : ''}, not here yet</span>`
     : '';
-  return `<span class="status-badge ${stage}">${escapeHtml(label)}</span>${warning}${hcpStatusLine(order)}`;
+  const warranty = order.warranty ? '<span class="status-badge warranty">Warranty</span>' : '';
+  return `${warranty}<span class="status-badge ${stage}">${escapeHtml(label)}</span>${warning}${hcpStatusLine(order)}`;
 }
 
 const HCP_LABELS = { unscheduled: 'Needs scheduling', scheduled: 'Scheduled', completed: 'Complete' };
@@ -1200,6 +1242,66 @@ function nextStepButton(order) {
   if (!step) return '';
   if (step.link) return `<a class="action-button ${step.primary ? 'primary' : ''}" href="${escapeAttr(step.link)}" target="_blank" rel="noreferrer">${step.label}</a>`;
   return `<button type="button" class="action-button primary" data-action="${step.action}" data-id="${escapeAttr(order.id)}">${step.label}</button>`;
+}
+
+const WARRANTY_SEARCH_FIELDS = ['customer_name', 'po_number', 'address', 'housecall_job_number', 'original_job_number', 'line_items', 'problem', 'needed'];
+
+// Warranty entries stay until someone deletes them. Their supplier orders go
+// through the usual steps (and are deleted 7 days after archiving) underneath.
+function renderWarranties() {
+  const all = state.jobDrafts.filter(draft => draft.kind === 'warranty');
+  const search = state.search.toLowerCase();
+  const visible = search ? all.filter(draft => WARRANTY_SEARCH_FIELDS.some(key => String(draft[key] || '').toLowerCase().includes(search))) : all;
+  const toOrder = all.filter(draft => draft.status !== 'Completed').length;
+  elements.warrantySummary.textContent = [
+    `${all.length} ${all.length === 1 ? 'warranty' : 'warranties'}`,
+    `${toOrder} still to order`,
+    search ? `${visible.length} matching the search` : ''
+  ].filter(Boolean).join(' · ');
+  if (!visible.length) {
+    elements.warrantyList.innerHTML = all.length
+      ? '<div class="empty-state small-empty-state"><h3>No warranties match the search</h3></div>'
+      : '<div class="empty-state small-empty-state"><h3>No warranties yet</h3><p>Use Add warranty to keep track of what\'s wrong, what\'s needed and the orders for it. Warranties stay here until you delete them.</p></div>';
+    return;
+  }
+
+  const text = (label, value) => String(value || '').trim()
+    ? `<div class="warranty-text"><span>${label}</span><p>${escapeHtml(String(value).trim())}</p></div>`
+    : '';
+  elements.warrantyList.innerHTML = visible.map((draft) => {
+    const id = escapeAttr(draft.id);
+    const open = draft.status !== 'Completed';
+    const orders = draft.orders || [];
+    const lineItems = String(draft.line_items || '').split('\n').map(line => line.trim()).filter(Boolean);
+    return `
+      <article class="draft-card warranty-card ${open ? '' : 'completed'}">
+        <div class="draft-card-header">
+          <div>
+            <h3>${escapeHtml(draft.customer_name)}</h3>
+            ${draft.address ? `<p class="warranty-address">${escapeHtml(draft.address)}</p>` : ''}
+          </div>
+          <span class="deposit-status ${open ? 'awaiting' : 'ready'}">${open ? 'To order' : 'All ordered'}</span>
+        </div>
+
+        <div class="draft-meta-grid">
+          <div><span>PO</span><strong>${escapeHtml(draft.po_number || '—')}</strong></div>
+          <div><span>Original job</span><strong>${jobNumberHtml({ housecall_job_number: draft.original_job_number, housecall_job_link: draft.original_job_link })}</strong></div>
+          <div><span>Warranty job</span><strong>${jobNumberHtml(draft)}</strong></div>
+        </div>
+
+        ${text("What's wrong", draft.problem)}
+        ${text("What's needed", draft.needed)}
+        ${lineItems.length ? `<div class="warranty-text"><span>Line items</span><ul>${lineItems.map(line => `<li>${escapeHtml(line)}</li>`).join('')}</ul></div>` : ''}
+        ${orders.length ? `<div class="warranty-text"><span>Supplier orders</span><ul class="warranty-orders">${orders.map(order => `<li>${escapeHtml([order.supplier, order.category, order.po_number ? `PO ${order.po_number}` : ''].filter(Boolean).join(' · '))} ${orderStatusBadge(order)}</li>`).join('')}</ul></div>` : ''}
+
+        <div class="draft-actions">
+          <button type="button" class="action-button" data-action="edit-draft" data-id="${id}">Edit</button>
+          <button type="button" class="action-button ${open ? 'primary' : ''}" data-action="create-order" data-id="${id}" ${open ? '' : 'disabled'}>Order materials</button>
+          <button type="button" class="action-button" data-draft-menu="${id}" popovertarget="draftActionsMenu" aria-label="More actions for ${escapeAttr(draft.customer_name)}">⋯</button>
+        </div>
+      </article>
+    `;
+  }).join('');
 }
 
 // The job number links to Housecall Pro when the order has a job link.
@@ -1400,8 +1502,9 @@ function openDraftActionsMenu(draftId, trigger) {
   }
   menu.dataset.draftId = draftId;
   const id = escapeAttr(draftId);
-  menu.innerHTML = `<button type="button" class="action-button" data-action="${draft.status === 'Completed' ? 'reopen-draft' : 'complete-draft'}" data-id="${id}" autofocus>${draft.status === 'Completed' ? 'Reopen job' : 'All materials ordered'}</button>
-    <button type="button" class="action-button danger" data-action="delete-draft" data-id="${id}">Delete job</button>`;
+  const noun = draft.kind === 'warranty' ? 'warranty' : 'job';
+  menu.innerHTML = `<button type="button" class="action-button" data-action="${draft.status === 'Completed' ? 'reopen-draft' : 'complete-draft'}" data-id="${id}" autofocus>${draft.status === 'Completed' ? `Reopen ${noun}` : 'All materials ordered'}</button>
+    <button type="button" class="action-button danger" data-action="delete-draft" data-id="${id}">Delete ${noun}</button>`;
   menu.setAttribute('aria-label', `More actions for ${draft.customer_name}`);
   menu.showPopover();
   positionActionMenu(menu, trigger);
@@ -1419,7 +1522,10 @@ async function deleteDraft(draftId) {
   if (!draft) return;
 
   const orderCount = Number(draft.supplier_order_count || 0);
-  if (orderCount && !window.confirm(`Delete ${draft.customer_name}? Its ${orderCount} supplier ${orderCount === 1 ? 'order' : 'orders'} will be deleted too.`)) {
+  const ordersToo = orderCount ? ` Its ${orderCount} supplier ${orderCount === 1 ? 'order' : 'orders'} will be deleted too.` : '';
+  // Warranties are kept for good, so deleting one always asks first.
+  const question = draft.kind === 'warranty' ? `Delete the warranty for ${draft.customer_name}?${ordersToo}` : `Delete ${draft.customer_name}?${ordersToo}`;
+  if ((ordersToo || draft.kind === 'warranty') && !window.confirm(question)) {
     return;
   }
 
@@ -1470,10 +1576,21 @@ function openOrderDialog(order = null, draft = null) {
     document.getElementById('housecallJobLink').value = draft.housecall_job_link || '';
     document.getElementById('housecallJobLink').dataset.lookedUp = '';
     const placed = Number(draft.supplier_order_count || 0);
-    elements.orderDraftHint.textContent = `${placed ? `${placed} supplier ${placed === 1 ? 'order' : 'orders'} already placed for this job. ` : ''}Saving moves this job from Approved – Need to Order to Outstanding. Ordering from more than one supplier? Use Save + another supplier.`;
+    const warranty = draft.kind === 'warranty';
+    if (warranty) {
+      document.getElementById('poNumber').value = draft.po_number || '';
+      document.getElementById('notes').value = [draft.needed, draft.line_items].map(text => String(text || '').trim()).filter(Boolean).join('\n');
+    }
+    elements.orderDraftHint.textContent = [
+      placed ? `${placed} supplier ${placed === 1 ? 'order' : 'orders'} already placed for this ${warranty ? 'warranty' : 'job'}.` : '',
+      warranty
+        ? 'Saving marks this warranty all ordered; the order shows in Outstanding with a Warranty badge.'
+        : 'Saving moves this job from Approved – Need to Order to Outstanding.',
+      'Ordering from more than one supplier? Use Save + another supplier.'
+    ].filter(Boolean).join(' ');
     elements.orderDraftHint.classList.remove('hidden');
     elements.saveOrderAnotherButton.classList.remove('hidden');
-    elements.dialogTitle.textContent = `Order materials for ${draft.customer_name}`;
+    elements.dialogTitle.textContent = `Order materials for ${draft.customer_name}${warranty ? ' (warranty)' : ''}`;
     elements.dialog.showModal();
     // The HCP job also fills in the category and notes.
     if (draft.housecall_job_link) fillFromHousecallPro('order', draft.housecall_job_link);
@@ -1549,6 +1666,67 @@ function openDraftDialog(draft = null) {
 function closeDraftDialog() {
   elements.draftDialog.close();
   elements.draftFormError.textContent = '';
+}
+
+// Warranty form boxes by saved field. The two job numbers are hidden: they
+// follow their links when the job is looked up in Housecall Pro.
+const WARRANTY_INPUTS = {
+  customer_name: 'warrantyCustomerName',
+  po_number: 'warrantyPoNumber',
+  address: 'warrantyAddress',
+  line_items: 'warrantyLineItems',
+  problem: 'warrantyProblem',
+  needed: 'warrantyNeeded',
+  original_job_link: 'warrantyOriginalJobLink',
+  original_job_number: 'warrantyOriginalJobNumber',
+  housecall_job_link: 'warrantyJobLink',
+  housecall_job_number: 'warrantyJobNumber'
+};
+
+function openWarrantyDialog(draft = null) {
+  elements.warrantyForm.reset();
+  elements.warrantyFormError.textContent = '';
+  elements.warrantyHcpFillStatus.textContent = '';
+  elements.warrantyId.value = draft?.id || '';
+  elements.warrantyUpdatedAt.value = draft?.updated_at || '';
+  for (const [key, id] of Object.entries(WARRANTY_INPUTS)) elements[id].value = draft?.[key] || '';
+  elements.warrantyOriginalJobLink.dataset.lookedUp = draft?.original_job_link || '';
+  elements.warrantyJobLink.dataset.lookedUp = draft?.housecall_job_link || '';
+  state.editingDraft = draft;
+  elements.warrantyDialogTitle.textContent = draft ? 'Edit warranty' : 'Add warranty';
+  elements.warrantyDialog.showModal();
+}
+
+function warrantyPayload(draft) {
+  return Object.fromEntries(Object.keys(WARRANTY_INPUTS).map(key => [key, draft[key] || '']));
+}
+
+async function saveWarranty() {
+  const payload = { ...Object.fromEntries(Object.entries(WARRANTY_INPUTS).map(([key, id]) => [key, elements[id].value])), kind: 'warranty' };
+  if (!payload.customer_name.trim()) {
+    elements.warrantyFormError.textContent = 'Customer name is required.';
+    return;
+  }
+
+  const id = elements.warrantyId.value;
+  const previous = state.editingDraft;
+  let data;
+  try {
+    data = id
+      ? await sendJson(`/api/job-drafts/${id}`, { ...payload, updated_at: elements.warrantyUpdatedAt.value }, 'PUT')
+      : await sendJson('/api/job-drafts', payload);
+  } catch (error) {
+    elements.warrantyFormError.textContent = error.message;
+    return;
+  }
+
+  elements.warrantyDialog.close();
+  if (id && previous) {
+    offerUndo('Warranty updated.', () => sendJson(`/api/job-drafts/${id}`, { ...warrantyPayload(previous), updated_at: data.draft.updated_at }, 'PUT'));
+  } else {
+    offerUndo('Warranty added.', () => sendJson(`/api/job-drafts/${data.draft.id}/delete`));
+  }
+  await loadJobDrafts();
 }
 
 function draftPayload(draft) {
@@ -1712,7 +1890,9 @@ async function saveOrder({ keepJobOpen = false } = {}) {
       await sendJson(`/api/job-drafts/${draftId}/reopen`);
     });
   } else {
-    offerUndo(draftId ? 'Order added. The job stays in Approved – Need to Order for its next supplier order.' : 'Order added.', () => sendJson(`/api/orders/${data.order.id}/delete`));
+    const warranty = state.jobDrafts.find(entry => entry.id === draftId)?.kind === 'warranty';
+    const stays = warranty ? 'The warranty stays open for its next supplier order.' : 'The job stays in Approved – Need to Order for its next supplier order.';
+    offerUndo(draftId ? `Order added. ${stays}` : 'Order added.', () => sendJson(`/api/orders/${data.order.id}/delete`));
   }
   await Promise.all([loadSuppliers(), loadMasterLists(), loadJobDrafts(), loadOrders()]);
   // The next supplier order for the same job starts with what stays the same.
@@ -1936,17 +2116,31 @@ async function syncHousecallPro() {
 
 // Paste an HCP job link (or type its job #) and fill in what HCP knows. Only
 // empty boxes are filled, so nothing typed is overwritten.
+// The boxes a looked-up HCP job fills in on each form; boxes already filled
+// are left alone. hiddenNumber is the warranty form's job # for that link: it
+// always follows the link.
+const HCP_FILL_FORMS = {
+  order: { link: 'housecallJobLink', status: 'hcpFillStatus', customer: 'customerName', number: 'housecallJobNumber', notes: 'notes', category: true },
+  draft: { link: 'draftHousecallJobLink', status: 'draftHcpFillStatus', customer: 'draftCustomerName', number: 'draftHousecallJobNumber', notes: 'draftNotes' },
+  original: { link: 'warrantyOriginalJobLink', status: 'warrantyHcpFillStatus', customer: 'warrantyCustomerName', address: 'warrantyAddress', hiddenNumber: 'warrantyOriginalJobNumber' },
+  warranty: { link: 'warrantyJobLink', status: 'warrantyHcpFillStatus', customer: 'warrantyCustomerName', address: 'warrantyAddress', hiddenNumber: 'warrantyJobNumber' }
+};
+
 async function fillFromHousecallPro(kind, value) {
-  const order = kind === 'order';
-  const link = document.getElementById(order ? 'housecallJobLink' : 'draftHousecallJobLink');
-  const status = order ? elements.hcpFillStatus : elements.draftHcpFillStatus;
+  const form = HCP_FILL_FORMS[kind];
+  const link = document.getElementById(form.link);
+  const status = document.getElementById(form.status);
+  const hiddenNumber = form.hiddenNumber && document.getElementById(form.hiddenNumber);
   const query = String(value || '').trim();
   if (!query) {
     status.textContent = '';
+    if (hiddenNumber) hiddenNumber.value = '';
     return;
   }
   if (link.dataset.lookedUp === query) return;
   link.dataset.lookedUp = query;
+  // A typed job # counts as the number until the lookup finds the job.
+  if (hiddenNumber) hiddenNumber.value = /^https?:\/\//i.test(query) ? '' : query;
   const lookup = ++state.hcpLookups;
   status.textContent = 'Looking up the job in Housecall Pro…';
   let data;
@@ -1976,13 +2170,15 @@ async function fillFromHousecallPro(kind, value) {
     link.value = job.url;
     link.dataset.lookedUp = job.url;
   }
-  fill(order ? 'customerName' : 'draftCustomerName', job.customer_name, 'customer');
-  fill(order ? 'housecallJobNumber' : 'draftHousecallJobNumber', job.invoice_number, 'job #');
-  if (order && job.category && !elements.categorySelect.value) {
+  fill(form.customer, job.customer_name, 'customer');
+  if (form.number) fill(form.number, job.invoice_number, 'job #');
+  if (hiddenNumber) hiddenNumber.value = job.invoice_number || '';
+  if (form.address) fill(form.address, job.address, 'address');
+  if (form.category && job.category && !elements.categorySelect.value) {
     elements.categorySelect.value = job.category;
     filled.push('category');
   }
-  fill(order ? 'notes' : 'draftNotes', job.notes, 'notes');
+  if (form.notes) fill(form.notes, job.notes, 'notes');
   status.textContent = [
     filled.length ? `Filled in from Housecall Pro: ${filled.join(', ')}.` : 'Found the job in Housecall Pro.',
     job.attachments ? `It has ${job.attachments} ${job.attachments === 1 ? 'photo or file' : 'photos or files'} in HCP.` : ''

@@ -76,6 +76,11 @@ const VALID_DEPOSIT_STATUSES = [
   'Deposit waived / not required'
 ];
 
+// Typed by staff on a warranty entry (kind 'warranty'); approved jobs leave them blank.
+const WARRANTY_FIELDS = ['po_number', 'address', 'line_items', 'problem', 'needed', 'original_job_link', 'original_job_number'];
+// Warranty work needs no deposit: it is ready to order straight away.
+const WARRANTY_DEPOSIT = 'Deposit waived / not required';
+
 validateRuntimeDatabaseConfig();
 await initializeDatabase();
 await initializeFreeport({ includePreviewInvoices: !isProduction && process.env.PREVIEW_MODE !== 'false' });
@@ -219,6 +224,7 @@ async function serializeJobDraft(draft, knownOrderCount) {
 
   return {
     ...draft,
+    kind: draft.kind === 'warranty' ? 'warranty' : 'approved',
     is_archived: Boolean(Number(draft.is_archived || 0)),
     status: draft.status || 'Open',
     deposit_status: normalizeDraftDepositStatus(draft.deposit_status),
@@ -440,18 +446,35 @@ app.get('/api/job-drafts', asyncRoute(async (req, res) => {
 
   const counts = await dbAll('SELECT job_draft_id, COUNT(*) AS count FROM orders WHERE is_archived = 0 AND job_draft_id IS NOT NULL GROUP BY job_draft_id');
   const countByDraft = new Map(counts.map(row => [row.job_draft_id, Number(row.count)]));
-  return res.json({ drafts: await Promise.all(rows.map(row => serializeJobDraft(row, countByDraft.get(row.id) || 0))) });
+  // A warranty entry lists its supplier orders and where each one is.
+  const warrantyOrders = Map.groupBy(
+    await dbAll("SELECT o.* FROM orders o JOIN job_drafts d ON d.id = o.job_draft_id WHERE o.is_archived = 0 AND d.kind = 'warranty' ORDER BY o.date_ordered, o.created_at"),
+    order => order.job_draft_id
+  );
+  return res.json({
+    drafts: await Promise.all(rows.map(async (row) => {
+      const draft = await serializeJobDraft(row, countByDraft.get(row.id) || 0);
+      if (draft.kind !== 'warranty') return draft;
+      const orders = (warrantyOrders.get(row.id) || []).map(order => ({
+        id: order.id, supplier: order.supplier, category: order.category || '', po_number: order.po_number || '',
+        date_ordered: order.date_ordered, stage: orderStage(order), archive_delete_date: orderStage(order) === 'archived' ? archiveDeleteDate(order) : ''
+      }));
+      return { ...draft, orders };
+    }))
+  });
 }));
 
 app.post('/api/job-drafts', requireStaffAuth, asyncRoute(async (req, res) => {
+  const kind = req.body.kind === 'warranty' ? 'warranty' : 'approved';
   const draftData = {
     customer_name: normalizeText(req.body.customer_name),
     housecall_job_number: normalizeText(req.body.housecall_job_number),
     housecall_job_link: normalizeText(req.body.housecall_job_link),
     hcp_job_id: hcpJobIdFrom(req.body.housecall_job_link) || hcpJobIdFrom(req.body.hcp_job_id),
     notes: typeof req.body.notes === 'string' ? req.body.notes.trim() : '',
-    deposit_status: normalizeDraftDepositStatus(req.body.deposit_status),
-    status: 'Open'
+    deposit_status: kind === 'warranty' ? WARRANTY_DEPOSIT : normalizeDraftDepositStatus(req.body.deposit_status),
+    status: 'Open',
+    ...Object.fromEntries(WARRANTY_FIELDS.map(key => [key, normalizeText(req.body[key])]))
   };
 
   if (!draftData.customer_name) {
@@ -463,8 +486,9 @@ app.post('/api/job-drafts', requireStaffAuth, asyncRoute(async (req, res) => {
   await dbRun(`
     INSERT INTO job_drafts (
       id, customer_name, housecall_job_number, housecall_job_link, hcp_job_id, notes,
-      deposit_status, status, created_at, updated_at, created_by, updated_by, is_preview_data
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      deposit_status, status, created_at, updated_at, created_by, updated_by, is_preview_data,
+      kind, ${WARRANTY_FIELDS.join(', ')}
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ${WARRANTY_FIELDS.map(() => '?').join(', ')})
   `, [
     id,
     draftData.customer_name,
@@ -477,7 +501,9 @@ app.post('/api/job-drafts', requireStaffAuth, asyncRoute(async (req, res) => {
     now,
     now,
     actor(req),
-    actor(req)
+    actor(req),
+    kind,
+    ...WARRANTY_FIELDS.map(key => draftData[key])
   ]);
 
   const draft = await serializeJobDraft(await getJobDraftById(id));
@@ -504,8 +530,9 @@ app.put('/api/job-drafts/:id', requireStaffAuth, asyncRoute(async (req, res) => 
     housecall_job_link: normalizeText(field('housecall_job_link')),
     hcp_job_id: hcpJobIdFrom(field('housecall_job_link')) || hcpJobIdFrom(field('hcp_job_id')),
     notes: typeof req.body.notes === 'string' ? req.body.notes.trim() : (draft.notes || ''),
-    deposit_status: normalizeDraftDepositStatus(field('deposit_status')),
-    status: normalizeText(field('status')) || 'Open'
+    deposit_status: draft.kind === 'warranty' ? WARRANTY_DEPOSIT : normalizeDraftDepositStatus(field('deposit_status')),
+    status: normalizeText(field('status')) || 'Open',
+    ...Object.fromEntries(WARRANTY_FIELDS.map(key => [key, normalizeText(field(key))]))
   };
 
   if (!draftData.customer_name) {
@@ -522,6 +549,7 @@ app.put('/api/job-drafts/:id', requireStaffAuth, asyncRoute(async (req, res) => 
       notes = ?,
       deposit_status = ?,
       status = ?,
+      ${WARRANTY_FIELDS.map(key => `${key} = ?`).join(', ')},
       updated_at = ?,
       updated_by = ?
     WHERE id = ? AND updated_at = ?
@@ -533,6 +561,7 @@ app.put('/api/job-drafts/:id', requireStaffAuth, asyncRoute(async (req, res) => 
     draftData.notes,
     draftData.deposit_status,
     draftData.status === 'Completed' ? 'Completed' : 'Open',
+    ...WARRANTY_FIELDS.map(key => draftData[key]),
     now,
     actor(req),
     req.params.id,
@@ -738,13 +767,15 @@ app.post('/api/orders/:id/restore', requireStaffAuth, asyncRoute(async (req, res
 }));
 
 app.get('/api/orders', asyncRoute(async (req, res) => {
-  const [storedRows, suppliers, staffNames, hcpRows] = await Promise.all([
+  const [storedRows, suppliers, staffNames, hcpRows, warrantyRows] = await Promise.all([
     dbAll('SELECT * FROM orders ORDER BY date_ordered DESC, created_at DESC'),
     getAllSuppliersAsync(), getAllStaffNamesAsync(),
     // Only while HCP is connected; switched off, the tracker's own controls return.
-    hcpConfigured() ? dbAll('SELECT * FROM hcp_jobs WHERE id IN (SELECT hcp_job_id FROM orders WHERE is_archived = 0)') : []
+    hcpConfigured() ? dbAll('SELECT * FROM hcp_jobs WHERE id IN (SELECT hcp_job_id FROM orders WHERE is_archived = 0)') : [],
+    dbAll("SELECT id FROM job_drafts WHERE kind = 'warranty'")
   ]);
   const hcpJobById = new Map(hcpRows.map(row => [row.id, row]));
+  const warrantyDraftIds = new Set(warrantyRows.map(row => row.id));
   const supplierById = new Map(suppliers.map(item => [item.id, item]));
   const staffById = new Map(staffNames.map(item => [item.id, item]));
   const normalizeFilter = value => String(value || '').trim().toLowerCase();
@@ -857,6 +888,7 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
     status: statusFromOrder(order),
     stage: orderStage(order),
     hcp: hcpSummary(hcpJobById.get(order.hcp_job_id)),
+    warranty: warrantyDraftIds.has(order.job_draft_id),
     job_scheduled: Number(order.job_scheduled || 0),
     job_completed: Number(order.job_completed || 0),
     invoiced: Number(order.invoiced || 0),

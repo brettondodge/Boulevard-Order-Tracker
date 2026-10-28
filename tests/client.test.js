@@ -11,6 +11,7 @@ function client(fetch) {
       nodes.set(id, {
         listeners: {}, attributes: {}, dataset: {}, style: {}, offsetWidth: 150, offsetHeight: 90, options: [], selectedOptions: [],
         add() {},
+        reset() {},
         showPopover() { this.open = true; },
         hidePopover() { this.open = false; },
         showModal() { this.open = true; },
@@ -38,6 +39,7 @@ function client(fetch) {
     calls: [], errors: []
   });
   vm.runInContext(readFileSync(new URL('../public/app.js', import.meta.url), 'utf8') + `
+    const originalOpenOrderDialog = openOrderDialog;
     openOrderDialog = (order, draft) => calls.push([draft ? 'create-order' : 'edit', (order || draft).id]);
     openDraftDialog = draft => calls.push(['edit-draft', draft.id]);
     deleteDraft = async id => calls.push(['delete-draft', id]);
@@ -52,7 +54,7 @@ function client(fetch) {
     renderOrders = () => calls.push(['render', state.orders[0]?.id]);
     renderQueueVisibility = () => {};
     showStatus = message => errors.push(message);
-    globalThis.tracker = { state, bindEvents, loadOrders, renderJobDrafts, openDraftActionsMenu, renderCondensedOrders, renderOrderNotesPreview, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility, originalRenderOrders, offerUndo, runUndo, renderSupplierFilterOptions, formatDate, orderStatusBadge, nextStep, openProgressDialog, saveProgressDialog, markJobComplete, renderHcpStatus, renderHcpJobTypes, fillFromHousecallPro, originalMarkReceived, saveReceive, syncStartFresh, applyStartFresh, saveOrder, renderHcpPipeline, saveHcpPipeline, testHcpPipeline };
+    globalThis.tracker = { state, bindEvents, loadOrders, renderJobDrafts, openDraftActionsMenu, renderCondensedOrders, renderOrderNotesPreview, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility, originalRenderOrders, offerUndo, runUndo, renderSupplierFilterOptions, formatDate, orderStatusBadge, nextStep, openProgressDialog, saveProgressDialog, markJobComplete, renderHcpStatus, renderHcpJobTypes, fillFromHousecallPro, originalMarkReceived, saveReceive, syncStartFresh, applyStartFresh, saveOrder, renderHcpPipeline, saveHcpPipeline, testHcpPipeline, renderWarranties, openWarrantyDialog, saveWarranty, originalOpenOrderDialog };
   `, context);
   return { context, node, tracker: context.tracker };
 }
@@ -148,6 +150,83 @@ test('approved queue separates jobs, shows deposit readiness and preserves full 
   assert.match(node('jobDraftList').innerHTML, /No approved jobs waiting to order/);
   assert.equal(node('showFinishedJobsButton').classList.contains('hidden'), true);
   assert.equal(menu.open, false);
+});
+
+test('warranties have their own tab with their details and orders, apart from approved jobs, and the search narrows them', async () => {
+  const { node, tracker } = client();
+  tracker.state.jobDrafts = [
+    { id: 'approved', kind: 'approved', customer_name: 'Approved job', deposit_status: 'Deposit received', status: 'Open' },
+    { id: 'w-open', kind: 'warranty', customer_name: 'Warranty <Pat>', deposit_status: 'Deposit waived / not required', status: 'Open', po_number: 'W-1', address: '1 Test Way', problem: 'Fogged <IGU>', needed: 'New IGU', line_items: '36x48 IGU\n\n Setting blocks ', original_job_link: 'https://pro.housecallpro.com/app/jobs/job_old', original_job_number: '1001', housecall_job_link: '', orders: [] },
+    { id: 'w-done', kind: 'warranty', customer_name: 'Warranty Sam', status: 'Completed', orders: [{ id: 'o1', supplier: 'Oldcastle', category: 'Windows', po_number: 'W-2', stage: 'archived', archive_delete_date: '2026-11-13' }] }
+  ];
+  tracker.bindEvents();
+  tracker.renderJobDrafts();
+  assert.equal((node('jobDraftList').innerHTML.match(/<article /g) || []).length, 1, 'warranties are not approved jobs');
+  assert.equal(node('draftQueueSummary').textContent, '1 job · 1 ready to order');
+
+  tracker.renderWarranties();
+  let html = node('warrantyList').innerHTML;
+  assert.equal((html.match(/<article /g) || []).length, 2, 'finished warranties stay listed');
+  assert.equal(node('warrantySummary').textContent, '2 warranties · 1 still to order');
+  assert.match(html, /Warranty &lt;Pat&gt;/);
+  assert.match(html, /Fogged &lt;IGU&gt;/);
+  assert.match(html, /<li>36x48 IGU<\/li><li>Setting blocks<\/li>/);
+  assert.match(html, /href="https:\/\/pro.housecallpro.com\/app\/jobs\/job_old"[^>]*>1001<\/a>/);
+  assert.match(html, /Oldcastle · Windows · PO W-2 <span class="status-badge archived">Archived · deletes Nov 13<\/span>/);
+  assert.match(html, /data-action="create-order" data-id="w-done" disabled/);
+  assert.doesNotMatch(html, /data-action="create-order" data-id="w-open" disabled/);
+
+  await node('warrantyList').listeners.click({ target: { closest: () => ({ dataset: { action: 'edit-draft', id: 'w-open' } }) } });
+  assert.equal(node('warrantyDialog').open, true);
+  assert.equal(node('warrantyDialogTitle').textContent, 'Edit warranty');
+  assert.equal(node('warrantyProblem').value, 'Fogged <IGU>');
+  assert.equal(node('warrantyOriginalJobNumber').value, '1001');
+  const trigger = { getBoundingClientRect: () => ({ right: 500, top: 200, bottom: 240 }) };
+  tracker.openDraftActionsMenu('w-done', trigger);
+  assert.match(node('draftActionsMenu').innerHTML, /Reopen warranty/);
+  assert.match(node('draftActionsMenu').innerHTML, /Delete warranty/);
+
+  tracker.state.search = 'igu';
+  tracker.renderWarranties();
+  assert.equal((node('warrantyList').innerHTML.match(/<article /g) || []).length, 1);
+  assert.equal(node('warrantySummary').textContent, '2 warranties · 1 still to order · 1 matching the search');
+  tracker.state.search = 'nothing like it';
+  tracker.renderWarranties();
+  assert.match(node('warrantyList').innerHTML, /No warranties match the search/);
+  tracker.state.search = '';
+  tracker.state.jobDrafts = tracker.state.jobDrafts.slice(0, 1);
+  tracker.renderWarranties();
+  assert.match(node('warrantyList').innerHTML, /No warranties yet/);
+});
+
+test('saving a warranty sends every box; ordering for it fills the PO and notes; its orders carry a Warranty badge', async () => {
+  const requests = [];
+  const { node, tracker } = client(async (url, options = {}) => {
+    requests.push({ url, method: options.method || 'GET', body: options.body ? JSON.parse(options.body) : null });
+    if (url === '/api/job-drafts' && options.method === 'POST') return { ok: true, json: async () => ({ draft: { id: 'w-new' } }) };
+    return { ok: true, json: async () => ({ drafts: [] }) };
+  });
+  tracker.bindEvents();
+  tracker.openWarrantyDialog();
+  assert.equal(node('warrantyDialogTitle').textContent, 'Add warranty');
+  const typed = { warrantyCustomerName: 'Synthetic Warranty', warrantyPoNumber: 'W-9', warrantyAddress: '2 Test Way', warrantyLineItems: 'IGU', warrantyProblem: 'Fogged', warrantyNeeded: 'New IGU', warrantyOriginalJobLink: 'https://pro.housecallpro.com/app/jobs/job_old', warrantyOriginalJobNumber: '1001', warrantyJobLink: '', warrantyJobNumber: '' };
+  for (const [id, value] of Object.entries(typed)) node(id).value = value;
+  await tracker.saveWarranty();
+  const post = requests.find(request => request.method === 'POST');
+  assert.equal(post.url, '/api/job-drafts');
+  assert.deepEqual(post.body, { customer_name: 'Synthetic Warranty', po_number: 'W-9', address: '2 Test Way', line_items: 'IGU', problem: 'Fogged', needed: 'New IGU', original_job_link: 'https://pro.housecallpro.com/app/jobs/job_old', original_job_number: '1001', housecall_job_link: '', housecall_job_number: '', kind: 'warranty' });
+  assert.equal(node('warrantyDialog').open, false);
+  assert.equal(node('undoMessage').textContent, 'Warranty added.');
+
+  tracker.originalOpenOrderDialog(null, { id: 'w-new', kind: 'warranty', customer_name: 'Synthetic Warranty', po_number: 'W-9', needed: 'New IGU', line_items: '36x48 IGU', housecall_job_link: '', supplier_order_count: 0 });
+  assert.equal(node('poNumber').value, 'W-9');
+  assert.equal(node('notes').value, 'New IGU\n36x48 IGU');
+  assert.equal(node('jobDraftId').value, 'w-new');
+  assert.equal(node('dialogTitle').textContent, 'Order materials for Synthetic Warranty (warranty)');
+  assert.match(node('orderDraftHint').textContent, /^Saving marks this warranty all ordered/);
+
+  assert.equal(tracker.orderStatusBadge({ stage: 'ordered', warranty: true }), '<span class="status-badge warranty">Warranty</span><span class="status-badge ordered">Ordered</span>');
+  assert.doesNotMatch(tracker.orderStatusBadge({ stage: 'ordered' }), /Warranty/);
 });
 
 test('desktop notes preview stays short and clicking opens the complete original text', async () => {
@@ -601,6 +680,23 @@ test('pasting an HCP link fills in only the empty boxes; a job number becomes th
   assert.equal(node('draftHcpFillStatus').textContent, "Couldn't find that job in Housecall Pro.");
   await tracker.fillFromHousecallPro('draft', '');
   assert.equal(node('draftHcpFillStatus').textContent, '');
+});
+
+test('the warranty links fill the customer and address; their job numbers follow the link', async () => {
+  const job = { job_id: 'job_a', url: 'https://pro.housecallpro.com/app/jobs/job_a', invoice_number: '10240001', customer_name: 'Pat Sample', address: '100 Sample Rd, Phoenix, AZ 85001', notes: 'Not for warranties', attachments: 0 };
+  let answer = { ok: true, status: 200, json: async () => ({ job }) };
+  const { node, tracker } = client(async () => answer);
+  await tracker.fillFromHousecallPro('original', job.url);
+  assert.equal(node('warrantyCustomerName').value, 'Pat Sample');
+  assert.equal(node('warrantyAddress').value, '100 Sample Rd, Phoenix, AZ 85001');
+  assert.equal(node('warrantyOriginalJobNumber').value, '10240001');
+  assert.equal(node('warrantyHcpFillStatus').textContent, 'Filled in from Housecall Pro: customer, address.');
+  // Without HCP a typed job # is kept as the number; clearing the link clears it.
+  answer = { ok: false, status: 503, json: async () => ({}) };
+  await tracker.fillFromHousecallPro('warranty', '10240099');
+  assert.equal(node('warrantyJobNumber').value, '10240099');
+  await tracker.fillFromHousecallPro('warranty', '');
+  assert.equal(node('warrantyJobNumber').value, '');
 });
 
 test('Mark received asks for the shelf, and Undo puts the old shelf back', async () => {

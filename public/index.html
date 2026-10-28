@@ -105,6 +105,7 @@
           <button type="button" class="tab-button" data-view="Archived">Archived</button>
           <button type="button" class="tab-button" data-view="All Orders">All orders</button>
           <button type="button" class="tab-button" data-view="Approved – Need to Order">Approved – Need to Order</button>
+          <button type="button" class="tab-button" data-view="Warranty">Warranty</button>
         </nav>
         <div class="view-row-end">
           <button id="condensedViewToggle" type="button" class="secondary-button" aria-pressed="false" aria-controls="condensedOrders">Condensed lines</button>
@@ -121,6 +122,15 @@
         </div>
         <p id="draftQueueSummary" class="draft-queue-summary" aria-live="polite"></p>
         <div id="jobDraftList" class="draft-list"></div>
+      </section>
+
+      <section id="warrantySection" class="draft-queue hidden">
+        <div class="section-header-row">
+          <h2>Warranty</h2>
+          <button id="addWarrantyButton" type="button" class="secondary-button">Add warranty</button>
+        </div>
+        <p id="warrantySummary" class="draft-queue-summary" aria-live="polite"></p>
+        <div id="warrantyList" class="draft-list"></div>
       </section>
 
       <div class="table-wrap">
@@ -255,6 +265,69 @@
           <button type="button" id="cancelOrderButton" class="secondary-button">Cancel</button>
           <button type="button" id="saveOrderAnotherButton" class="secondary-button hidden">Save + another supplier</button>
           <button type="submit" class="primary-button">Save order</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="warrantyDialog">
+      <form id="warrantyForm" method="dialog">
+        <input type="hidden" id="warrantyId" />
+        <input type="hidden" id="warrantyUpdatedAt" />
+        <input type="hidden" id="warrantyOriginalJobNumber" />
+        <input type="hidden" id="warrantyJobNumber" />
+
+        <div class="dialog-header">
+          <h2 id="warrantyDialogTitle">Add warranty</h2>
+          <button type="button" id="closeWarrantyDialogButton" class="close-button" aria-label="Close">×</button>
+        </div>
+
+        <div class="form-grid">
+          <label class="full-width">
+            Original job <small>(Housecall Pro link or job #: fills customer and address)</small>
+            <input id="warrantyOriginalJobLink" type="text" inputmode="url" placeholder="Paste the original job's link from Housecall Pro" autocomplete="off" />
+          </label>
+          <label class="full-width">
+            Warranty job <small>(optional: the new HCP job for this warranty; its schedule and completion follow)</small>
+            <input id="warrantyJobLink" type="text" inputmode="url" placeholder="Paste the warranty job's link once it's made" autocomplete="off" />
+          </label>
+          <p id="warrantyHcpFillStatus" class="hcp-fill-status full-width" aria-live="polite"></p>
+
+          <label>
+            Customer name
+            <input id="warrantyCustomerName" type="text" required />
+          </label>
+
+          <label>
+            PO
+            <input id="warrantyPoNumber" type="text" />
+          </label>
+
+          <label class="full-width">
+            Address
+            <input id="warrantyAddress" type="text" autocomplete="off" />
+          </label>
+
+          <label class="full-width">
+            Line items <small>(one per line)</small>
+            <textarea id="warrantyLineItems" rows="3"></textarea>
+          </label>
+
+          <label class="full-width">
+            What's wrong
+            <textarea id="warrantyProblem" rows="3"></textarea>
+          </label>
+
+          <label class="full-width">
+            What's needed
+            <textarea id="warrantyNeeded" rows="3"></textarea>
+          </label>
+        </div>
+
+        <div id="warrantyFormError" class="form-error" aria-live="polite"></div>
+
+        <div class="dialog-actions">
+          <button type="button" id="cancelWarrantyButton" class="secondary-button">Cancel</button>
+          <button type="submit" class="primary-button">Save warranty</button>
         </div>
       </form>
     </dialog>

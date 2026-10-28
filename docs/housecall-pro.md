@@ -54,6 +54,14 @@ rest. Every API call and webhook the tracker uses is listed in
 Orders not linked to HCP have **Invoice sent** and **Paid in full** boxes in
 the Job progress window, with the same 7-day rule.
 
+**Warranties** (Warranty tab) have two HCP boxes. The **original job** is for
+reference: pasting its link fills the customer and address. The **warranty
+job** is optional: once it's made in HCP, paste its link and the warranty's
+orders follow that job's schedule and completion, and its Jobs board card
+moves like an approved job with no deposit (Need to Order Materials, then
+Waiting on Materials and Materials Received). Warranties are never deleted
+automatically; their orders follow steps 7 and 8 like any other.
+
 Undoing a change in the tracker inside the Undo window writes nothing to HCP.
 If an order is deleted, the HCP tags are put back to match the remaining
 orders. Jobs already complete or canceled in HCP are never re-tagged.
@@ -74,7 +82,7 @@ middle four, and HCP moves it from Scheduled on as the work is done:
 |---|---|---|
 | New Job | HCP | The job is created. A job with no materials stays here until it is scheduled. |
 | Deposit Needed | Tracker | An approved job is added with "Awaiting deposit" |
-| Need to Order Materials | Tracker | An approved job is added, or edited, with the deposit received or waived |
+| Need to Order Materials | Tracker | An approved job is added, or edited, with the deposit received or waived, or a warranty is saved with its warranty job |
 | Waiting on Materials | Tracker | A supplier order is saved |
 | Materials Received | Tracker | Every order for the job is here, and the approved job isn't waiting on another supplier (Save + another supplier) |
 | Unscheduled (required by HCP) | HCP | Past the materials steps and needs a date |

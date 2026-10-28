@@ -14,7 +14,7 @@ process.env.PREVIEW_MODE = 'false';
 // Never reach the real Housecall Pro API, even with a key in the local .env.
 process.env.HCP_API_KEY = '';
 process.env.HCP_WEBHOOK_SECRET = '';
-const { applyHcpJob, guessCategory, handleHcpWebhook, hcpApprovedJobChanged, invoiceSummary, hcpJobIdFrom, hcpJobIdFromLink, hcpJobRow, hcpJobTypes, hcpOrderChanged, hcpPipeline, hcpSummary, lookupHcpJob, phoenixDate, progressFromHcp, saveJobTypeCategories, savePipelineSteps, syncHcp, testPipelineMove, verifyWebhookSignature, webhookEventId, workStatusOf } = await import('../src/hcp/sync.js');
+const { addressText, applyHcpJob, guessCategory, handleHcpWebhook, hcpApprovedJobChanged, invoiceSummary, hcpJobIdFrom, hcpJobIdFromLink, hcpJobRow, hcpJobTypes, hcpOrderChanged, hcpPipeline, hcpSummary, lookupHcpJob, phoenixDate, progressFromHcp, saveJobTypeCategories, savePipelineSteps, syncHcp, testPipelineMove, verifyWebhookSignature, webhookEventId, workStatusOf } = await import('../src/hcp/sync.js');
 const { dbRun, dbGet } = await import('../src/db.js');
 await (await import('../src/db.js')).initializeDatabase();
 
@@ -250,7 +250,7 @@ test('job types suggest a category until an admin chooses one', async () => {
   }
 });
 
-test('an HCP link or job number fills in the customer, job number, category and notes', async () => {
+test('an HCP link or job number fills in the customer, job number, address, category and notes', async () => {
   const fake = await startFakeHcp();
   try {
     fake.jobTypes.push({ id: 'jt_window', name: 'Window Replacement' });
@@ -258,6 +258,7 @@ test('an HCP link or job number fills in the customer, job number, category and 
       id: 'job_000000000000000000000000000000aa',
       invoice_number: '10240001',
       customer: { first_name: 'Pat', last_name: 'Sample', company: 'Sample Homes' },
+      address: { id: 'adr_1', type: 'service', street: '100 Sample Rd', street_line_2: 'Unit 2', city: 'Phoenix', state: 'AZ', zip: '85001', country: 'US' },
       description: 'Replace 3 windows',
       notes: [{ id: 'n1', content: 'Gate code 1234' }, { id: 'n2', content: 'Replace 3 windows' }],
       job_fields: { job_type: { id: 'jt_window', name: 'Window Replacement' }, business_unit: null },
@@ -269,6 +270,7 @@ test('an HCP link or job number fills in the customer, job number, category and 
       url: 'https://pro.housecallpro.com/app/jobs/job_000000000000000000000000000000aa',
       invoice_number: '10240001',
       customer_name: 'Pat Sample (Sample Homes)',
+      address: '100 Sample Rd, Unit 2, Phoenix, AZ 85001',
       job_type: 'Window Replacement',
       category: 'Windows',
       notes: 'Replace 3 windows\nGate code 1234',
@@ -280,6 +282,9 @@ test('an HCP link or job number fills in the customer, job number, category and 
     assert.equal(await lookupHcpJob('99999999', { client }), null);
     assert.equal(await lookupHcpJob('TBD', { client }), null);
     assert.equal(await lookupHcpJob('', { client }), null);
+    assert.equal(addressText({ street: '5 Test St', street_line_2: '', city: 'Mesa', state: 'AZ', zip: null }), '5 Test St, Mesa, AZ');
+    assert.equal(addressText({ city: 'Tempe', zip: '85281' }), 'Tempe, 85281');
+    assert.equal(addressText(null), '');
   } finally {
     await fake.close();
   }

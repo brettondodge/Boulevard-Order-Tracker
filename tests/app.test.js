@@ -1092,7 +1092,7 @@ test('Housecall Pro: a pasted link fills the order, webhooks and sync keep it in
     // Paste the HCP link (or the job number) and the order fills itself in.
     const lookup = await api(`/api/hcp/lookup?q=${encodeURIComponent(link(JOB_A))}`);
     assert.equal(lookup.status, 200);
-    assert.deepEqual(lookup.body.job, { job_id: JOB_A, url: link(JOB_A), invoice_number: '10239422', customer_name: 'Pat Sample', job_type: 'Window Replacement', category: 'Windows', notes: 'Replace 3 windows', attachments: 1 });
+    assert.deepEqual(lookup.body.job, { job_id: JOB_A, url: link(JOB_A), invoice_number: '10239422', customer_name: 'Pat Sample', address: '', job_type: 'Window Replacement', category: 'Windows', notes: 'Replace 3 windows', attachments: 1 });
     assert.equal((await api('/api/hcp/lookup?q=10239500')).body.job.job_id, JOB_B);
     assert.equal((await api('/api/hcp/lookup?q=99999999')).status, 404);
 
@@ -1267,6 +1267,70 @@ test('an archived order is deleted 7 days after it was complete and paid; newer 
     assert.ok(deleted, 'the old one is deleted');
     assert.equal(deleted.archive_source, 'archived_7_days');
     assert.deepEqual((await view('Archived')).map(order => order.id), [recent.id], 'the recent one stays archived');
+  } finally {
+    child.kill('SIGTERM');
+  }
+});
+
+test('a warranty keeps its details, orders without a deposit, badges its orders and outlasts their 7-day deletion', async () => {
+  const child = startServer({ ARCHIVE_CLEANUP_SECONDS: '1' });
+  const cookieJar = createCookieJar();
+  const api = (route, body, method = body ? 'POST' : 'GET') => requestJson('http://127.0.0.1:4100' + route, { method, headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), cookieJar });
+  const drafts = async () => (await api('/api/job-drafts')).body.drafts;
+  try {
+    await delay(1500);
+    assert.equal((await api('/api/login', { username: 'mary', password: 'staff123' })).status, 200);
+    const details = {
+      customer_name: 'Synthetic Warranty Customer',
+      po_number: 'W-100',
+      address: '1 Test Way, Phoenix, AZ 85001',
+      line_items: '36x48 IGU\nSetting blocks',
+      problem: 'Seal failed: fog between the panes',
+      needed: 'Replace the IGU',
+      original_job_link: 'https://pro.housecallpro.com/app/jobs/job_00000000000000000000000000000abc',
+      original_job_number: '1001'
+    };
+    const created = await api('/api/job-drafts', { ...details, kind: 'warranty', deposit_status: 'Awaiting deposit' });
+    assert.equal(created.status, 201);
+    const warranty = created.body.draft;
+    assert.equal(warranty.kind, 'warranty');
+    for (const [key, value] of Object.entries(details)) assert.equal(warranty[key], value, key);
+    assert.equal(warranty.ready_to_order, true, 'warranty work needs no deposit');
+    assert.equal(warranty.hcp_job_id, '', 'the original job is only for reference');
+
+    const approved = (await api('/api/job-drafts', { customer_name: 'Synthetic Approved Customer' })).body.draft;
+    assert.equal(approved.kind, 'approved');
+    assert.equal(approved.ready_to_order, false);
+
+    const order = await api('/api/orders', { customer_name: warranty.customer_name, job_draft_id: warranty.id, po_number: 'W-100', supplier: 'Northline Glass', category: 'Windows', date_ordered: '2026-01-01', ordered_by: 'Admin User' });
+    assert.equal(order.status, 201);
+    assert.equal((await api('/api/orders', { customer_name: 'Synthetic Warranty Neighbor', supplier: 'Oldcastle', category: 'Windows', date_ordered: '2026-01-01', ordered_by: 'Admin User' })).status, 201);
+    const outstanding = (await api('/api/orders?status=Outstanding&search=Synthetic%20Warranty')).body.orders;
+    assert.deepEqual(outstanding.map(row => [row.customer_name, row.warranty]).sort(), [['Synthetic Warranty Customer', true], ['Synthetic Warranty Neighbor', false]]);
+
+    let listed = (await drafts()).find(draft => draft.id === warranty.id);
+    assert.equal(listed.status, 'Completed', 'one order marks it all ordered');
+    assert.deepEqual(listed.orders.map(row => [row.id, row.supplier, row.po_number, row.stage]), [[order.body.order.id, 'Northline Glass', 'W-100', 'ordered']]);
+    assert.equal((await drafts()).find(draft => draft.id === approved.id).orders, undefined);
+
+    // A sent field replaces the saved one, even blank; the rest stay. It stays a warranty with no deposit.
+    const edited = await api(`/api/job-drafts/${warranty.id}`, { needed: 'Replace the IGU and the stop', address: '', deposit_status: 'Awaiting deposit', updated_at: listed.updated_at }, 'PUT');
+    assert.equal(edited.status, 200);
+    assert.equal(edited.body.draft.needed, 'Replace the IGU and the stop');
+    assert.equal(edited.body.draft.address, '');
+    assert.equal(edited.body.draft.problem, details.problem);
+    assert.equal(edited.body.draft.kind, 'warranty');
+    assert.equal(edited.body.draft.deposit_status, 'Deposit waived / not required');
+
+    // Its order is archived for 7 days and deleted; the warranty stays.
+    const saved = (await api('/api/orders?status=All%20Orders&search=Synthetic%20Warranty%20Customer')).body.orders[0];
+    assert.equal((await api(`/api/orders/${saved.id}/progress`, { job_completed: 1, completed_date: '2026-01-05', invoiced: 1, invoiced_date: '2026-01-05', paid: 1, paid_date: '2026-01-05', updated_at: saved.updated_at }, 'PUT')).status, 200);
+    for (let i = 0; i < 100 && (await drafts()).find(draft => draft.id === warranty.id).orders.length; i += 1) await delay(50);
+    listed = (await drafts()).find(draft => draft.id === warranty.id);
+    assert.ok(listed, 'the warranty stays');
+    assert.deepEqual(listed.orders, []);
+    assert.equal(listed.problem, details.problem);
+    assert.ok((await api('/api/orders?status=Deleted&search=Synthetic%20Warranty')).body.orders.some(row => row.id === saved.id));
   } finally {
     child.kill('SIGTERM');
   }

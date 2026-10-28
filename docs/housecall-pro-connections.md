@@ -20,8 +20,9 @@ board moves also need the Pipeline add-on, which you're keeping.
 | When | HCP call | What the tracker does with it |
 |---|---|---|
 | Someone pastes an HCP job link on an order or approved job | `GET /jobs/{id}?expand[]=attachments` | Fills the empty boxes: customer name, job #, category (from the job type), notes (the job's description and notes). Says how many photos or files the job has. |
+| Someone pastes the original or warranty job's link on a warranty | Same as a pasted link | Fills the customer and the job's service address. |
 | Someone types a job # instead of a link | `GET /jobs`: newest first, 100 per page, up to 1,000 jobs | HCP can't search by job #, so the tracker reads recent jobs to find it, then fills in as above. |
-| Order materials on an approved job | Same as a pasted link | Fills the category and notes on the order form. |
+| Order materials on an approved job or warranty | Same as a pasted link | Fills the category and notes on the order form (a warranty fills the notes from what's needed and its line items, so HCP's notes aren't added). |
 | An order is saved with a new HCP link | `GET /jobs/{id}` | Shows the job's HCP status on the order right away. |
 | An appointment webhook arrives, or a webhook looks older than what the tracker has | `GET /jobs/{id}` | Reads the whole job so no change is missed. |
 | Hourly catch-up, or Master Lists › **Sync with Housecall Pro now** | `GET /jobs/{id}` for every linked job not yet complete and paid, and `GET /jobs` (newest 3,000) for orders that only have a job # | Updates scheduled, complete, invoiced and paid. Links orders found by job #. Re-matches tags. |
@@ -52,7 +53,7 @@ all of them off.
 | Order edited | Depends on the edit | Newly linked to a job: note and tag, as for a new order. Newly received: the received note. Anything else: tags only. |
 | Order reopened, deleted or restored, or an approved job deleted or restored | Tag add or remove only | Tags re-matched to the orders still in the tracker. With no orders left for the job, both tags come off. |
 | A tag doesn't exist in HCP yet | `POST /tags` | Creates "Materials ordered" or "Materials received", once |
-| Approved job added or edited, order saved, all materials received (see section 2a) | `PUT /pipeline/statuses` | The job moves forward to the step's column on the Jobs board |
+| Approved job or warranty (with a warranty job) added or edited, order saved, all materials received (see section 2a) | `PUT /pipeline/statuses` | The job moves forward to the step's column on the Jobs board |
 | Master Lists › **Try one job** | `PUT /pipeline/statuses` | Moves that one job right away, to check the connection |
 
 Notes are only ever added. The tracker never edits or deletes an HCP note,
@@ -67,7 +68,7 @@ Housecall Pro; nothing moves until that is saved.
 | Tracker step | Column (as set up October 28, 2026) |
 |---|---|
 | Approved job added with "Awaiting deposit" | Deposit Needed |
-| Deposit received or waived, materials not ordered | Need to Order Materials |
+| Deposit received or waived, or a warranty saved with its warranty job, materials not ordered | Need to Order Materials |
 | Supplier order saved, not everything here | Waiting on Materials |
 | Everything here, and the approved job isn't waiting on another supplier | Materials Received |
 
@@ -150,7 +151,9 @@ point at the same HCP job.
   when it was last read.
 - **Copied into an order when it's filled in:** the customer name, job #,
   category and notes.
-- **Nothing else:** no addresses, prices, invoice line items, payment
+- **Copied into a warranty when it's filled in:** the customer name, the
+  service address and the job #.
+- **Nothing else:** no other addresses, prices, invoice line items, payment
   details or employees.
 
 ## 7. What it never does

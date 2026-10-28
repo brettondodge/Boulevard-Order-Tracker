@@ -645,6 +645,48 @@ input:focus, select:focus, textarea:focus {
   margin: 0;
 }
 
+.warranty-address {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.warranty-text {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+  font-size: 0.88rem;
+}
+
+.warranty-text > span {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.warranty-text p,
+.warranty-text ul {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.warranty-text ul {
+  padding-left: 1.1rem;
+  white-space: normal;
+}
+
+.warranty-orders li {
+  margin-bottom: 0.25rem;
+}
+
+.warranty-orders .status-badge {
+  margin-left: 0.25rem;
+  padding: 0.15rem 0.5rem;
+}
+
 .table-wrap {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -904,9 +946,12 @@ tr.overdue {
   color: var(--muted);
 }
 
-.status-badge.invoiced {
-  background: var(--panel-alt);
-  color: var(--muted);
+/* Warranty work: an outline next to the order's step, so the step still reads first. */
+.status-badge.warranty {
+  margin-right: 0.3rem;
+  border: 1px solid var(--primary);
+  background: transparent;
+  color: var(--primary);
 }
 
 .status-badge {

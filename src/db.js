@@ -186,6 +186,22 @@ if (!isProduction) {
     db.exec('ALTER TABLE job_drafts ADD COLUMN archive_reason TEXT;');
   }
 
+  // Warranty entries (migrations/011-warranty.sql for Postgres).
+  const warrantyColumns = {
+    kind: "TEXT NOT NULL DEFAULT 'approved'",
+    po_number: 'TEXT',
+    address: 'TEXT',
+    line_items: 'TEXT',
+    problem: 'TEXT',
+    needed: 'TEXT',
+    original_job_link: 'TEXT',
+    original_job_number: 'TEXT'
+  };
+  for (const [column, type] of Object.entries(warrantyColumns)) {
+    const exists = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('job_drafts') WHERE name = ?").get(column);
+    if (Number(exists.count) === 0) db.exec(`ALTER TABLE job_drafts ADD COLUMN ${column} ${type};`);
+  }
+
   const hasOrderArchivedColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = 'is_archived'").get();
   if (Number(hasOrderArchivedColumn.count) === 0) {
     db.exec('ALTER TABLE orders ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0;');
