@@ -516,6 +516,7 @@ test('approved job drafts stay queued until deposit is received or waived and ca
       customer_name: draftName,
       housecall_job_number: 'HC-DRAFT-1001',
       job_draft_id: draftId,
+      keep_job_open: true,
       supplier: 'Northline Glass',
       category: 'Windows',
       date_ordered: '2026-10-18',
@@ -526,6 +527,21 @@ test('approved job drafts stay queued until deposit is received or waived and ca
 
   assert.equal(supplierOrder.status, 201);
   assert.equal(supplierOrder.body.order.job_draft_id, draftId);
+  assert.equal(supplierOrder.body.job_completed, false);
+  const stillOpen = (await requestJson('http://127.0.0.1:4100/api/job-drafts', { cookieJar })).body.drafts.find(draft => draft.id === draftId);
+  assert.equal(stillOpen.status, 'Open', 'a job kept open waits for its next supplier order');
+  assert.equal(Number(stillOpen.supplier_order_count), 1);
+
+  // The last supplier order (saved the usual way) marks the job all ordered.
+  const lastOrder = await requestJson('http://127.0.0.1:4100/api/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customer_name: draftName, job_draft_id: draftId, supplier: 'Oldcastle', category: 'Windows', date_ordered: '2026-10-18', ordered_by: 'Admin User' }),
+    cookieJar
+  });
+  assert.equal(lastOrder.status, 201);
+  assert.equal(lastOrder.body.job_completed, true);
+  assert.equal((await requestJson('http://127.0.0.1:4100/api/job-drafts', { cookieJar })).body.drafts.find(draft => draft.id === draftId).status, 'Completed');
 
   const completeResponse = await requestJson(`http://127.0.0.1:4100/api/job-drafts/${draftId}/complete`, {
     method: 'POST',
@@ -601,10 +617,12 @@ test('draft queue keeps separate supplier orders out of overdue and delivery cou
   });
 
   assert.equal(createOrder.status, 201);
+  assert.equal(createOrder.body.job_completed, true);
 
+  // One order per approved job is the usual case: saving it marks the job all ordered.
   const queue = await requestJson('http://127.0.0.1:4100/api/job-drafts');
   assert.equal(queue.status, 200);
-  assert.ok(queue.body.drafts.some((draft) => draft.id === draftId));
+  assert.equal(queue.body.drafts.find((draft) => draft.id === draftId)?.status, 'Completed');
   assert.ok(createOrder.body.order.job_draft_id === draftId);
 
   child.kill('SIGTERM');
@@ -715,6 +733,7 @@ test('deleting a job removes it and its orders; undo brings back only what that 
       customer_name: sharedCustomer,
       housecall_job_number: firstDraft.body.draft.housecall_job_number,
       job_draft_id: firstDraft.body.draft.id,
+      keep_job_open: true,
       supplier: 'Northline Glass',
       category: 'Windows',
       date_ordered: '2026-10-18',
@@ -824,7 +843,7 @@ test('master-list IDs survive renaming and deactivation; confirmed cleanup prese
     const keepId = suppliers.body.suppliers.find(row => row.name === 'Keep Supplier').id;
     const draft = await api('/api/job-drafts', { customer_name: 'Cleanup shared draft', deposit_status: 'Deposit waived / not required' });
     assert.equal(draft.status, 201);
-    const create = supplier => api('/api/orders', { customer_name: 'Cleanup test', supplier, ordered_by: 'Original Staff', ordered_by_id: staffId, category: 'Windows', date_ordered: '2026-10-11', date_received: '2026-10-11', job_draft_id: draft.body.draft.id });
+    const create = supplier => api('/api/orders', { customer_name: 'Cleanup test', supplier, ordered_by: 'Original Staff', ordered_by_id: staffId, category: 'Windows', date_ordered: '2026-10-11', date_received: '2026-10-11', job_draft_id: draft.body.draft.id, keep_job_open: true });
     const removedOrder = await create('Original Supplier');
     const keptOrder = await create('Keep Supplier');
     assert.equal(removedOrder.status, 201); assert.equal(keptOrder.status, 201);

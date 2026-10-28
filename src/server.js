@@ -852,6 +852,9 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
 app.post('/api/orders', requireStaffAuth, asyncRoute(async (req, res) => {
   const orderData = normalizeOrderInput(req.body);
   const draftId = normalizeText(req.body.job_draft_id || '');
+  // One order per approved job is the usual case: saving it marks the job all
+  // ordered. keep_job_open leaves the job waiting for more supplier orders.
+  const finishesJob = Boolean(draftId) && req.body.keep_job_open !== true;
 
   if (draftId) {
     const draft = await getJobDraftById(draftId);
@@ -893,13 +896,13 @@ app.post('/api/orders', requireStaffAuth, asyncRoute(async (req, res) => {
   const orderId = `order-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const now = isoNow();
 
-  await dbRun(`
+  const insert = { sql: `
     INSERT INTO orders (
       id, customer_name, housecall_job_number, housecall_job_link, supplier, supplier_id, category, combined_group,
       po_number, date_ordered, expected_delivery_date, date_received, ordered_by, ordered_by_id, status, notes, job_draft_id,
       created_at, updated_at, created_by, updated_by, is_preview_data, shop_location, hcp_job_id
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-  `, [
+  `, params: [
     orderId,
     orderData.customer_name,
     orderData.housecall_job_number,
@@ -923,10 +926,14 @@ app.post('/api/orders', requireStaffAuth, asyncRoute(async (req, res) => {
     actor(req),
     orderData.shop_location,
     hcpJobId || null
-  ]);
+  ] };
+  await runInTransaction(finishesJob
+    ? [insert, { sql: 'UPDATE job_drafts SET status = ?, updated_at = ?, updated_by = ? WHERE id = ?', params: ['Completed', now, actor(req), draftId] }]
+    : [insert]);
 
   const created = await dbGet('SELECT * FROM orders WHERE id = ?', [orderId]);
   broadcastLiveEvent('orders', { action: 'created', orderId, updatedAt: created.updated_at, time: isoNow() });
+  if (finishesJob) broadcastLiveEvent('job-drafts', { action: 'completed', draftId, time: isoNow() });
   refreshHcpJobSoon(hcpJobId, (orderIds) => broadcastLiveEvent('orders', { action: 'housecall-pro', orderIds }));
   if (hcpJobId) hcpOrderChanged(orderId, orderData.date_received ? 'received' : 'ordered');
   return res.status(201).json({
@@ -935,7 +942,8 @@ app.post('/api/orders', requireStaffAuth, asyncRoute(async (req, res) => {
       status: statusFromOrder(created),
       supplier: await resolveSupplierDisplay(created),
       ordered_by: await resolveOrderedByDisplay(created)
-    }
+    },
+    job_completed: finishesJob
   });
 }));
 

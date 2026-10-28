@@ -52,7 +52,7 @@ function client(fetch) {
     renderOrders = () => calls.push(['render', state.orders[0]?.id]);
     renderQueueVisibility = () => {};
     showStatus = message => errors.push(message);
-    globalThis.tracker = { state, bindEvents, loadOrders, renderJobDrafts, openDraftActionsMenu, renderCondensedOrders, renderOrderNotesPreview, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility, originalRenderOrders, offerUndo, runUndo, renderSupplierFilterOptions, formatDate, orderStatusBadge, nextStep, openProgressDialog, saveProgressDialog, markJobComplete, renderHcpStatus, renderHcpJobTypes, fillFromHousecallPro, originalMarkReceived, saveReceive, syncStartFresh, applyStartFresh };
+    globalThis.tracker = { state, bindEvents, loadOrders, renderJobDrafts, openDraftActionsMenu, renderCondensedOrders, renderOrderNotesPreview, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility, originalRenderOrders, offerUndo, runUndo, renderSupplierFilterOptions, formatDate, orderStatusBadge, nextStep, openProgressDialog, saveProgressDialog, markJobComplete, renderHcpStatus, renderHcpJobTypes, fillFromHousecallPro, originalMarkReceived, saveReceive, syncStartFresh, applyStartFresh, saveOrder };
   `, context);
   return { context, node, tracker: context.tracker };
 }
@@ -230,6 +230,43 @@ test('Master Lists: several new names before saving each stay, even starting fro
   type('orderedByMasterList', 'staff', 1, 'CD');
   node('orderedByMasterList').listeners.change({ target: { dataset: { kind: 'staff', field: 'active', index: '1', id: '' }, checked: false } });
   assert.deepEqual(tracker.state.masterStaffNames.map(item => [item.name, item.active]), [['AB', true], ['CD', false]]);
+});
+
+test('an order from an approved job finishes the job; "Save + another supplier" keeps it open for the next order', async () => {
+  const requests = [];
+  const { context, node, tracker } = client(async (url, options = {}) => {
+    const body = options.body ? JSON.parse(options.body) : null;
+    requests.push({ url, method: options.method || 'GET', body });
+    if (url === '/api/orders' && options.method === 'POST') return { ok: true, json: async () => ({ order: { id: 'new-order' }, job_completed: !body.keep_job_open }) };
+    if (url === '/api/job-drafts') return { ok: true, json: async () => ({ drafts: [{ id: 'job-1', customer_name: 'Synthetic Job', status: 'Open', deposit_status: 'Deposit received', supplier_order_count: 1 }] }) };
+    // The supplier and staff lists aren't what this test is about.
+    if (url === '/api/suppliers' || url === '/api/master-lists') return { ok: false, json: async () => ({}) };
+    return { ok: true, json: async () => ({ orders: [] }) };
+  });
+  tracker.bindEvents();
+  const fillForm = (category) => {
+    tracker.state.masterSuppliers = [{ id: 'sup-1', name: 'Synthetic Supplier', active: true }];
+    tracker.state.masterStaffNames = [{ id: 'staff-1', name: 'AD', active: true }];
+    for (const [id, value] of Object.entries({ orderId: '', jobDraftId: 'job-1', customerName: 'Synthetic Job', housecallJobNumber: '21', housecallJobLink: '', supplierInput: 'sup-1', poNumber: 'SYN PO', dateOrdered: '2026-10-28', expectedDeliveryDate: '', dateReceived: '', shopLocation: '', notes: '', categorySelect: category, orderedBySelect: 'staff-1' })) node(id).value = value;
+  };
+  const posts = () => requests.filter(request => request.method === 'POST');
+
+  fillForm('Windows');
+  await tracker.saveOrder();
+  assert.equal(posts().at(-1).body.job_draft_id, 'job-1');
+  assert.equal(posts().at(-1).body.keep_job_open, false);
+  assert.equal(node('undoMessage').textContent, 'Order added. Synthetic Job moved to Outstanding.');
+  assert.equal(context.calls.some(call => call[0] === 'create-order'), false, 'the usual save does not open another order');
+  await tracker.runUndo();
+  assert.deepEqual(posts().slice(-2).map(request => request.url), ['/api/orders/new-order/delete', '/api/job-drafts/job-1/reopen'], 'undo takes the order back and returns the job to Approved');
+
+  fillForm('Showers');
+  await node('saveOrderAnotherButton').listeners.click();
+  assert.equal(posts().at(-1).body.keep_job_open, true);
+  assert.match(node('undoMessage').textContent, /stays in Approved – Need to Order/);
+  assert.deepEqual(Array.from(context.calls.at(-1)), ['create-order', 'job-1'], 'the form opens again for the same job');
+  assert.equal(node('categorySelect').value, 'Showers');
+  assert.equal(node('orderedBySelect').value, 'staff-1');
 });
 
 test('condensed toggle preserves filters, uses the loaded orders and switches layout on desktop and phone', () => {

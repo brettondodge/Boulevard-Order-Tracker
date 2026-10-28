@@ -130,6 +130,8 @@ const elements = {
   cancelDraftButton: document.getElementById('cancelDraftButton'),
   form: document.getElementById('orderForm'),
   jobDraftId: document.getElementById('jobDraftId'),
+  orderDraftHint: document.getElementById('orderDraftHint'),
+  saveOrderAnotherButton: document.getElementById('saveOrderAnotherButton'),
   formError: document.getElementById('formError'),
   closeDialogButton: document.getElementById('closeDialogButton'),
   cancelOrderButton: document.getElementById('cancelOrderButton'),
@@ -535,6 +537,7 @@ function bindEvents() {
     event.preventDefault();
     await saveOrder();
   });
+  elements.saveOrderAnotherButton.addEventListener('click', () => saveOrder({ keepJobOpen: true }));
 
   const handleOrderAction = async (event) => {
     const button = event.target.closest('button[data-action], button[data-order-menu]');
@@ -1110,6 +1113,7 @@ function renderJobDrafts() {
             <button type="button" class="action-button" data-draft-menu="${id}" popovertarget="draftActionsMenu" aria-label="More actions for ${escapeAttr(draft.customer_name)}">⋯</button>
           </div>
           ${draft.deposit_status === 'Awaiting deposit' && draft.status !== 'Completed' ? '<p class="draft-order-hint">Receive or waive the deposit before ordering materials.</p>' : ''}
+          ${readyToOrder && Number(draft.supplier_order_count) ? '<p class="draft-order-hint">Waiting on more supplier orders: use Order materials for each. Saving the last one with Save order moves the job to Outstanding.</p>' : ''}
         </article>
       `;
     })
@@ -1425,6 +1429,8 @@ function openOrderDialog(order = null, draft = null) {
   elements.orderUpdatedAt.value = '';
   elements.jobDraftId.value = '';
   elements.hcpFillStatus.textContent = '';
+  elements.orderDraftHint.classList.add('hidden');
+  elements.saveOrderAnotherButton.classList.add('hidden');
   state.editingOrder = order;
   elements.categorySelect.value = '';
   elements.orderedBySelect.value = '';
@@ -1439,9 +1445,15 @@ function openOrderDialog(order = null, draft = null) {
     document.getElementById('customerName').value = draft.customer_name || '';
     document.getElementById('housecallJobNumber').value = draft.housecall_job_number || '';
     document.getElementById('housecallJobLink').value = draft.housecall_job_link || '';
-    document.getElementById('housecallJobLink').dataset.lookedUp = draft.housecall_job_link || '';
+    document.getElementById('housecallJobLink').dataset.lookedUp = '';
+    const placed = Number(draft.supplier_order_count || 0);
+    elements.orderDraftHint.textContent = `${placed ? `${placed} supplier ${placed === 1 ? 'order' : 'orders'} already placed for this job. ` : ''}Saving moves this job from Approved – Need to Order to Outstanding. Ordering from more than one supplier? Use Save + another supplier.`;
+    elements.orderDraftHint.classList.remove('hidden');
+    elements.saveOrderAnotherButton.classList.remove('hidden');
     elements.dialogTitle.textContent = `Order materials for ${draft.customer_name}`;
     elements.dialog.showModal();
+    // The HCP job also fills in the category and notes.
+    if (draft.housecall_job_link) fillFromHousecallPro('order', draft.housecall_job_link);
     return;
   }
 
@@ -1602,7 +1614,9 @@ function readSelectedOrderedBy() {
   };
 }
 
-async function saveOrder() {
+// keepJobOpen: an order from an approved job that needs more supplier orders
+// stays in Approved – Need to Order, and the form opens again for the next one.
+async function saveOrder({ keepJobOpen = false } = {}) {
   const orderedBy = readSelectedOrderedBy();
   const supplierSelect = document.getElementById('supplierInput');
   const supplier = state.masterSuppliers.find(item => item.id === supplierSelect.value);
@@ -1622,6 +1636,7 @@ async function saveOrder() {
     shop_location: document.getElementById('shopLocation').value,
     notes: document.getElementById('notes').value,
     job_draft_id: elements.jobDraftId.value || '',
+    keep_job_open: keepJobOpen,
     status: document.getElementById('dateReceived').value ? 'Received' : 'Ordered'
   };
 
@@ -1662,13 +1677,28 @@ async function saveOrder() {
     return;
   }
 
+  const draftId = payload.job_draft_id;
+  const orderedByValue = elements.orderedBySelect.value;
   closeDialog();
   if (id && previous) {
     offerUndo('Order updated.', () => sendJson(`/api/orders/${id}`, { ...orderPayload(previous), updated_at: data.order.updated_at }, 'PUT'));
+  } else if (data.job_completed) {
+    // Undo takes the order back and returns the job to Approved – Need to Order.
+    offerUndo(`Order added. ${payload.customer_name.trim()} moved to Outstanding.`, async () => {
+      await sendJson(`/api/orders/${data.order.id}/delete`);
+      await sendJson(`/api/job-drafts/${draftId}/reopen`);
+    });
   } else {
-    offerUndo('Order added.', () => sendJson(`/api/orders/${data.order.id}/delete`));
+    offerUndo(draftId ? 'Order added. The job stays in Approved – Need to Order for its next supplier order.' : 'Order added.', () => sendJson(`/api/orders/${data.order.id}/delete`));
   }
   await Promise.all([loadSuppliers(), loadMasterLists(), loadJobDrafts(), loadOrders()]);
+  // The next supplier order for the same job starts with what stays the same.
+  const draft = keepJobOpen && draftId && state.jobDrafts.find(entry => entry.id === draftId);
+  if (draft) {
+    openOrderDialog(null, draft);
+    elements.categorySelect.value = payload.category;
+    elements.orderedBySelect.value = orderedByValue;
+  }
 }
 
 function orderPayload(order) {

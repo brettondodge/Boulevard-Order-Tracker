@@ -18,7 +18,10 @@ connected to the real HCP account: that needs the setup steps below.
    boxes: customer name, job #, category (from the HCP job type) and the
    job's description and notes. It also says how many photos or files the
    job has in HCP. Staff add the rest: supplier, **PO** (the reference you
-   put on the supplier order), ordered by and ETA.
+   put on the supplier order), ordered by and ETA. An approved job's
+   **Order materials** fills the order form the same way (category and
+   notes included); saving it moves the job to Outstanding, or **Save +
+   another supplier** keeps it waiting for the next supplier order.
 2. **HCP gets a tag and a note.** After the 15-second Undo window, the tracker
    tags the HCP job **Materials ordered** and adds a note, for example
    "Order Tracker: materials ordered from Jeld-Wen, PO SMITH REV2, expected

@@ -95,6 +95,14 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     await request('/api/master-lists/suppliers', { items: [{ name: 'Test Supplier', active: true }] });
     const order = await request('/api/orders', { customer_name: 'Synthetic Test Job', supplier: 'Test Supplier', ordered_by: 'Test Staff', category: 'Windows', date_ordered: '2026-10-10' });
     assert.equal(order.status, 201);
+    // An order from an approved job marks the job all ordered in the same transaction.
+    const job = await request('/api/job-drafts', { customer_name: 'Synthetic Approved Job', deposit_status: 'Deposit received' });
+    const jobOrder = await request('/api/orders', { customer_name: 'Synthetic Approved Job', job_draft_id: job.body.draft.id, supplier: 'Test Supplier', ordered_by: 'Test Staff', category: 'Windows', date_ordered: '2026-10-10' });
+    assert.equal(jobOrder.status, 201);
+    assert.equal(jobOrder.body.job_completed, true);
+    assert.equal((await pool.query('SELECT status FROM job_drafts WHERE id=$1', [job.body.draft.id])).rows[0].status, 'Completed');
+    await pool.query('DELETE FROM orders WHERE id=$1', [jobOrder.body.order.id]);
+    await pool.query('DELETE FROM job_drafts WHERE id=$1', [job.body.draft.id]);
     // Legacy names remain searchable in orders but do not populate staff choices.
     await pool.query("INSERT INTO orders (id, customer_name, supplier, date_ordered, ordered_by, created_at, updated_at) VALUES ('historical-1', 'Synthetic history', 'Test Supplier', '2026-10-10', 'alice', '2026-10-10', '2026-10-10'), ('historical-2', 'Synthetic history', 'Test Supplier', '2026-10-10', 'alice', '2026-10-10', '2026-10-10'), ('historical-3', 'Synthetic history', 'Test Supplier', '2026-10-10', 'Zoe', '2026-10-10', '2026-10-10')");
     const lists = await request('/api/master-lists');

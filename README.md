@@ -46,7 +46,7 @@ Local preview runs include fictional sample orders. They are kept in the local S
 - Outstanding view is the default landing page.
 - Search across customer, job number, supplier, and PO number.
 - Filter by supplier and sort by expected delivery date or order date.
-- Add, edit, receive, reopen and delete orders. Approved jobs (deposit taken, materials not ordered yet) wait under Approved – Need to Order.
+- Add, edit, receive, reopen and delete orders. Approved jobs (deposit taken, materials not ordered yet) wait under Approved – Need to Order. Order materials on a job opens the order form; saving the order moves the job to Outstanding. A job that needs several supplier orders uses Save + another supplier, which keeps it in Approved – Need to Order until the last one is saved.
 - Every change can be undone for 15 seconds from the bar at the bottom of the screen.
 - Deleting removes an order or job from the tracker. The record stays hidden in the database (marked archived, with who deleted it) so Undo can bring it back.
 - Each change records the signed-in staff email as created_by / updated_by.
