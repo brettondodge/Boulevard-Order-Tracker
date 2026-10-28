@@ -50,10 +50,11 @@ Local preview runs include fictional sample orders. They are kept in the local S
 - Every change can be undone for 15 seconds from the bar at the bottom of the screen.
 - Deleting removes an order or job from the tracker. The record stays hidden in the database (marked archived, with who deleted it) so Undo can bring it back.
 - Each change records the signed-in staff email as created_by / updated_by.
-- Job progress on every order: shop location, scheduled (date and note), complete and invoiced. Each order keeps its own, like a row in the sheet.
-- Views for the labor meeting: To schedule (received and not scheduled), Scheduled and Need invoice. Each line shows its furthest step and the next one.
-- Housecall Pro: webhooks and an hourly sync keep scheduled / complete / invoiced in step with HCP and add jobs from approved estimates to Approved – Need to Order. Setup: [docs/housecall-pro.md](docs/housecall-pro.md).
-- One-time import from the "Misc. Parts Ordered" Google Sheet (Master Lists › Import from Google Sheet), with a preview before anything changes.
+- Job progress on every order: shop location, scheduled (date and note) and complete. Each order keeps its own; with Housecall Pro connected, scheduled and complete come from HCP.
+- Views for the labor meeting: To schedule (received and not scheduled), Scheduled and Done. Each line shows its furthest step and the next one; complete is the last step.
+- PO: the reference put on the supplier order, shown next to the customer.
+- Housecall Pro: paste an HCP job link (or job #) on an order or approved job and the customer, job #, category and notes fill in. Webhooks and an hourly sync keep scheduled / complete in step with HCP, and the tracker tags the HCP job "Materials ordered" / "Materials received" with a note. Setup: [docs/housecall-pro.md](docs/housecall-pro.md).
+- Master Lists › Start fresh clears orders and approved jobs (and optionally suppliers and staff) for go-live.
 - Received orders remain searchable for history.
 - Overdue is a calculated flag, not a separate status.
 - Orders without an ETA show `No ETA`.
@@ -68,29 +69,9 @@ Follow [the hosting and recovery guide](docs/hosting.md) for the existing Render
 - Shared online deployment: usually a small monthly hosting fee, plus optional domain and backups.
 - If you want a fully managed database and permanent external access, expect a small monthly service cost depending on the host.
 
-## HCP automation readiness
+## Housecall Pro
 
-Deleting a job uses the database's archive fields, so a later Housecall Pro import or automation step can reuse them without connecting to HCP from this project.
-
-Eligibility for a future automated archive decision:
-
-- The job is completed.
-- The job has been invoiced.
-- The job is paid in full.
-- All linked supplier orders have been received.
-
-Important exclusions:
-
-- Deposit payments alone do not qualify.
-- Individually paid progress invoices do not qualify on their own.
-- If HCP conditions are satisfied but local ordering or receiving work is still incomplete, the job should be flagged for review instead of being auto-hidden.
-
-Safety rules for later integration:
-
-- Use stable HCP job IDs and treat repeated notifications as idempotent.
-- Keep archive metadata in the local database with source values like `manual` and `future_hcp_automation` and the optional archive reason.
-- Verify the actual HCP API fields, event semantics, and payload naming during the later integration.
-- Do not connect to HCP or change anything in HCP during this task.
+The tracker connects to Housecall Pro through its public API and webhooks. What it does, how orders are matched to HCP jobs, and the setup steps are in [docs/housecall-pro.md](docs/housecall-pro.md).
 
 ## Notes for beginners
 

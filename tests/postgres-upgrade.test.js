@@ -38,7 +38,7 @@ test('a database that ran the first 002-freeport.sql gets every newer Freeport a
     assert.equal(await table('freeport_months'), 'freeport_months');
     assert.equal(await table('freeport_month_sends'), 'freeport_month_sends');
     const orderColumn = async name => (await pool.query("SELECT 1 FROM information_schema.columns WHERE table_name = 'orders' AND column_name = $1", [name])).rowCount;
-    for (const name of ['shop_location', 'job_scheduled', 'scheduled_date', 'schedule_note', 'job_completed', 'completed_date', 'invoiced', 'invoice_reference', 'hcp_job_id']) assert.equal(await orderColumn(name), 1, name);
+    for (const name of ['shop_location', 'job_scheduled', 'scheduled_date', 'schedule_note', 'job_completed', 'completed_date', 'hcp_job_id']) assert.equal(await orderColumn(name), 1, name);
     for (const name of ['hcp_jobs', 'hcp_events', 'hcp_state']) assert.equal(await table(name), name);
   } finally {
     await pool?.end();

@@ -100,7 +100,7 @@
           <button type="button" class="tab-button" data-view="Overdue">Overdue</button>
           <button type="button" class="tab-button" data-view="To Schedule">To schedule</button>
           <button type="button" class="tab-button" data-view="Scheduled">Scheduled</button>
-          <button type="button" class="tab-button" data-view="Need Invoice">Need invoice</button>
+          <button type="button" class="tab-button" data-view="Done">Done</button>
           <button type="button" class="tab-button" data-view="Received">Received</button>
           <button type="button" class="tab-button" data-view="All Orders">All orders</button>
           <button type="button" class="tab-button" data-view="Approved – Need to Order">Approved – Need to Order</button>
@@ -127,11 +127,11 @@
           <thead>
             <tr>
               <th>Customer</th>
+              <th>PO</th>
               <th>Category</th>
               <th>Job #</th>
               <th>Supplier</th>
               <th>Ordered by</th>
-              <th>PO #</th>
               <th>Ordered</th>
               <th>ETA</th>
               <th>Received</th>
@@ -151,7 +151,7 @@
         <p id="condensedOrderCount" aria-live="polite"></p>
         <div class="condensed-table-wrap" tabindex="0" role="region" aria-label="Order lines, scroll horizontally for more columns">
           <table>
-            <thead><tr><th scope="col">Customer</th><th scope="col">Job #</th><th scope="col">Category</th><th scope="col">Supplier</th><th scope="col">ETA</th><th scope="col">Received</th><th scope="col">Shop</th><th scope="col">Status</th><th scope="col">Schedule note</th><th scope="col">Notes</th><th scope="col">Actions</th></tr></thead>
+            <thead><tr><th scope="col">Customer</th><th scope="col">PO</th><th scope="col">Job #</th><th scope="col">Category</th><th scope="col">Supplier</th><th scope="col">ETA</th><th scope="col">Received</th><th scope="col">Shop</th><th scope="col">Status</th><th scope="col">Schedule note</th><th scope="col">Notes</th><th scope="col">Actions</th></tr></thead>
             <tbody id="condensedOrdersBody"></tbody>
           </table>
         </div>
@@ -175,9 +175,20 @@
         </div>
 
         <div class="form-grid">
+          <label class="full-width">
+            Housecall Pro job link or job #
+            <input id="housecallJobLink" name="housecall_job_link" type="text" inputmode="url" placeholder="Paste the job's link from Housecall Pro" autocomplete="off" />
+          </label>
+          <p id="hcpFillStatus" class="hcp-fill-status full-width" aria-live="polite"></p>
+
           <label>
             Customer name
             <input id="customerName" name="customer_name" type="text" required />
+          </label>
+
+          <label>
+            Housecall Pro job #
+            <input id="housecallJobNumber" name="housecall_job_number" type="text" />
           </label>
 
           <label>
@@ -192,13 +203,8 @@
           </label>
 
           <label>
-            Housecall Pro job #
-            <input id="housecallJobNumber" name="housecall_job_number" type="text" />
-          </label>
-
-          <label class="full-width">
-            Housecall Pro job link
-            <input id="housecallJobLink" name="housecall_job_link" type="url" placeholder="https://..." />
+            PO <small>(the reference on the supplier order)</small>
+            <input id="poNumber" name="po_number" type="text" />
           </label>
 
           <label>
@@ -213,11 +219,6 @@
             <select id="orderedBySelect" name="ordered_by" required>
               <option value="">Select staff name</option>
             </select>
-          </label>
-
-          <label>
-            PO / order number
-            <input id="poNumber" name="po_number" type="text" />
           </label>
 
           <label>
@@ -267,6 +268,12 @@
 
         <div class="form-grid">
           <label class="full-width">
+            Housecall Pro job link or job #
+            <input id="draftHousecallJobLink" name="housecall_job_link" type="text" inputmode="url" placeholder="Paste the job's link from Housecall Pro" autocomplete="off" />
+          </label>
+          <p id="draftHcpFillStatus" class="hcp-fill-status full-width" aria-live="polite"></p>
+
+          <label>
             Customer name
             <input id="draftCustomerName" name="customer_name" type="text" required />
           </label>
@@ -274,16 +281,6 @@
           <label>
             Housecall Pro job #
             <input id="draftHousecallJobNumber" name="housecall_job_number" type="text" />
-          </label>
-
-          <label>
-            Stable HCP job ID
-            <input id="draftHcpJobId" name="hcp_job_id" type="text" placeholder="Optional future import key" />
-          </label>
-
-          <label class="full-width">
-            Housecall Pro job link
-            <input id="draftHousecallJobLink" name="housecall_job_link" type="url" placeholder="https://..." />
           </label>
 
           <label>
@@ -362,12 +359,18 @@
             <p class="import-hint">Webhook address to enter in Housecall Pro: <code id="hcpWebhookUrl"></code></p>
             <ul id="hcpRecentEvents" class="hcp-events"></ul>
             <button type="button" id="hcpSyncButton" class="secondary-button">Sync with Housecall Pro now</button>
+            <div id="hcpJobTypesSection" class="hcp-job-types hidden">
+              <h4>Category for each Housecall Pro job type</h4>
+              <p class="import-hint">Used when an order is filled from an HCP link. A suggestion is shown until you choose.</p>
+              <div id="hcpJobTypesList" class="hcp-job-types-list"></div>
+              <button type="button" id="saveHcpJobTypesButton" class="secondary-button">Save categories</button>
+            </div>
           </div>
 
           <div class="master-list-section">
-            <h3>Google Sheet</h3>
-            <p>Bring the orders from the Misc. Parts Ordered sheet into the tracker.</p>
-            <button type="button" id="openSheetImportButton" class="secondary-button">Import from Google Sheet…</button>
+            <h3>Start fresh</h3>
+            <p>Delete every order and approved job to start over (for example the test records before going live). Logins, Freeport Billing and the Housecall Pro settings stay.</p>
+            <button type="button" id="openStartFreshButton" class="secondary-button">Start fresh…</button>
           </div>
 
           <div class="dialog-actions">
@@ -436,12 +439,6 @@
             Completed on
             <input id="progressCompletedDate" type="date" />
           </label>
-
-          <label class="checkbox-inline progress-check"><input id="progressInvoiced" type="checkbox" /> Invoiced</label>
-          <label>
-            Invoice # or billing note
-            <input id="progressInvoiceReference" type="text" />
-          </label>
         </div>
 
         <p id="progressJobHint" class="progress-hint"></p>
@@ -453,37 +450,47 @@
       </form>
     </dialog>
 
-    <dialog id="sheetImportDialog" aria-labelledby="sheetImportTitle">
-      <div class="dialog-header">
-        <h2 id="sheetImportTitle">Import from the Google Sheet</h2>
-        <button type="button" id="closeSheetImportButton" class="close-button" aria-label="Close">×</button>
-      </div>
-      <ol class="import-steps">
-        <li>In Google Sheets choose File › Download › Microsoft Excel (.xlsx).</li>
-        <li>Choose that file and press Preview. Nothing changes until you confirm.</li>
-      </ol>
-      <div class="import-file-row">
-        <input id="sheetImportFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
-        <button type="button" id="previewSheetImportButton" class="secondary-button">Preview</button>
-      </div>
-      <p id="sheetImportError" class="form-error" aria-live="polite"></p>
-      <div id="sheetImportPreview" class="hidden">
-        <div id="sheetImportSummary" class="import-summary"></div>
-        <fieldset class="import-mode">
-          <legend>How should it come in?</legend>
-          <label class="checkbox-inline"><input type="radio" name="sheetImportMode" value="replace" /> Replace everything in the tracker</label>
-          <p class="import-hint">Deletes the orders, approved jobs, suppliers and staff in the tracker now, then brings in the sheet. Logins and Freeport Billing are not touched.</p>
-          <label class="checkbox-inline"><input type="radio" name="sheetImportMode" value="add" /> Add to what is in the tracker</label>
-          <p class="import-hint">Keeps everything and skips sheet rows already in the tracker (same customer, supplier and order date; rows without an order date match on customer and supplier).</p>
-        </fieldset>
-        <label class="import-confirm">
-          <span>Type <strong id="sheetImportWord">IMPORT</strong> to confirm</span>
-          <input id="sheetImportConfirmation" type="text" autocomplete="off" />
-        </label>
-        <div class="dialog-actions">
-          <button type="button" id="cancelSheetImportButton" class="secondary-button">Cancel</button>
-          <button type="button" id="applySheetImportButton" class="primary-button" disabled>Import</button>
+    <dialog id="receiveDialog" aria-labelledby="receiveDialogTitle">
+      <form id="receiveForm" method="dialog">
+        <div class="dialog-header">
+          <h2 id="receiveDialogTitle">Mark received</h2>
+          <button type="button" id="closeReceiveButton" class="close-button" aria-label="Close">×</button>
         </div>
+        <p id="receiveCustomer" class="progress-customer"></p>
+        <div class="form-grid">
+          <label>
+            Shop location
+            <input id="receiveShopLocation" type="text" list="shopLocations" placeholder="e.g. H, G, IGU Wall" autocomplete="off" />
+          </label>
+          <label>
+            Date received
+            <input id="receiveDate" type="date" required />
+          </label>
+        </div>
+        <div id="receiveError" class="form-error" aria-live="polite"></div>
+        <div class="dialog-actions">
+          <button type="button" id="cancelReceiveButton" class="secondary-button">Cancel</button>
+          <button type="submit" class="primary-button">Mark received</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="startFreshDialog" aria-labelledby="startFreshTitle">
+      <div class="dialog-header">
+        <h2 id="startFreshTitle">Start fresh</h2>
+        <button type="button" id="closeStartFreshButton" class="close-button" aria-label="Close">×</button>
+      </div>
+      <p id="startFreshSummary">Checking…</p>
+      <label class="checkbox-inline"><input id="startFreshLists" type="checkbox" checked /> Also delete the suppliers and Ordered by staff in Master Lists</label>
+      <p class="import-hint">This can't be undone. Run the backup job in Render first if you might want any of it back. Logins, Freeport Billing and the Housecall Pro settings are kept.</p>
+      <label class="import-confirm">
+        <span>Type <strong>DELETE ALL</strong> to confirm</span>
+        <input id="startFreshConfirmation" type="text" autocomplete="off" />
+      </label>
+      <p id="startFreshError" class="form-error" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancelStartFreshButton" class="secondary-button">Cancel</button>
+        <button type="button" id="applyStartFreshButton" class="primary-button" disabled>Delete everything</button>
       </div>
     </dialog>
 

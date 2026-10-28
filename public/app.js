@@ -22,7 +22,8 @@ const state = {
   editingProgress: null,
   progressFromHcp: false,
   showFinishedJobs: false,
-  sheetImport: null,
+  receiving: null,
+  hcpLookups: 0,
   undo: null,
   undoTimer: null,
   connectionState: 'live',
@@ -91,27 +92,32 @@ const elements = {
   progressScheduleNote: document.getElementById('progressScheduleNote'),
   progressCompleted: document.getElementById('progressCompleted'),
   progressCompletedDate: document.getElementById('progressCompletedDate'),
-  progressInvoiced: document.getElementById('progressInvoiced'),
-  progressInvoiceReference: document.getElementById('progressInvoiceReference'),
   progressJobHint: document.getElementById('progressJobHint'),
   progressError: document.getElementById('progressError'),
-  sheetImportDialog: document.getElementById('sheetImportDialog'),
-  sheetImportFile: document.getElementById('sheetImportFile'),
-  sheetImportError: document.getElementById('sheetImportError'),
-  sheetImportPreview: document.getElementById('sheetImportPreview'),
-  sheetImportSummary: document.getElementById('sheetImportSummary'),
-  sheetImportWord: document.getElementById('sheetImportWord'),
-  sheetImportConfirmation: document.getElementById('sheetImportConfirmation'),
-  previewSheetImportButton: document.getElementById('previewSheetImportButton'),
+  hcpFillStatus: document.getElementById('hcpFillStatus'),
+  draftHcpFillStatus: document.getElementById('draftHcpFillStatus'),
+  receiveDialog: document.getElementById('receiveDialog'),
+  receiveForm: document.getElementById('receiveForm'),
+  receiveCustomer: document.getElementById('receiveCustomer'),
+  receiveShopLocation: document.getElementById('receiveShopLocation'),
+  receiveDate: document.getElementById('receiveDate'),
+  receiveError: document.getElementById('receiveError'),
+  startFreshDialog: document.getElementById('startFreshDialog'),
+  startFreshSummary: document.getElementById('startFreshSummary'),
+  startFreshLists: document.getElementById('startFreshLists'),
+  startFreshConfirmation: document.getElementById('startFreshConfirmation'),
+  startFreshError: document.getElementById('startFreshError'),
+  applyStartFreshButton: document.getElementById('applyStartFreshButton'),
+  hcpJobTypesSection: document.getElementById('hcpJobTypesSection'),
+  hcpJobTypesList: document.getElementById('hcpJobTypesList'),
+  saveHcpJobTypesButton: document.getElementById('saveHcpJobTypesButton'),
   hcpStatusText: document.getElementById('hcpStatusText'),
   hcpWebhookUrl: document.getElementById('hcpWebhookUrl'),
   hcpRecentEvents: document.getElementById('hcpRecentEvents'),
   hcpSyncButton: document.getElementById('hcpSyncButton'),
-  applySheetImportButton: document.getElementById('applySheetImportButton'),
   draftCustomerName: document.getElementById('draftCustomerName'),
   draftHousecallJobNumber: document.getElementById('draftHousecallJobNumber'),
   draftHousecallJobLink: document.getElementById('draftHousecallJobLink'),
-  draftHcpJobId: document.getElementById('draftHcpJobId'),
   draftDepositStatus: document.getElementById('draftDepositStatus'),
   draftNotes: document.getElementById('draftNotes'),
   jobDraftList: document.getElementById('jobDraftList'),
@@ -367,15 +373,27 @@ function bindEvents() {
     renderJobDrafts();
   });
 
-  document.getElementById('openSheetImportButton').addEventListener('click', openSheetImport);
-  for (const id of ['closeSheetImportButton', 'cancelSheetImportButton']) document.getElementById(id).addEventListener('click', () => elements.sheetImportDialog.close());
-  elements.previewSheetImportButton.addEventListener('click', previewSheetImport);
-  elements.sheetImportFile.addEventListener('change', resetSheetImportPreview);
-  elements.sheetImportDialog.addEventListener('change', (event) => {
-    if (event.target.name === 'sheetImportMode') syncSheetImportConfirmation();
+  elements.receiveForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await saveReceive();
   });
-  elements.sheetImportConfirmation.addEventListener('input', syncSheetImportConfirmation);
-  elements.applySheetImportButton.addEventListener('click', applySheetImport);
+  for (const id of ['closeReceiveButton', 'cancelReceiveButton']) document.getElementById(id).addEventListener('click', () => elements.receiveDialog.close());
+
+  // Paste an HCP job link (or type its job #) and the form fills itself in.
+  for (const [kind, linkId, numberId] of [['order', 'housecallJobLink', 'housecallJobNumber'], ['draft', 'draftHousecallJobLink', 'draftHousecallJobNumber']]) {
+    const link = document.getElementById(linkId);
+    link.addEventListener('change', () => fillFromHousecallPro(kind, link.value));
+    link.addEventListener('paste', () => setTimeout(() => fillFromHousecallPro(kind, link.value), 0));
+    document.getElementById(numberId).addEventListener('change', (event) => {
+      if (!String(link.value || '').trim()) fillFromHousecallPro(kind, event.target.value);
+    });
+  }
+
+  document.getElementById('openStartFreshButton').addEventListener('click', openStartFresh);
+  for (const id of ['closeStartFreshButton', 'cancelStartFreshButton']) document.getElementById(id).addEventListener('click', () => elements.startFreshDialog.close());
+  elements.startFreshConfirmation.addEventListener('input', syncStartFresh);
+  elements.applyStartFreshButton.addEventListener('click', applyStartFresh);
+  elements.saveHcpJobTypesButton.addEventListener('click', saveHcpJobTypes);
   elements.dismissUndoButton.addEventListener('click', hideUndo);
 
   elements.groupFilter.addEventListener('change', (event) => {
@@ -580,11 +598,6 @@ function bindEvents() {
 
     if (action === 'mark-complete') {
       await markJobComplete(order);
-      return;
-    }
-
-    if (action === 'mark-invoiced') {
-      await markJobInvoiced(order);
       return;
     }
 
@@ -1114,7 +1127,7 @@ function renderOrders() {
   renderQueueVisibility();
 }
 
-const STAGE_LABELS = { ordered: 'Ordered', overdue: 'Overdue', received: 'Received', scheduled: 'Scheduled', complete: 'Complete', invoiced: 'Invoiced' };
+const STAGE_LABELS = { ordered: 'Ordered', overdue: 'Overdue', received: 'Received', scheduled: 'Scheduled', complete: 'Complete' };
 
 function stageOf(order) {
   if (STAGE_LABELS[order.stage]) return order.stage;
@@ -1135,22 +1148,19 @@ function orderStatusBadge(order) {
   return `<span class="status-badge ${stage}">${escapeHtml(label)}</span>${warning}${hcpStatusLine(order)}`;
 }
 
-const HCP_LABELS = { unscheduled: 'Needs scheduling', scheduled: 'Scheduled', in_progress: 'In progress', completed: 'Complete', canceled: 'Canceled' };
+const HCP_LABELS = { unscheduled: 'Needs scheduling', scheduled: 'Scheduled', completed: 'Complete' };
 
 // What Housecall Pro says about the job, under the tracker's own step.
 function hcpStatusLine(order) {
   const hcp = order.hcp;
-  if (!hcp) return '';
-  const parts = [HCP_LABELS[hcp.status] || 'Linked'];
-  if (hcp.status === 'scheduled' && hcp.scheduled_date) parts[0] = `Scheduled ${formatDate(hcp.scheduled_date)}`;
-  if (hcp.assigned && ['scheduled', 'in_progress'].includes(hcp.status)) parts.push(hcp.assigned);
-  if (hcp.paid) parts.push('Paid');
-  else if (hcp.invoice_sent) parts.push('Invoice sent');
-  return `<span class="hcp-status ${hcp.status === 'canceled' ? 'canceled' : ''}">HCP: ${escapeHtml(parts.join(' · '))}</span>`;
+  if (!hcp || !HCP_LABELS[hcp.status]) return '';
+  const label = hcp.status === 'scheduled' && hcp.scheduled_date ? `Scheduled ${formatDate(hcp.scheduled_date)}` : HCP_LABELS[hcp.status];
+  return `<span class="hcp-status">HCP: ${escapeHtml(label)}</span>`;
 }
 
+// Complete is the last step: nothing more to do in the tracker.
 function nextStep(order) {
-  if (Number(order.job_completed)) return Number(order.invoiced) ? null : { action: 'mark-invoiced', label: 'Mark invoiced' };
+  if (Number(order.job_completed)) return null;
   if (!order.date_received) return { action: 'mark-received', label: 'Mark received' };
   // Linked jobs are scheduled and finished in Housecall Pro, which updates the tracker.
   if (order.hcp && order.hcp.status !== 'canceled') {
@@ -1181,11 +1191,11 @@ function renderOrderRow(order) {
   return `
     <tr class="${order.is_overdue ? 'overdue' : ''}">
       <td><strong>${escapeHtml(order.customer_name)}</strong></td>
+      <td>${escapeHtml(order.po_number || '—')}</td>
       <td>${escapeHtml(order.category || 'Unassigned')}</td>
       <td class="nowrap">${jobNumberHtml(order)}</td>
       <td>${escapeHtml(order.supplier || '—')}</td>
       <td>${escapeHtml(order.ordered_by || '—')}</td>
-      <td class="nowrap">${escapeHtml(order.po_number || '—')}</td>
       <td class="nowrap">${formatDate(order.date_ordered)}</td>
       <td class="nowrap">${order.expected_delivery_date ? formatDate(order.expected_delivery_date) : 'No ETA'}</td>
       <td class="nowrap">${order.date_received ? formatDate(order.date_received) : '—'}</td>
@@ -1204,8 +1214,7 @@ function renderOrderCard(order) {
   const when = [
     received ? `Received ${formatDate(order.date_received)}` : order.expected_delivery_date ? `ETA ${formatDate(order.expected_delivery_date)}` : 'No ETA',
     order.shop_location ? `Shop ${escapeHtml(order.shop_location)}` : '',
-    order.housecall_job_number || order.housecall_job_link ? `Job ${jobNumberHtml(order)}` : '',
-    order.po_number ? `PO ${escapeHtml(order.po_number)}` : ''
+    order.housecall_job_number || order.housecall_job_link ? `Job ${jobNumberHtml(order)}` : ''
   ].filter(Boolean).join(' · ');
   const notes = String(order.notes || '').trim();
   return `
@@ -1214,7 +1223,7 @@ function renderOrderCard(order) {
         <h3>${escapeHtml(order.customer_name)}</h3>
         <div class="order-card-status">${orderStatusBadge(order)}</div>
       </div>
-      <p class="order-card-line">${escapeHtml(order.supplier || '—')} · ${escapeHtml(order.category || 'Unassigned')}${order.ordered_by ? ` · ${escapeHtml(order.ordered_by)}` : ''}</p>
+      <p class="order-card-line">${escapeHtml(order.supplier || '—')}${order.po_number ? ` · PO ${escapeHtml(order.po_number)}` : ''} · ${escapeHtml(order.category || 'Unassigned')}${order.ordered_by ? ` · ${escapeHtml(order.ordered_by)}` : ''}</p>
       <p class="order-card-line muted">${when}</p>
       ${order.schedule_note ? `<p class="order-card-line schedule-note">${escapeHtml(order.schedule_note)}</p>` : ''}
       ${notes ? `<button type="button" class="order-card-notes" data-action="view-notes" data-id="${id}">${escapeHtml(notes)}</button>` : ''}
@@ -1233,6 +1242,7 @@ function renderCondensedOrders() {
     const notes = order.notes || '—';
     return `<tr class="${order.is_overdue ? 'overdue' : ''}">
       <td class="condensed-customer" title="${escapeAttr(order.customer_name)}"><strong>${escapeHtml(order.customer_name)}</strong></td>
+      <td class="condensed-supplier" title="${escapeAttr(order.po_number || '')}">${escapeHtml(order.po_number || '—')}</td>
       <td>${jobNumberHtml(order)}</td>
       <td>${escapeHtml(order.category || 'Unassigned')}</td>
       <td class="condensed-supplier" title="${escapeAttr(order.supplier || '')}">${escapeHtml(order.supplier || '—')}</td>
@@ -1347,6 +1357,7 @@ function openOrderDialog(order = null, draft = null) {
   elements.orderId.value = '';
   elements.orderUpdatedAt.value = '';
   elements.jobDraftId.value = '';
+  elements.hcpFillStatus.textContent = '';
   state.editingOrder = order;
   elements.categorySelect.value = '';
   elements.orderedBySelect.value = '';
@@ -1361,12 +1372,14 @@ function openOrderDialog(order = null, draft = null) {
     document.getElementById('customerName').value = draft.customer_name || '';
     document.getElementById('housecallJobNumber').value = draft.housecall_job_number || '';
     document.getElementById('housecallJobLink').value = draft.housecall_job_link || '';
+    document.getElementById('housecallJobLink').dataset.lookedUp = draft.housecall_job_link || '';
     elements.dialogTitle.textContent = `Order materials for ${draft.customer_name}`;
     elements.dialog.showModal();
     return;
   }
 
   if (!order) {
+    document.getElementById('housecallJobLink').dataset.lookedUp = '';
     elements.dialogTitle.textContent = 'Add order';
     elements.dialog.showModal();
     return;
@@ -1380,6 +1393,7 @@ function openOrderDialog(order = null, draft = null) {
   elements.categorySelect.value = order.category || '';
   document.getElementById('housecallJobNumber').value = order.housecall_job_number || '';
   document.getElementById('housecallJobLink').value = order.housecall_job_link || '';
+  document.getElementById('housecallJobLink').dataset.lookedUp = order.housecall_job_link || '';
   const supplierSelect = document.getElementById('supplierInput');
   const supplierValue = order.supplier_id || order.supplier || '';
   if (supplierValue && !Array.from(supplierSelect.options).some(option => option.value === supplierValue)) supplierSelect.add(new Option(order.supplier, supplierValue));
@@ -1409,6 +1423,8 @@ function openDraftDialog(draft = null) {
   elements.draftId.value = '';
   elements.draftUpdatedAt.value = '';
   elements.draftDepositStatus.value = 'Awaiting deposit';
+  elements.draftHcpFillStatus.textContent = '';
+  elements.draftHousecallJobLink.dataset.lookedUp = draft?.housecall_job_link || '';
   state.editingDraft = draft;
 
   if (!draft) {
@@ -1423,7 +1439,6 @@ function openDraftDialog(draft = null) {
   elements.draftCustomerName.value = draft.customer_name || '';
   elements.draftHousecallJobNumber.value = draft.housecall_job_number || '';
   elements.draftHousecallJobLink.value = draft.housecall_job_link || '';
-  elements.draftHcpJobId.value = draft.hcp_job_id || '';
   elements.draftDepositStatus.value = draft.deposit_status || 'Awaiting deposit';
   elements.draftNotes.value = draft.notes || '';
   elements.draftDialog.showModal();
@@ -1439,7 +1454,6 @@ function draftPayload(draft) {
     customer_name: draft.customer_name || '',
     housecall_job_number: draft.housecall_job_number || '',
     housecall_job_link: draft.housecall_job_link || '',
-    hcp_job_id: draft.hcp_job_id || '',
     deposit_status: draft.deposit_status || 'Awaiting deposit',
     notes: draft.notes || '',
     status: draft.status || 'Open'
@@ -1451,7 +1465,6 @@ async function saveDraft() {
     customer_name: elements.draftCustomerName.value,
     housecall_job_number: elements.draftHousecallJobNumber.value,
     housecall_job_link: elements.draftHousecallJobLink.value,
-    hcp_job_id: elements.draftHcpJobId.value,
     deposit_status: elements.draftDepositStatus.value,
     notes: elements.draftNotes.value
   };
@@ -1612,15 +1625,29 @@ function orderPayload(order) {
   };
 }
 
-async function markReceived(orderId) {
+// Mark received asks where the material sits (and the day, today by default).
+function markReceived(orderId) {
   const order = state.orders.find((entry) => entry.id === orderId);
+  if (!order) return;
+  state.receiving = order;
+  elements.receiveCustomer.textContent = [order.customer_name, order.po_number ? `PO ${order.po_number}` : '', order.supplier].filter(Boolean).join(' · ');
+  elements.receiveShopLocation.value = order.shop_location || '';
+  elements.receiveDate.value = localToday();
+  elements.receiveError.textContent = '';
+  elements.receiveDialog.showModal();
+  elements.receiveShopLocation.focus();
+}
+
+async function saveReceive() {
+  const order = state.receiving;
+  if (!order) return;
   try {
-    // The server fills in today's date in Phoenix.
-    const data = await sendJson(`/api/orders/${orderId}/mark-received`, { updated_at: order?.updated_at });
-    offerUndo(`${order?.customer_name || 'Order'} marked received.`, () => sendJson(`/api/orders/${orderId}/reopen`, { updated_at: data.order.updated_at }));
+    const data = await sendJson(`/api/orders/${order.id}/mark-received`, { date_received: elements.receiveDate.value, shop_location: elements.receiveShopLocation.value, updated_at: order.updated_at });
+    elements.receiveDialog.close();
+    offerUndo(`${order.customer_name} marked received.`, () => sendJson(`/api/orders/${order.id}/reopen`, { updated_at: data.order.updated_at, shop_location: order.shop_location || '' }));
     await loadOrders();
   } catch (error) {
-    showStatus(error.message, 'error');
+    elements.receiveError.textContent = error.message;
   }
 }
 
@@ -1642,9 +1669,7 @@ function progressOf(order) {
     scheduled_date: order.scheduled_date || '',
     schedule_note: order.schedule_note || '',
     job_completed: Number(order.job_completed || 0),
-    completed_date: order.completed_date || '',
-    invoiced: Number(order.invoiced || 0),
-    invoice_reference: order.invoice_reference || ''
+    completed_date: order.completed_date || ''
   };
 }
 
@@ -1663,14 +1688,6 @@ async function markJobComplete(order) {
   }
 }
 
-async function markJobInvoiced(order) {
-  try {
-    await saveProgress(order, { ...progressOf(order), invoiced: 1 }, `${order.customer_name} marked invoiced`);
-  } catch (error) {
-    showStatus(error.message, 'error');
-  }
-}
-
 function openProgressDialog(order, focus = '') {
   const values = progressOf(order);
   if (focus === 'schedule') values.job_scheduled = 1;
@@ -1682,8 +1699,6 @@ function openProgressDialog(order, focus = '') {
   elements.progressScheduleNote.value = values.schedule_note;
   elements.progressCompleted.checked = Boolean(values.job_completed);
   elements.progressCompletedDate.value = values.completed_date;
-  elements.progressInvoiced.checked = Boolean(values.invoiced);
-  elements.progressInvoiceReference.value = values.invoice_reference;
   const fromHcp = Boolean(order.hcp && order.hcp.status !== 'canceled');
   elements.progressJobHint.textContent = fromHcp ? 'Scheduled and complete come from Housecall Pro; change them there.' : '';
   elements.progressError.textContent = '';
@@ -1712,122 +1727,13 @@ async function saveProgressDialog() {
     scheduled_date: elements.progressScheduledDate.value,
     schedule_note: elements.progressScheduleNote.value,
     job_completed: elements.progressCompleted.checked ? 1 : 0,
-    completed_date: elements.progressCompletedDate.value,
-    invoiced: elements.progressInvoiced.checked ? 1 : 0,
-    invoice_reference: elements.progressInvoiceReference.value
+    completed_date: elements.progressCompletedDate.value
   };
   try {
     await saveProgress(order, values, 'Job progress saved');
     elements.progressDialog.close();
   } catch (error) {
     elements.progressError.textContent = error.message;
-  }
-}
-
-function openSheetImport() {
-  state.sheetImport = null;
-  elements.sheetImportFile.value = '';
-  elements.sheetImportError.textContent = '';
-  elements.sheetImportPreview.classList.add('hidden');
-  elements.sheetImportDialog.querySelectorAll('input[name="sheetImportMode"]').forEach((input) => { input.checked = false; });
-  elements.sheetImportConfirmation.value = '';
-  syncSheetImportConfirmation();
-  elements.sheetImportDialog.showModal();
-}
-
-// A different file, or a new preview, needs its own preview and confirmation.
-function resetSheetImportPreview() {
-  state.sheetImport = null;
-  elements.sheetImportConfirmation.value = '';
-  elements.sheetImportPreview.classList.add('hidden');
-  syncSheetImportConfirmation();
-}
-
-async function previewSheetImport() {
-  const file = elements.sheetImportFile.files?.[0];
-  elements.sheetImportError.textContent = '';
-  resetSheetImportPreview();
-  if (!file) {
-    elements.sheetImportError.textContent = 'Choose the downloaded .xlsx file first.';
-    return;
-  }
-  elements.previewSheetImportButton.disabled = true;
-  elements.previewSheetImportButton.textContent = 'Reading…';
-  try {
-    const response = await fetch('/api/admin/sheet-import/preview', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || 'Unable to read the sheet.');
-    state.sheetImport = data;
-    renderSheetImportPreview(data);
-  } catch (error) {
-    elements.sheetImportError.textContent = error.message;
-  } finally {
-    elements.previewSheetImportButton.disabled = false;
-    elements.previewSheetImportButton.textContent = 'Preview';
-  }
-}
-
-function renderSheetImportPreview(data) {
-  const stage = order => !order.date_received ? 'ordered' : order.job_completed ? (order.invoiced ? 'invoiced' : 'complete') : order.job_scheduled ? 'scheduled' : 'received';
-  const counts = { ordered: 0, received: 0, scheduled: 0, complete: 0, invoiced: 0 };
-  data.orders.forEach(order => { counts[stage(order)] += 1; });
-  const names = list => list.map(item => `${escapeHtml(item.name)}${item.existing ? '' : ' <small>(new)</small>'}`).join(', ');
-  const skippedReasons = data.skipped.reduce((all, row) => ({ ...all, [row.reason]: (all[row.reason] || 0) + 1 }), {});
-  const withJobNumber = data.orders.filter(order => order.housecall_job_number).length;
-  elements.sheetImportSummary.innerHTML = `
-    <p><strong>${data.orders.length} orders</strong> will come in: ${data.tabs.map(tab => `${tab.imported} from ${escapeHtml(tab.name)}`).join(', ')}.</p>
-    <ul class="import-stages">
-      <li>${counts.ordered} not received yet</li>
-      <li>${counts.received} received, not scheduled</li>
-      <li>${counts.scheduled} scheduled</li>
-      <li>${counts.complete} complete, need invoice</li>
-    </ul>
-    ${data.skipped.length ? `<p>${data.skipped.length} rows left out: ${Object.entries(skippedReasons).map(([reason, count]) => `${count} ${escapeHtml(reason.toLowerCase())}`).join(', ')}.</p>` : ''}
-    <p><strong>Suppliers:</strong> ${names(data.suppliers)}</p>
-    <p><strong>Ordered by:</strong> ${names(data.staff)}. These are the initials from the sheet; rename them to full names under Ordered By staff afterwards.</p>
-    <p><strong>Check after importing:</strong></p>
-    <ul>
-      <li>Received dates are estimated, because the sheet only has a Received box.</li>
-      <li>The glass tab is filed under Showers (Arcadia under Storefront). Change any that should be Flat Glass or Storefront.</li>
-      <li>${withJobNumber} orders got their Housecall Pro job number from the invoice column.</li>
-    </ul>
-    <p class="import-current">The tracker has ${data.current.orders} orders, ${data.current.jobs} approved jobs, ${data.current.suppliers} suppliers and ${data.current.staff} staff right now.</p>
-    <details>
-      <summary>See all ${data.orders.length} orders</summary>
-      <div class="import-table-wrap"><table>
-        <thead><tr><th>Customer</th><th>Supplier</th><th>Category</th><th>Ordered</th><th>Step</th></tr></thead>
-        <tbody>${data.orders.map(order => `<tr><td>${escapeHtml(order.customer_name)}</td><td>${escapeHtml(order.supplier)}</td><td>${escapeHtml(order.category)}</td><td>${formatDate(order.date_ordered)}</td><td>${STAGE_LABELS[stage(order)]}</td></tr>`).join('')}</tbody>
-      </table></div>
-    </details>`;
-  elements.sheetImportPreview.classList.remove('hidden');
-  syncSheetImportConfirmation();
-}
-
-function sheetImportMode() {
-  return elements.sheetImportDialog.querySelector('input[name="sheetImportMode"]:checked')?.value || '';
-}
-
-function syncSheetImportConfirmation() {
-  const mode = sheetImportMode();
-  const word = mode === 'replace' ? 'REPLACE' : 'IMPORT';
-  elements.sheetImportWord.textContent = word;
-  elements.applySheetImportButton.disabled = !state.sheetImport || !mode || elements.sheetImportConfirmation.value.trim() !== word;
-}
-
-async function applySheetImport() {
-  const mode = sheetImportMode();
-  elements.applySheetImportButton.disabled = true;
-  elements.sheetImportError.textContent = '';
-  try {
-    const result = await sendJson('/api/admin/sheet-import/apply', { token: state.sheetImport.token, mode, confirmation: elements.sheetImportConfirmation.value.trim() });
-    elements.sheetImportDialog.close();
-    elements.masterListsDialog.close();
-    state.sheetImport = null;
-    await Promise.all([loadSuppliers(), loadMasterLists(), loadJobDrafts(), loadOrders()]);
-    showStatus(`Imported ${result.orders} orders from the sheet${result.duplicates ? ` (${result.duplicates} already in the tracker were skipped)` : ''}. Added ${result.suppliers_added} suppliers and ${result.staff_added} staff.`, 'success');
-  } catch (error) {
-    elements.sheetImportError.textContent = error.message;
-    syncSheetImportConfirmation();
   }
 }
 
@@ -1860,10 +1766,13 @@ function renderHcpStatus(status) {
       `${status.linked_jobs} linked ${status.linked_jobs === 1 ? 'job' : 'jobs'}`,
       `last webhook ${formatDateTime(status.last_event_at)}`,
       `last sync ${formatDateTime(status.last_sync_at)}${sync ? ` (${sync.jobs_refreshed} refreshed, ${sync.jobs_found_by_number} found by job number, ${sync.numbers_not_found} job numbers not found)` : ''}`,
+      `tags and notes in HCP ${!status.writes ? 'off' : status.last_write_error ? `not working: ${status.last_write_error}` : 'on'}`,
       status.last_error ? `last problem: ${status.last_error}` : ''
     ].filter(Boolean).join(' · ');
   }
   elements.hcpSyncButton.disabled = !status.api;
+  if (status.api) loadHcpJobTypes();
+  else elements.hcpJobTypesSection.classList.add('hidden');
   elements.hcpRecentEvents.innerHTML = (status.recent_events || []).map(event => `<li>${escapeHtml(formatDateTime(event.received_at))} · ${escapeHtml(event.event)} · ${escapeHtml(event.outcome)}</li>`).join('');
 }
 
@@ -1879,6 +1788,130 @@ async function syncHousecallPro() {
   } finally {
     elements.hcpSyncButton.textContent = 'Sync with Housecall Pro now';
     await loadHcpStatus();
+  }
+}
+
+// Paste an HCP job link (or type its job #) and fill in what HCP knows. Only
+// empty boxes are filled, so nothing typed is overwritten.
+async function fillFromHousecallPro(kind, value) {
+  const order = kind === 'order';
+  const link = document.getElementById(order ? 'housecallJobLink' : 'draftHousecallJobLink');
+  const status = order ? elements.hcpFillStatus : elements.draftHcpFillStatus;
+  const query = String(value || '').trim();
+  if (!query) {
+    status.textContent = '';
+    return;
+  }
+  if (link.dataset.lookedUp === query) return;
+  link.dataset.lookedUp = query;
+  const lookup = ++state.hcpLookups;
+  status.textContent = 'Looking up the job in Housecall Pro…';
+  let data;
+  try {
+    const response = await fetch(`/api/hcp/lookup?q=${encodeURIComponent(query)}`);
+    data = await response.json().catch(() => ({}));
+    if (lookup !== state.hcpLookups) return;
+    if (!response.ok) {
+      status.textContent = response.status === 503 ? "Housecall Pro isn't connected yet, so nothing was filled in." : (data.error || "Couldn't look up that job.");
+      return;
+    }
+  } catch {
+    if (lookup === state.hcpLookups) status.textContent = "Couldn't reach Housecall Pro.";
+    return;
+  }
+  const job = data.job;
+  const filled = [];
+  const fill = (id, text, label) => {
+    const input = document.getElementById(id);
+    if (text && !String(input.value || '').trim()) {
+      input.value = text;
+      filled.push(label);
+    }
+  };
+  // A job number typed in the link box is replaced by the job's link.
+  if (!/^https?:\/\//i.test(String(link.value || ''))) {
+    link.value = job.url;
+    link.dataset.lookedUp = job.url;
+  }
+  fill(order ? 'customerName' : 'draftCustomerName', job.customer_name, 'customer');
+  fill(order ? 'housecallJobNumber' : 'draftHousecallJobNumber', job.invoice_number, 'job #');
+  if (order && job.category && !elements.categorySelect.value) {
+    elements.categorySelect.value = job.category;
+    filled.push('category');
+  }
+  fill(order ? 'notes' : 'draftNotes', job.notes, 'notes');
+  status.textContent = [
+    filled.length ? `Filled in from Housecall Pro: ${filled.join(', ')}.` : 'Found the job in Housecall Pro.',
+    job.attachments ? `It has ${job.attachments} ${job.attachments === 1 ? 'photo or file' : 'photos or files'} in HCP.` : ''
+  ].filter(Boolean).join(' ');
+}
+
+const CATEGORY_CHOICES = ['Windows', 'Flat Glass', 'Showers', 'Storefront'];
+
+async function loadHcpJobTypes() {
+  try {
+    const response = await fetch('/api/hcp/job-types');
+    if (!response.ok) {
+      elements.hcpJobTypesSection.classList.add('hidden');
+      return;
+    }
+    renderHcpJobTypes((await response.json()).job_types || []);
+  } catch {
+    elements.hcpJobTypesSection.classList.add('hidden');
+  }
+}
+
+function renderHcpJobTypes(types) {
+  elements.hcpJobTypesSection.classList.toggle('hidden', !types.length);
+  elements.hcpJobTypesList.innerHTML = types.map(type => `<label class="hcp-job-type"><span>${escapeHtml(type.name)}</span><select data-job-type="${escapeAttr(type.id)}"><option value="">No category</option>${CATEGORY_CHOICES.map(category => `<option value="${category}" ${type.category === category ? 'selected' : ''}>${category}${!type.chosen && type.category === category ? ' (suggested)' : ''}</option>`).join('')}</select></label>`).join('');
+}
+
+async function saveHcpJobTypes() {
+  const categories = Object.fromEntries(Array.from(elements.hcpJobTypesList.querySelectorAll('select[data-job-type]'), select => [select.dataset.jobType, select.value]));
+  try {
+    await sendJson('/api/hcp/job-types', { categories }, 'PUT');
+    elements.saveHcpJobTypesButton.textContent = 'Saved';
+    setTimeout(() => { elements.saveHcpJobTypesButton.textContent = 'Save categories'; }, 2000);
+    await loadHcpJobTypes();
+  } catch (error) {
+    elements.saveHcpJobTypesButton.textContent = 'Save categories';
+    showStatus(error.message, 'error');
+  }
+}
+
+async function openStartFresh() {
+  elements.startFreshConfirmation.value = '';
+  elements.startFreshError.textContent = '';
+  elements.startFreshSummary.textContent = 'Checking…';
+  syncStartFresh();
+  elements.startFreshDialog.showModal();
+  try {
+    const response = await fetch('/api/admin/start-fresh');
+    const counts = await response.json();
+    if (!response.ok) throw new Error(counts.error || 'Could not check the tracker.');
+    elements.startFreshSummary.textContent = `The tracker has ${counts.orders} orders, ${counts.jobs} approved jobs, ${counts.suppliers} suppliers and ${counts.staff} Ordered by staff.`;
+  } catch (error) {
+    elements.startFreshSummary.textContent = error.message;
+  }
+}
+
+function syncStartFresh() {
+  elements.applyStartFreshButton.disabled = String(elements.startFreshConfirmation.value || '').trim() !== 'DELETE ALL';
+}
+
+async function applyStartFresh() {
+  elements.applyStartFreshButton.disabled = true;
+  elements.startFreshError.textContent = '';
+  try {
+    const { deleted } = await sendJson('/api/admin/start-fresh', { confirmation: String(elements.startFreshConfirmation.value || '').trim(), include_lists: Boolean(elements.startFreshLists.checked) });
+    elements.startFreshConfirmation.value = '';
+    elements.startFreshDialog.close();
+    elements.masterListsDialog.close();
+    await Promise.all([loadSuppliers(), loadMasterLists(), loadJobDrafts(), loadOrders()]);
+    showStatus(`Started fresh: deleted ${deleted.orders} orders and ${deleted.jobs} approved jobs${deleted.suppliers || deleted.staff ? `, ${deleted.suppliers} suppliers and ${deleted.staff} staff` : ''}.`, 'success');
+  } catch (error) {
+    elements.startFreshError.textContent = error.message;
+    syncStartFresh();
   }
 }
 

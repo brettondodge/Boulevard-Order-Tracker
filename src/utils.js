@@ -74,17 +74,16 @@ export function isOrderOverdue(order) {
 }
 
 // Furthest step an order has reached: ordered (or overdue), received,
-// scheduled, complete, invoiced. A finished job counts as finished even if
-// this order's Received box was never ticked. A job billed up front still
-// has to be scheduled and done, so invoiced only counts once it is complete.
+// scheduled, complete. Complete is the last step (done), even if this
+// order's Received box was never ticked.
 export function orderStage(order) {
-  if (Number(order.job_completed)) return Number(order.invoiced) ? 'invoiced' : 'complete';
+  if (Number(order.job_completed)) return 'complete';
   if (!order.date_received) return isOrderOverdue({ ...order, status: 'Ordered' }) ? 'overdue' : 'ordered';
   if (Number(order.job_scheduled)) return 'scheduled';
   return 'received';
 }
 
-export const PROGRESS_FIELDS = ['job_scheduled', 'scheduled_date', 'schedule_note', 'job_completed', 'completed_date', 'invoiced', 'invoice_reference'];
+export const PROGRESS_FIELDS = ['job_scheduled', 'scheduled_date', 'schedule_note', 'job_completed', 'completed_date'];
 
 // Job progress from a request. Marking a job complete without a date uses
 // today, unless restoring saved values exactly (fillCompletedDate: false).
@@ -97,9 +96,7 @@ export function normalizeProgressInput(payload = {}, { fillCompletedDate = true 
     scheduled_date: scheduled ? normalizeDate(payload.scheduled_date) : '',
     schedule_note: normalizeText(payload.schedule_note),
     job_completed: completed,
-    completed_date: completed ? (normalizeDate(payload.completed_date) || (fillCompletedDate ? todayPhoenixString() : '')) : '',
-    invoiced: flag(payload.invoiced),
-    invoice_reference: normalizeText(payload.invoice_reference)
+    completed_date: completed ? (normalizeDate(payload.completed_date) || (fillCompletedDate ? todayPhoenixString() : '')) : ''
   };
 }
 

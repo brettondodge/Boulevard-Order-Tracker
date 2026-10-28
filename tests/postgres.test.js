@@ -11,7 +11,6 @@ import pg from 'pg';
 import Database from 'better-sqlite3';
 import { generateKeyPair, exportJWK, SignJWT } from 'jose';
 import { recordFingerprint } from '../src/record-fingerprint.js';
-import { syntheticOrderSheet } from './sheet-fixture.js';
 import { signWebhook, syntheticHcpJob } from './hcp-fake.js';
 
 // Uses a fresh temporary cluster and synthetic records only. No provider credentials.
@@ -221,14 +220,17 @@ test('real Postgres production access, orders, admin gate and restart persistenc
     assert.equal((await request('/api/hcp/status')).body.linked_jobs, 1);
     // Other paths still need Cloudflare Access.
     assert.equal((await fetch('http://127.0.0.1:4209/api/hcp/status', { headers: { Host: 'tools.blvdglass.com' } })).status, 403);
-    const sheetPreview = await fetch('http://127.0.0.1:4209/api/admin/sheet-import/preview', { method: 'POST', headers: { Host: 'tools.blvdglass.com', 'X-Forwarded-Host': 'tools.blvdglass.com', 'X-Forwarded-Proto': 'https', 'Cf-Access-Jwt-Assertion': token, 'Content-Type': 'application/octet-stream', Cookie: cookie }, body: await syntheticOrderSheet() }).then(response => response.json());
-    assert.equal(sheetPreview.orders.length, 7);
-    const sheetImport = await request('/api/admin/sheet-import/apply', { token: sheetPreview.token, mode: 'replace', confirmation: 'REPLACE' });
-    assert.equal(sheetImport.status, 200);
-    assert.equal(Number((await pool.query('SELECT count(*) FROM orders')).rows[0].count), 7);
+    // Start fresh empties the tracker in one Postgres transaction; Freeport,
+    // logins and (here) Master Lists stay.
+    const suppliersBefore = Number((await pool.query('SELECT count(*) FROM suppliers')).rows[0].count);
+    const fresh = await request('/api/admin/start-fresh', { confirmation: 'DELETE ALL', include_lists: false });
+    assert.equal(fresh.status, 200);
+    assert.ok(fresh.body.deleted.orders >= 3);
+    assert.equal(Number((await pool.query('SELECT count(*) FROM orders')).rows[0].count), 0);
     assert.equal(Number((await pool.query('SELECT count(*) FROM job_drafts')).rows[0].count), 0);
-    assert.equal(Number((await pool.query("SELECT count(*) FROM orders WHERE created_by = 'staff@example.test' AND invoiced = 1")).rows[0].count), 1);
-    assert.equal(Number((await pool.query('SELECT count(*) FROM freeport_invoices')).rows[0].count), 1, 'Freeport is not touched by a replace');
+    assert.equal(Number((await pool.query('SELECT count(*) FROM hcp_jobs')).rows[0].count), 0);
+    assert.equal(Number((await pool.query('SELECT count(*) FROM suppliers')).rows[0].count), suppliersBefore);
+    assert.equal(Number((await pool.query('SELECT count(*) FROM freeport_invoices')).rows[0].count), 1, 'Freeport is not touched by Start fresh');
     await stop();
     await cluster.createDatabase('import_test');
     const sqliteFile = path.join(directory, 'synthetic.db');

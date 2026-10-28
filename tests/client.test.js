@@ -9,7 +9,8 @@ function client(fetch) {
     if (!nodes.has(id)) {
       const classes = new Set();
       nodes.set(id, {
-        listeners: {}, attributes: {}, dataset: {}, style: {}, offsetWidth: 150, offsetHeight: 90,
+        listeners: {}, attributes: {}, dataset: {}, style: {}, offsetWidth: 150, offsetHeight: 90, options: [], selectedOptions: [],
+        add() {},
         showPopover() { this.open = true; },
         hidePopover() { this.open = false; },
         showModal() { this.open = true; },
@@ -42,6 +43,7 @@ function client(fetch) {
     deleteDraft = async id => calls.push(['delete-draft', id]);
     completeDraft = async id => calls.push(['complete-draft', id]);
     reopenDraft = async id => calls.push(['reopen-draft', id]);
+    const originalMarkReceived = markReceived;
     markReceived = async id => calls.push(['mark-received', id]);
     deleteOrder = async id => calls.push(['delete-order', id]);
     reopenOrder = async id => calls.push(['reopen', id]);
@@ -50,7 +52,7 @@ function client(fetch) {
     renderOrders = () => calls.push(['render', state.orders[0]?.id]);
     renderQueueVisibility = () => {};
     showStatus = message => errors.push(message);
-    globalThis.tracker = { state, bindEvents, loadOrders, renderJobDrafts, openDraftActionsMenu, renderCondensedOrders, renderOrderNotesPreview, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility, originalRenderOrders, offerUndo, runUndo, renderSupplierFilterOptions, formatDate, orderStatusBadge, nextStep, openProgressDialog, saveProgressDialog, markJobComplete, renderSheetImportPreview, syncSheetImportConfirmation, renderHcpStatus };
+    globalThis.tracker = { state, bindEvents, loadOrders, renderJobDrafts, openDraftActionsMenu, renderCondensedOrders, renderOrderNotesPreview, renderDesktopOrderActions, openDesktopOrderMenu, updateLayoutMode, originalQueueVisibility, originalRenderOrders, offerUndo, runUndo, renderSupplierFilterOptions, formatDate, orderStatusBadge, nextStep, openProgressDialog, saveProgressDialog, markJobComplete, renderHcpStatus, renderHcpJobTypes, fillFromHousecallPro, originalMarkReceived, saveReceive, syncStartFresh, applyStartFresh };
   `, context);
   return { context, node, tracker: context.tracker };
 }
@@ -245,8 +247,8 @@ test('phone cards show three short lines, link only real job URLs and offer edit
   tracker.originalRenderOrders();
   const cards = node('mobileOrderCards').innerHTML;
   assert.match(cards, /Synthetic &lt;Phone&gt;/);
-  assert.match(cards, /Synthetic Supplier · Showers · Synthetic Staff/);
-  assert.match(cards, /ETA Nov 3 · Job <a href="https:\/\/example.com\/job\/7"[^>]*>HC-7<\/a> · PO PO-9/);
+  assert.match(cards, /Synthetic Supplier · PO PO-9 · Showers · Synthetic Staff/);
+  assert.match(cards, /ETA Nov 3 · Job <a href="https:\/\/example.com\/job\/7"[^>]*>HC-7<\/a><\/p>/);
   assert.match(cards, /Bring &lt;ladder&gt;/);
   assert.match(cards, /data-action="mark-received" data-id="phone-order"/);
   assert.match(cards, /data-order-menu="phone-order"/);
@@ -294,17 +296,16 @@ test('supplier filter is a checkbox list: ticking boxes filters, the summary and
   assert.equal(node('filtersToggle').textContent, 'Filters');
 });
 
-test('each order shows its furthest step and offers the next one', () => {
+test('each order shows its furthest step and offers the next one; complete is done', () => {
   const { tracker } = client();
   const base = { id: 'step', customer_name: 'Synthetic Step', status: 'Received', date_received: '2026-10-20' };
   const cases = [
     [{ ...base, status: 'Ordered', date_received: '', stage: 'ordered' }, /Ordered/, 'mark-received'],
     [{ ...base, stage: 'received' }, /Ready to schedule/, 'schedule'],
     [{ ...base, stage: 'scheduled', job_scheduled: 1, scheduled_date: '2026-11-03' }, /Scheduled Nov 3/, 'mark-complete'],
-    [{ ...base, stage: 'complete', job_scheduled: 1, job_completed: 1 }, /Complete/, 'mark-invoiced'],
-    [{ ...base, stage: 'invoiced', job_completed: 1, invoiced: 1 }, /Invoiced/, null],
-    // Billed up front, not done yet: still needs scheduling.
-    [{ ...base, stage: 'received', invoiced: 1 }, /Ready to schedule/, 'schedule']
+    [{ ...base, stage: 'complete', job_scheduled: 1, job_completed: 1 }, /Complete/, null],
+    // A finished job is done even if this order was never ticked received.
+    [{ ...base, status: 'Ordered', date_received: '', stage: 'complete', job_completed: 1 }, /Complete/, null]
   ];
   for (const [order, label, action] of cases) {
     assert.match(tracker.orderStatusBadge(order), label);
@@ -354,58 +355,22 @@ test('job progress window saves the order and undo restores it exactly', async (
   assert.deepEqual(Array.from(context.errors.filter(Boolean)), ['Undone.']);
 });
 
-test('sheet import preview explains what comes in and needs the matching word', () => {
-  const { node, tracker } = client();
-  tracker.state.sheetImport = { token: 't' };
-  tracker.renderSheetImportPreview({
-    token: 't',
-    tabs: [{ name: 'Window Orders', imported: 2 }, { name: 'Glass', imported: 1 }],
-    orders: [
-      { customer_name: 'A <one>', supplier: 'Jeld-Wen', category: 'Windows', date_ordered: '2026-10-01', date_received: '', housecall_job_number: '' },
-      { customer_name: 'B', supplier: 'Andersen', category: 'Windows', date_ordered: '2026-10-02', date_received: '2026-10-09', job_completed: 1, housecall_job_number: '10239422' },
-      { customer_name: 'C', supplier: 'CW', category: 'Showers', date_ordered: '2026-10-03', date_received: '2026-10-09' }
-    ],
-    skipped: [{ reason: 'Complete and billed' }],
-    suppliers: [{ name: 'Jeld-Wen', existing: false }, { name: 'CW', existing: true }],
-    staff: [{ name: 'RD', existing: false }],
-    current: { orders: 322, jobs: 80, suppliers: 104, staff: 3 }
-  });
-  const html = node('sheetImportSummary').innerHTML;
-  assert.match(html, /3 orders<\/strong> will come in: 2 from Window Orders, 1 from Glass/);
-  assert.match(html, /1 not received yet/);
-  assert.match(html, /1 received, not scheduled/);
-  assert.match(html, /1 complete, need invoice/);
-  assert.match(html, /1 rows left out: 1 complete and billed/);
-  assert.match(html, /Jeld-Wen <small>\(new\)<\/small>, CW/);
-  assert.match(html, /1 orders got their Housecall Pro job number/);
-  assert.match(html, /322 orders, 80 approved jobs, 104 suppliers and 3 staff/);
-  assert.match(html, /A &lt;one&gt;/);
-  assert.equal(node('applySheetImportButton').disabled, true);
-  node('sheetImportDialog').checkedRadio = { value: 'replace' };
-  node('sheetImportConfirmation').value = 'IMPORT';
-  tracker.syncSheetImportConfirmation();
-  assert.equal(node('sheetImportWord').textContent, 'REPLACE');
-  assert.equal(node('applySheetImportButton').disabled, true);
-  node('sheetImportConfirmation').value = 'REPLACE';
-  tracker.syncSheetImportConfirmation();
-  assert.equal(node('applySheetImportButton').disabled, false);
-});
-
 test('linked orders show what Housecall Pro says and send scheduling to HCP', async () => {
   const { node, tracker } = client(async () => ({ ok: true, json: async () => ({ orders: [] }) }));
   const url = 'https://pro.housecallpro.com/app/jobs/job_0000000000000000000000000000000a';
-  const base = { id: 'linked', customer_name: 'Synthetic Linked', status: 'Received', date_received: '2026-10-20', stage: 'received', job_ready: true, updated_at: 'v1', housecall_job_number: '10239422', hcp: { job_id: 'job_a', url, status: 'unscheduled', scheduled_date: '', assigned: '', invoice_sent: false, paid: false } };
+  const base = { id: 'linked', customer_name: 'Synthetic Linked', status: 'Received', date_received: '2026-10-20', stage: 'received', updated_at: 'v1', housecall_job_number: '10239422', hcp: { job_id: 'job_a', url, status: 'unscheduled', scheduled_date: '' } };
   assert.match(tracker.orderStatusBadge(base), /HCP: Needs scheduling/);
   assert.deepEqual({ ...tracker.nextStep(base) }, { link: url, label: 'Schedule in HCP', primary: true });
-  const scheduled = { ...base, stage: 'scheduled', job_scheduled: 1, scheduled_date: '2026-11-03', hcp: { ...base.hcp, status: 'scheduled', scheduled_date: '2026-11-03', assigned: 'Synthetic <Tech>' } };
-  assert.match(tracker.orderStatusBadge(scheduled), /HCP: Scheduled Nov 3 · Synthetic &lt;Tech&gt;/);
+  const scheduled = { ...base, stage: 'scheduled', job_scheduled: 1, scheduled_date: '2026-11-03', hcp: { ...base.hcp, status: 'scheduled', scheduled_date: '2026-11-03' } };
+  assert.match(tracker.orderStatusBadge(scheduled), /<span class="hcp-status">HCP: Scheduled Nov 3<\/span>/);
   assert.equal(tracker.nextStep(scheduled).label, 'Open in HCP');
-  const done = { ...scheduled, stage: 'complete', job_completed: 1, hcp: { ...scheduled.hcp, status: 'completed', invoice_sent: true } };
-  assert.match(tracker.orderStatusBadge(done), /HCP: Complete · Invoice sent/);
-  assert.equal(tracker.nextStep(done).action, 'mark-invoiced');
+  const done = { ...scheduled, stage: 'complete', job_completed: 1, hcp: { ...scheduled.hcp, status: 'completed' } };
+  assert.match(tracker.orderStatusBadge(done), /HCP: Complete/);
+  assert.equal(tracker.nextStep(done), null, 'done in HCP means done in the tracker');
+  // Canceled jobs aren't shown and fall back to the tracker's own steps.
   const canceled = { ...base, hcp: { ...base.hcp, status: 'canceled' } };
-  assert.match(tracker.orderStatusBadge(canceled), /class="hcp-status canceled">HCP: Canceled/);
-  assert.equal(tracker.nextStep(canceled).action, 'schedule', 'a canceled HCP job falls back to tracker steps');
+  assert.doesNotMatch(tracker.orderStatusBadge(canceled), /HCP:/);
+  assert.equal(tracker.nextStep(canceled).action, 'schedule');
   assert.equal(tracker.nextStep({ ...base, date_received: '', status: 'Ordered' }).action, 'mark-received');
 
   // In the progress window, HCP owns scheduled and complete.
@@ -421,37 +386,108 @@ test('linked orders show what Housecall Pro says and send scheduling to HCP', as
 
 test('the Housecall Pro panel says what is set up and what is missing', () => {
   const { node, tracker } = client();
-  tracker.renderHcpStatus({ api: false, webhooks: false, linked_jobs: 0, recent_events: [] });
+  tracker.renderHcpStatus({ api: false, webhooks: false, writes: false, linked_jobs: 0, recent_events: [] });
   assert.match(node('hcpStatusText').textContent, /Not connected yet/);
   assert.equal(node('hcpSyncButton').disabled, true);
-  tracker.renderHcpStatus({ api: true, webhooks: false, linked_jobs: 3, last_event_at: '', last_sync_at: '2026-10-26T15:00:00Z', last_sync_summary: { jobs_refreshed: 2, jobs_found_by_number: 1, numbers_not_found: 4 }, last_error: '', recent_events: [{ event: 'job.<scheduled>', outcome: 'applied', received_at: '2026-10-26T15:00:00Z' }] });
+  assert.equal(node('hcpJobTypesSection').classList.contains('hidden'), true);
+  tracker.renderHcpStatus({ api: true, webhooks: false, writes: true, linked_jobs: 3, last_event_at: '', last_sync_at: '2026-10-26T15:00:00Z', last_sync_summary: { jobs_refreshed: 2, jobs_found_by_number: 1, numbers_not_found: 4 }, last_error: '', last_write_error: '2026-10-26 The API key needs Full access to add tags and notes.', recent_events: [{ event: 'job.<scheduled>', outcome: 'applied', received_at: '2026-10-26T15:00:00Z' }] });
   const text = node('hcpStatusText').textContent;
   assert.match(text, /API connected/);
   assert.match(text, /webhooks not set up \(HCP_WEBHOOK_SECRET\)/);
   assert.match(text, /3 linked jobs/);
   assert.match(text, /last webhook never/);
   assert.match(text, /2 refreshed, 1 found by job number, 4 job numbers not found/);
+  assert.match(text, /tags and notes in HCP not working: .*Full access/);
   assert.equal(node('hcpSyncButton').disabled, false);
   assert.match(node('hcpRecentEvents').innerHTML, /job\.&lt;scheduled&gt; · applied/);
+
+  tracker.renderHcpJobTypes([{ id: 'jt_1', name: 'Shower <Door>', category: 'Showers', chosen: false }, { id: 'jt_2', name: 'Auto Glass', category: '', chosen: true }]);
+  const list = node('hcpJobTypesList').innerHTML;
+  assert.equal(node('hcpJobTypesSection').classList.contains('hidden'), false);
+  assert.match(list, /Shower &lt;Door&gt;/);
+  assert.match(list, /<option value="Showers" selected>Showers \(suggested\)<\/option>/);
+  assert.match(list, /data-job-type="jt_2"><option value="">No category<\/option>/);
 });
 
-test('finished jobs offer invoicing first, and an already-complete job keeps its blank completion date', () => {
+test('finished jobs have no next step, and an already-complete job keeps its blank completion date', () => {
   const { node, tracker } = client();
-  assert.equal(tracker.nextStep({ id: 'x', date_received: '', job_completed: 1 }).action, 'mark-invoiced');
-  const imported = { id: 'imported', customer_name: 'Synthetic Imported', status: 'Received', date_received: '2026-10-20', job_completed: 1, completed_date: '', updated_at: 'v1' };
-  tracker.openProgressDialog(imported);
+  assert.equal(tracker.nextStep({ id: 'x', date_received: '', job_completed: 1 }), null);
+  const done = { id: 'done', customer_name: 'Synthetic Done', status: 'Received', date_received: '2026-10-20', job_completed: 1, completed_date: '', updated_at: 'v1' };
+  tracker.openProgressDialog(done);
   assert.equal(node('progressCompleted').checked, true);
   assert.equal(node('progressCompletedDate').value, '', 'opening the window does not invent a date');
 });
 
-test('choosing another file clears the old preview and the typed word', () => {
-  const { node, tracker } = client();
-  tracker.bindEvents();
-  tracker.state.sheetImport = { token: 'old' };
-  node('sheetImportConfirmation').value = 'REPLACE';
-  node('sheetImportFile').listeners.change();
-  assert.equal(tracker.state.sheetImport, null);
-  assert.equal(node('sheetImportConfirmation').value, '');
-  assert.equal(node('sheetImportPreview').classList.contains('hidden'), true);
-  assert.equal(node('applySheetImportButton').disabled, true);
+
+test('pasting an HCP link fills in only the empty boxes; a job number becomes the link', async () => {
+  const requests = [];
+  const job = { job_id: 'job_a', url: 'https://pro.housecallpro.com/app/jobs/job_a', invoice_number: '10240001', customer_name: 'Pat Sample (Sample <Homes>)', job_type: 'Window Replacement', category: 'Windows', notes: 'Replace 3 windows', attachments: 2 };
+  let answer = { ok: true, status: 200, json: async () => ({ job }) };
+  const { node, tracker } = client(async (url) => { requests.push(url); return answer; });
+  node('housecallJobLink').value = '10240001';
+  node('customerName').value = 'Typed by staff';
+  await tracker.fillFromHousecallPro('order', '10240001');
+  assert.equal(requests[0], '/api/hcp/lookup?q=10240001');
+  assert.equal(node('housecallJobLink').value, job.url);
+  assert.equal(node('customerName').value, 'Typed by staff', 'typed boxes are kept');
+  assert.equal(node('housecallJobNumber').value, '10240001');
+  assert.equal(node('categorySelect').value, 'Windows');
+  assert.equal(node('notes').value, 'Replace 3 windows');
+  assert.equal(node('hcpFillStatus').textContent, 'Filled in from Housecall Pro: job #, category, notes. It has 2 photos or files in HCP.');
+  // The same link isn't looked up twice (paste and then leaving the box).
+  await tracker.fillFromHousecallPro('order', job.url);
+  assert.equal(requests.length, 1);
+
+  answer = { ok: false, status: 503, json: async () => ({ error: "Housecall Pro isn't connected yet." }) };
+  await tracker.fillFromHousecallPro('draft', 'https://pro.housecallpro.com/app/jobs/job_b');
+  assert.equal(node('draftHcpFillStatus').textContent, "Housecall Pro isn't connected yet, so nothing was filled in.");
+  answer = { ok: false, status: 404, json: async () => ({ error: "Couldn't find that job in Housecall Pro." }) };
+  await tracker.fillFromHousecallPro('draft', '99999999');
+  assert.equal(node('draftHcpFillStatus').textContent, "Couldn't find that job in Housecall Pro.");
+  await tracker.fillFromHousecallPro('draft', '');
+  assert.equal(node('draftHcpFillStatus').textContent, '');
+});
+
+test('Mark received asks for the shelf, and Undo puts the old shelf back', async () => {
+  const requests = [];
+  const { node, tracker } = client(async (url, options = {}) => {
+    requests.push({ url, body: options.body ? JSON.parse(options.body) : null });
+    if (url.includes('/mark-received')) return { ok: true, json: async () => ({ order: { id: 'r1', updated_at: 'v2' } }) };
+    return { ok: true, json: async () => ({ orders: [], drafts: [] }) };
+  });
+  const order = { id: 'r1', customer_name: 'Synthetic Receive', po_number: 'SAMPLE REV2', supplier: 'Jeld-Wen', shop_location: 'G', updated_at: 'v1', status: 'Ordered' };
+  tracker.state.orders = [order];
+  tracker.originalMarkReceived('r1');
+  assert.equal(node('receiveDialog').open, true);
+  assert.equal(node('receiveCustomer').textContent, 'Synthetic Receive · PO SAMPLE REV2 · Jeld-Wen');
+  assert.equal(node('receiveShopLocation').value, 'G');
+  assert.match(node('receiveDate').value, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(node('receiveShopLocation').focused, true);
+  node('receiveShopLocation').value = 'H';
+  await tracker.saveReceive();
+  const save = requests.find(request => request.url === '/api/orders/r1/mark-received');
+  assert.deepEqual(save.body, { date_received: node('receiveDate').value, shop_location: 'H', updated_at: 'v1' });
+  assert.equal(node('receiveDialog').open, false);
+  assert.equal(node('undoMessage').textContent, 'Synthetic Receive marked received.');
+  await tracker.runUndo();
+  assert.deepEqual(requests.find(request => request.url === '/api/orders/r1/reopen').body, { updated_at: 'v2', shop_location: 'G' });
+});
+
+test('Start fresh needs DELETE ALL typed and says what it removed', async () => {
+  const requests = [];
+  const { context, node, tracker } = client(async (url, options = {}) => {
+    requests.push({ url, body: options.body ? JSON.parse(options.body) : null });
+    if (url === '/api/admin/start-fresh' && options.method === 'POST') return { ok: true, json: async () => ({ deleted: { orders: 322, jobs: 80, suppliers: 104, staff: 3 } }) };
+    return { ok: true, json: async () => ({ orders: [], drafts: [], suppliers: [], staff_names: [] }) };
+  });
+  node('startFreshConfirmation').value = 'delete all';
+  tracker.syncStartFresh();
+  assert.equal(node('applyStartFreshButton').disabled, true);
+  node('startFreshConfirmation').value = 'DELETE ALL';
+  tracker.syncStartFresh();
+  assert.equal(node('applyStartFreshButton').disabled, false);
+  node('startFreshLists').checked = true;
+  await tracker.applyStartFresh();
+  assert.deepEqual(requests.find(request => request.url === '/api/admin/start-fresh').body, { confirmation: 'DELETE ALL', include_lists: true });
+  assert.match(context.errors.at(-1), /Started fresh: deleted 322 orders and 80 approved jobs, 104 suppliers and 3 staff/);
 });

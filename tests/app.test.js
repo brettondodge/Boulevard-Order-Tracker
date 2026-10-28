@@ -13,7 +13,6 @@ import {
   createPostgresSessionStore,
   configureSessionMiddleware
 } from '../src/session-config.js';
-import { syntheticOrderSheet } from './sheet-fixture.js';
 import { signWebhook, startFakeHcp, syntheticHcpJob } from './hcp-fake.js';
 
 const root = process.cwd();
@@ -907,7 +906,7 @@ test('order saves require existing active suppliers and never create or reactiva
   } finally { child.kill('SIGTERM'); }
 });
 
-test('each order keeps its own schedule, completion and invoice, feeds the labor-meeting views and undoes exactly', async () => {
+test('each order keeps its own shelf, schedule and completion, feeds the labor-meeting views and undoes exactly', async () => {
   const child = startServer();
   const cookieJar = createCookieJar();
   const api = (route, body, method = body ? 'POST' : 'GET') => requestJson('http://127.0.0.1:4100' + route, { method, headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), cookieJar });
@@ -935,7 +934,7 @@ test('each order keeps its own schedule, completion and invoice, feeds the labor
     const saved = await api(`/api/orders/${first.id}/progress`, { job_scheduled: 1, scheduled_date: '2026-11-03', schedule_note: 'Two-man job', shop_location: 'G', updated_at: row.updated_at }, 'PUT');
     assert.equal(saved.status, 200);
     assert.deepEqual(saved.body.order_ids, [first.id]);
-    assert.deepEqual(saved.body.previous, [{ id: first.id, shop_location: 'H', job_scheduled: 0, scheduled_date: '', schedule_note: '', job_completed: 0, completed_date: '', invoiced: 0, invoice_reference: '' }]);
+    assert.deepEqual(saved.body.previous, [{ id: first.id, shop_location: 'H', job_scheduled: 0, scheduled_date: '', schedule_note: '', job_completed: 0, completed_date: '' }]);
     const firstAfter = await find(first.id);
     assert.equal(firstAfter.shop_location, 'G');
     assert.equal(firstAfter.job_scheduled, 1);
@@ -963,24 +962,35 @@ test('each order keeps its own schedule, completion and invoice, feeds the labor
     assert.equal(restored.scheduled_date, '');
     assert.equal((await api('/api/order-progress/restore', { updated_at: saved.body.updated_at, items: saved.body.previous })).status, 409);
 
+    // Complete is the last step: it moves to Done and out of the working views.
     const current = await find(first.id);
     assert.equal((await api(`/api/orders/${first.id}/progress`, { job_scheduled: 1, job_completed: 1, updated_at: current.updated_at }, 'PUT')).status, 200);
-    let needInvoice = await view('Need Invoice');
-    assert.deepEqual(needInvoice.map(order => order.id), [first.id]);
-    assert.match(needInvoice[0].completed_date, /^\d{4}-\d{2}-\d{2}$/);
-    assert.equal(needInvoice[0].stage, 'complete');
-    const invoiced = await api(`/api/orders/${first.id}/progress`, { ...needInvoice[0], invoiced: 1, invoice_reference: '10239422', updated_at: needInvoice[0].updated_at }, 'PUT');
-    assert.equal(invoiced.status, 200);
-    assert.equal((await view('Need Invoice')).length, 0);
-    assert.equal((await find(first.id)).stage, 'invoiced');
+    const done = await view('Done');
+    assert.deepEqual(done.map(order => order.id), [first.id]);
+    assert.match(done[0].completed_date, /^\d{4}-\d{2}-\d{2}$/);
+    assert.equal(done[0].stage, 'complete');
+    assert.equal((await view('Scheduled')).length, 0);
     assert.equal((await find(second.id)).stage, 'ordered');
 
-    // Marking an already-complete order invoiced keeps its blank completion date.
-    const done = await find(second.id);
-    assert.equal((await api(`/api/orders/${second.id}/progress`, { ...done, job_completed: 1, completed_date: '2026-10-15', updated_at: done.updated_at }, 'PUT')).status, 200);
+    // Saving an already-complete order keeps its blank completion date.
+    const doneOther = await find(second.id);
+    assert.equal((await api(`/api/orders/${second.id}/progress`, { ...doneOther, job_completed: 1, completed_date: '2026-10-15', updated_at: doneOther.updated_at }, 'PUT')).status, 200);
     const doneRow = await find(second.id);
-    assert.equal((await api(`/api/orders/${second.id}/progress`, { ...doneRow, completed_date: '', invoiced: 1, updated_at: doneRow.updated_at }, 'PUT')).status, 200);
+    assert.equal((await api(`/api/orders/${second.id}/progress`, { ...doneRow, completed_date: '', updated_at: doneRow.updated_at }, 'PUT')).status, 200);
     assert.equal((await find(second.id)).completed_date, '');
+
+    // Mark received can take the shelf, and its Undo puts the old shelf back.
+    const third = (await create('HC-79', 'Bayside Supply', { shop_location: 'A' })).body.order;
+    const received = await api(`/api/orders/${third.id}/mark-received`, { date_received: '2026-10-20', shop_location: 'IGU Wall', updated_at: third.updated_at });
+    assert.equal(received.status, 200);
+    assert.equal(received.body.order.shop_location, 'IGU Wall');
+    assert.equal(received.body.order.date_received, '2026-10-20');
+    const reopened = await api(`/api/orders/${third.id}/reopen`, { updated_at: received.body.order.updated_at, shop_location: 'A' });
+    assert.equal(reopened.status, 200);
+    assert.equal(reopened.body.order.shop_location, 'A');
+    assert.equal(reopened.body.order.date_received, null);
+    // Without a shelf the shelf is left alone.
+    assert.equal((await api(`/api/orders/${third.id}/mark-received`, {})).body.order.shop_location, 'A');
 
     // An edit from a screen without the Shop location field keeps it.
     const shopRow = await find(first.id);
@@ -996,73 +1006,10 @@ test('each order keeps its own schedule, completion and invoice, feeds the labor
   }
 });
 
-test('admins can preview and import the Google Sheet, adding or replacing what is there', async () => {
-  const child = startServer();
-  const cookieJar = createCookieJar();
-  const base = 'http://127.0.0.1:4100';
-  const api = (route, body, method = body ? 'POST' : 'GET') => requestJson(base + route, { method, headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), cookieJar });
-  const preview = file => requestJson(`${base}/api/admin/sheet-import/preview`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file, cookieJar });
-  try {
-    await delay(1500);
-    const sheet = await syntheticOrderSheet();
-    assert.equal((await preview(sheet)).status, 401);
-    assert.equal((await api('/api/admin/login', { username: 'admin', password: 'admin123' })).status, 200);
-    assert.equal((await preview(Buffer.from('not a spreadsheet'))).status, 400);
-
-    const before = (await api('/api/orders?status=All%20Orders')).body.orders.length;
-    let plan = await preview(sheet);
-    assert.equal(plan.status, 200);
-    assert.equal(plan.body.orders.length, 7);
-    assert.equal(plan.body.skipped.length, 2);
-    assert.equal(plan.body.current.orders >= before, true);
-    assert.ok(plan.body.suppliers.some(row => row.name === 'Jeld-Wen' && !row.existing));
-    assert.ok(plan.body.suppliers.some(row => row.name === 'Oldcastle' && row.existing));
-
-    assert.equal((await api('/api/admin/sheet-import/apply', { token: plan.body.token, mode: 'add', confirmation: 'REPLACE' })).status, 400);
-    assert.equal((await api('/api/admin/sheet-import/apply', { token: 'forged', mode: 'add', confirmation: 'IMPORT' })).status, 409);
-    const added = await api('/api/admin/sheet-import/apply', { token: plan.body.token, mode: 'add', confirmation: 'IMPORT' });
-    assert.equal(added.status, 200);
-    assert.equal(added.body.orders, 7);
-    assert.equal((await api('/api/admin/sheet-import/apply', { token: plan.body.token, mode: 'add', confirmation: 'IMPORT' })).status, 409);
-
-    let orders = (await api('/api/orders?status=All%20Orders')).body.orders;
-    assert.equal(orders.length, before + 7);
-    const alpha = orders.filter(order => order.customer_name.toLowerCase() === 'synthetic alpha');
-    assert.equal(alpha.length, 2);
-    assert.ok(alpha.every(order => !order.job_draft_id), 'imported orders stand on their own');
-    assert.equal(alpha[0].created_by, 'admin');
-    const bravo = orders.find(order => order.customer_name === 'Synthetic Bravo');
-    assert.equal(bravo.supplier, 'Andersen');
-    assert.equal(bravo.stage, 'complete');
-    assert.equal(bravo.housecall_job_number, '10238822');
-    assert.ok((await api('/api/orders?status=Need%20Invoice')).body.orders.some(order => order.id === bravo.id));
-    assert.ok((await api('/api/orders?status=To%20Schedule')).body.orders.some(order => order.customer_name === 'Synthetic Glass'));
-
-    plan = await preview(sheet);
-    const again = await api('/api/admin/sheet-import/apply', { token: plan.body.token, mode: 'add', confirmation: 'IMPORT' });
-    assert.equal(again.body.orders, 0);
-    assert.equal(again.body.duplicates, 7);
-
-    plan = await preview(sheet);
-    const replaced = await api('/api/admin/sheet-import/apply', { token: plan.body.token, mode: 'replace', confirmation: 'REPLACE' });
-    assert.equal(replaced.status, 200);
-    orders = (await api('/api/orders?status=All%20Orders')).body.orders;
-    assert.equal(orders.length, 7);
-    const lists = (await api('/api/master-lists')).body;
-    assert.deepEqual(lists.suppliers.map(row => row.name).sort(), ['Andersen', 'Arcadia', 'CW', 'Jeld-Wen', 'Oldcastle', 'Unknown supplier (from sheet)']);
-    assert.deepEqual(lists.staff_names.map(row => row.name).sort(), ['AD', 'KL', 'RD', 'SD', 'Unknown']);
-    assert.equal((await api('/api/job-drafts')).body.drafts.length, 0);
-    // Logins survive a replace.
-    assert.equal((await api('/api/login', { username: 'mary', password: 'staff123' })).status, 200);
-  } finally {
-    child.kill('SIGTERM');
-  }
-});
-
-test('Housecall Pro webhooks and sync keep linked orders in step with their HCP jobs', async () => {
+test('Housecall Pro: a pasted link fills the order, webhooks and sync keep it in step, and tags and notes go back', async () => {
   const fake = await startFakeHcp();
   const secret = 'synthetic-signing-secret';
-  const child = startServer({ HCP_API_KEY: fake.apiKey, HCP_API_BASE: fake.url, HCP_WEBHOOK_SECRET: secret, HCP_SYNC_INTERVAL_MINUTES: '0' });
+  const child = startServer({ HCP_API_KEY: fake.apiKey, HCP_API_BASE: fake.url, HCP_WEBHOOK_SECRET: secret, HCP_SYNC_INTERVAL_MINUTES: '0', HCP_WRITE_DELAY_MS: '0' });
   const cookieJar = createCookieJar();
   const base = 'http://127.0.0.1:4100';
   const api = (route, body, method = body ? 'POST' : 'GET') => requestJson(base + route, { method, headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), cookieJar });
@@ -1071,23 +1018,65 @@ test('Housecall Pro webhooks and sync keep linked orders in step with their HCP 
     const body = JSON.stringify(payload);
     return requestJson(`${base}/api/hcp/webhooks`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(headers || signWebhook(body, secret, clock += 1)) }, body });
   };
-  const at = minutes => new Date(Date.UTC(2026, 9, 26, 15, minutes)).toISOString();
+  const waitFor = async (check, what) => {
+    for (let i = 0; i < 150; i += 1) {
+      if (await check()) return;
+      await delay(20);
+    }
+    assert.fail(`timed out waiting for ${what}`);
+  };
+  // Event times are real times, after the tracker's own reads of the job.
+  const at = minutes => new Date(Date.now() + minutes * 60000).toISOString();
+  // HCP's own copy of a job changes with each event it sends.
+  const hcpSays = job => { fake.jobs.set(job.id, job); return job; };
   const find = async (id) => (await api('/api/orders?status=All%20Orders')).body.orders.find(row => row.id === id);
   const JOB_A = 'job_0000000000000000000000000000000a';
   const JOB_B = 'job_0000000000000000000000000000000b';
+  const link = id => `https://pro.housecallpro.com/app/jobs/${id}`;
+  fake.jobTypes.push({ id: 'jt_window', name: 'Window Replacement' });
+  fake.jobs.set(JOB_A, syntheticHcpJob({ id: JOB_A, invoice_number: '10239422', customer: { first_name: 'Pat', last_name: 'Sample', company: '' }, description: 'Replace 3 windows', job_fields: { job_type: { id: 'jt_window', name: 'Window Replacement' }, business_unit: null }, attachments: [{ id: 'a1', file_name: 'measure.jpg', url: 'https://example.test/a1', file_type: 'image/jpeg' }] }));
+  fake.jobs.set(JOB_B, syntheticHcpJob({ id: JOB_B, invoice_number: '10239500' }));
   try {
     await delay(1500);
+    assert.equal((await api('/api/hcp/lookup?q=10239422')).status, 401, 'staff only');
     assert.equal((await api('/api/login', { username: 'mary', password: 'staff123' })).status, 200);
-    const create = extra => api('/api/orders', { customer_name: 'Synthetic HCP Job', supplier: 'Northline Glass', category: 'Windows', date_ordered: '2026-10-01', ordered_by: 'Admin User', ...extra });
-    const a1 = (await create({ housecall_job_number: '10239422' })).body.order;
-    const a2 = (await create({ housecall_job_number: '10239422', supplier: 'Oldcastle' })).body.order;
-    const b = (await create({ housecall_job_number: '10239500', housecall_job_link: `https://pro.housecallpro.com/app/jobs/${JOB_B}` })).body.order;
-    const d = (await create({ housecall_job_number: '10230001' })).body.order;
-    assert.equal(b.hcp_job_id, JOB_B, 'the job id is read from the HCP link');
-    for (const order of [a1, a2]) assert.equal((await api(`/api/orders/${order.id}/mark-received`, {})).status, 200);
+
+    // Paste the HCP link (or the job number) and the order fills itself in.
+    const lookup = await api(`/api/hcp/lookup?q=${encodeURIComponent(link(JOB_A))}`);
+    assert.equal(lookup.status, 200);
+    assert.deepEqual(lookup.body.job, { job_id: JOB_A, url: link(JOB_A), invoice_number: '10239422', customer_name: 'Pat Sample', job_type: 'Window Replacement', category: 'Windows', notes: 'Replace 3 windows', attachments: 1 });
+    assert.equal((await api('/api/hcp/lookup?q=10239500')).body.job.job_id, JOB_B);
+    assert.equal((await api('/api/hcp/lookup?q=99999999')).status, 404);
+
+    // An approved job takes its HCP id from the pasted link; free text isn't trusted.
+    const draft = await api('/api/job-drafts', { customer_name: 'Pat Sample', housecall_job_number: '10239422', housecall_job_link: link(JOB_A), deposit_status: 'Deposit received' });
+    assert.equal(draft.body.draft.hcp_job_id, JOB_A);
+    assert.equal((await api('/api/job-drafts', { customer_name: 'Synthetic Other', hcp_job_id: '10239422' })).body.draft.hcp_job_id, '');
+
+    const create = extra => api('/api/orders', { customer_name: 'Pat Sample', supplier: 'Northline Glass', category: 'Windows', date_ordered: '2026-10-01', ordered_by: 'Admin User', ...extra });
+    const a1 = (await create({ housecall_job_number: '10239422', housecall_job_link: link(JOB_A), po_number: 'SAMPLE A1', expected_delivery_date: '2026-11-03' })).body.order;
+    assert.equal(a1.hcp_job_id, JOB_A, 'the job id is read from the HCP link');
+    assert.equal(a1.po_number, 'SAMPLE A1');
+    // Ordering puts "Materials ordered" on the HCP job and adds a note.
+    await waitFor(() => (fake.jobs.get(JOB_A).tags || []).includes('Materials ordered'), 'the ordered tag');
+    assert.deepEqual(fake.jobs.get(JOB_A).notes.map(note => note.content), ['Order Tracker: materials ordered from Northline Glass, PO SAMPLE A1, expected Nov 3.']);
+    const a2 = (await create({ housecall_job_number: '10239422', supplier: 'Oldcastle', po_number: 'SAMPLE A2' })).body.order;
+    assert.equal(a2.hcp_job_id, JOB_A, 'a known job number links too');
+    const b = (await create({ housecall_job_number: '10239500', housecall_job_link: link(JOB_B) })).body.order;
+    const d = (await create({ customer_name: 'Synthetic By Number', housecall_job_number: '10230001' })).body.order;
+    await waitFor(() => fake.jobs.get(JOB_A).notes.length === 2 && (fake.jobs.get(JOB_B).tags || []).includes('Materials ordered'), 'the second order notes');
+
+    // Receiving with a shelf: a note per order; "Materials received" once both are here.
+    assert.equal((await api(`/api/orders/${a1.id}/mark-received`, { shop_location: 'H' })).body.order.shop_location, 'H');
+    await waitFor(() => fake.jobs.get(JOB_A).notes.length === 3, 'the received note');
+    assert.equal(fake.jobs.get(JOB_A).notes.at(-1).content, 'Order Tracker: Northline Glass materials received (PO SAMPLE A1), shelf H.');
+    assert.deepEqual(fake.jobs.get(JOB_A).tags, ['Materials ordered']);
+    assert.equal((await api(`/api/orders/${a2.id}/mark-received`, { shop_location: 'G' })).status, 200);
+    await waitFor(() => (fake.jobs.get(JOB_A).tags || []).includes('Materials received'), 'the received tag');
+    assert.deepEqual(fake.jobs.get(JOB_A).tags, ['Materials received']);
 
     // Only signed deliveries count.
-    const scheduledJob = syntheticHcpJob({ id: JOB_A, work_status: 'scheduled', schedule: { scheduled_start: '2026-11-03T15:00:00Z', scheduled_end: '2026-11-03T17:00:00Z', scheduled_start_local: '2026-11-03T08:00:00-07:00' }, assigned_employees: [{ first_name: 'Synthetic', last_name: 'Tech' }] });
+    const scheduledJob = hcpSays(syntheticHcpJob({ ...fake.jobs.get(JOB_A), work_status: 'scheduled', schedule: { scheduled_start: '2026-11-03T15:00:00Z', scheduled_end: '2026-11-03T17:00:00Z', scheduled_start_local: '2026-11-03T08:00:00-07:00' }, assigned_employees: [{ first_name: 'Synthetic', last_name: 'Tech' }] }));
     const scheduledEvent = { event: 'job.scheduled', company_id: 'co_1', event_occurred_at: at(10), job: scheduledJob };
     assert.equal((await deliver(scheduledEvent, {})).status, 401);
     assert.equal((await deliver(scheduledEvent, { 'Api-Timestamp': String(clock), 'Api-Signature': 'f'.repeat(64) })).status, 401);
@@ -1096,67 +1085,51 @@ test('Housecall Pro webhooks and sync keep linked orders in step with their HCP 
     const first = await requestJson(`${base}/api/hcp/webhooks`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body });
     assert.equal(first.status, 200);
     assert.equal(first.body.outcome, 'applied');
-    const repeat = await requestJson(`${base}/api/hcp/webhooks`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body });
-    assert.equal(repeat.body.outcome, 'duplicate');
-
+    assert.equal((await requestJson(`${base}/api/hcp/webhooks`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body })).body.outcome, 'duplicate');
     for (const order of [a1, a2]) {
       const row = await find(order.id);
-      assert.equal(row.hcp_job_id, JOB_A);
       assert.equal(row.job_scheduled, 1);
       assert.equal(row.scheduled_date, '2026-11-03');
       assert.equal(row.updated_by, 'Housecall Pro');
-      assert.deepEqual({ status: row.hcp.status, date: row.hcp.scheduled_date, assigned: row.hcp.assigned }, { status: 'scheduled', date: '2026-11-03', assigned: 'Synthetic Tech' });
+      assert.deepEqual({ status: row.hcp.status, date: row.hcp.scheduled_date, assigned: row.hcp.assigned }, { status: 'scheduled', date: '2026-11-03', assigned: undefined });
     }
     assert.equal((await find(d.id)).job_scheduled, 0);
 
-    // A late, older delivery does not undo the newer one.
-    await deliver({ event: 'job.updated', event_occurred_at: at(5), job: syntheticHcpJob({ id: JOB_A }) });
+    // A late, older delivery does not undo the newer one (the job is re-read
+    // from HCP instead); "in progress" is still scheduled.
+    await deliver({ event: 'job.updated', event_occurred_at: at(5), job: syntheticHcpJob({ id: JOB_A, invoice_number: '10239422' }) });
     assert.equal((await find(a1.id)).job_scheduled, 1);
+    await deliver({ event: 'job.started', event_occurred_at: at(15), job: hcpSays({ ...scheduledJob, work_status: 'in progress' }) });
+    assert.equal((await find(a1.id)).hcp.status, 'scheduled');
 
-    await deliver({ event: 'job.completed', event_occurred_at: at(20), job: { ...scheduledJob, work_status: 'complete unrated', work_timestamps: { completed_at: '2026-11-04T01:30:00Z' } } });
+    // Complete in HCP = done in the tracker.
+    await deliver({ event: 'job.completed', event_occurred_at: at(20), job: hcpSays({ ...scheduledJob, work_status: 'complete unrated', work_timestamps: { completed_at: '2026-11-04T01:30:00Z' } }) });
     let row = await find(a2.id);
     assert.equal(row.job_completed, 1);
     assert.equal(row.completed_date, '2026-11-03');
     assert.equal(row.stage, 'complete');
-    assert.ok((await api('/api/orders?status=Need%20Invoice')).body.orders.some(order => order.id === a1.id));
+    assert.equal(row.hcp.status, 'completed');
+    assert.ok((await api('/api/orders?status=Done')).body.orders.some(order => order.id === a1.id));
 
-    await deliver({ event: 'invoice.sent', event_occurred_at: at(25), invoice: { id: 'invoice_1', invoice_number: '10239422', status: 'open', sent_at: at(25), paid_at: null, job_id: JOB_A } });
-    row = await find(a1.id);
-    assert.equal(row.invoiced, 1);
-    assert.equal(row.invoice_reference, '10239422');
-    assert.equal(row.hcp.invoice_sent, true);
+    // Invoices and approved estimates are not used.
+    assert.equal((await deliver({ event: 'invoice.sent', event_occurred_at: at(25), invoice: { id: 'invoice_1', job_id: JOB_A, sent_at: at(25) } })).body.outcome, 'ignored');
+    const estimateJob = syntheticHcpJob({ id: 'job_0000000000000000000000000000000c', invoice_number: '10239600', original_estimate_id: 'est_1' });
+    assert.equal((await deliver({ event: 'job.created', event_occurred_at: at(26), job: estimateJob })).body.outcome, 'ignored');
+    assert.equal((await api('/api/job-drafts')).body.drafts.filter(entry => entry.hcp_job_id === estimateJob.id).length, 0);
 
     // Appointment events carry only the visit, so the job is read from the API.
-    fake.jobs.set(JOB_B, syntheticHcpJob({ id: JOB_B, invoice_number: '10239500', work_status: 'scheduled', schedule: { scheduled_start: '2026-11-07T16:00:00Z', scheduled_start_local: '2026-11-07T09:00:00-07:00' } }));
+    hcpSays({ ...fake.jobs.get(JOB_B), work_status: 'scheduled', schedule: { scheduled_start: '2026-11-07T16:00:00Z', scheduled_start_local: '2026-11-07T09:00:00-07:00' } });
     const reschedule = await deliver({ event: 'job.appointment.rescheduled', event_occurred_at: at(30), appointment: { id: 'appt_1', job_id: JOB_B, start_time: '2026-11-07T16:00:00Z', end_time: '2026-11-07T18:00:00Z', dispatched_employees: [] } });
     assert.equal(reschedule.body.outcome, 'applied');
     row = await find(b.id);
     assert.equal(row.job_scheduled, 1);
     assert.equal(row.scheduled_date, '2026-11-07');
-    assert.ok(fake.requests.some(request => request.path === `/jobs/${JOB_B}`));
 
-    // A job made from an approved estimate becomes an approved job, once.
-    const approved = syntheticHcpJob({ id: 'job_0000000000000000000000000000000c', invoice_number: '10239600', original_estimate_id: 'est_1', customer: { first_name: 'Synthetic', last_name: 'Approved', company: '' }, description: 'Two shower doors' });
-    assert.equal((await deliver({ event: 'job.created', event_occurred_at: at(35), job: approved })).body.outcome, 'applied');
-    await deliver({ event: 'job.created', event_occurred_at: at(36), job: approved });
-    const drafts = (await api('/api/job-drafts')).body.drafts.filter(draft => draft.hcp_job_id === approved.id);
-    assert.equal(drafts.length, 1);
-    assert.equal(drafts[0].customer_name, 'Synthetic Approved');
-    assert.equal(drafts[0].housecall_job_number, '10239600');
-    assert.equal(drafts[0].housecall_job_link, `https://pro.housecallpro.com/app/jobs/${approved.id}`);
-    assert.equal(drafts[0].deposit_status, 'Awaiting deposit');
-    assert.equal(drafts[0].created_by, 'Housecall Pro');
-    assert.match(drafts[0].notes, /Two shower doors/);
-    // A job not from an estimate is not added.
-    const untracked = await deliver({ event: 'job.created', event_occurred_at: at(37), job: syntheticHcpJob({ id: 'job_0000000000000000000000000000000d', invoice_number: '10239700' }) });
-    assert.equal(untracked.body.outcome, 'ignored', 'jobs with nothing in the tracker are not stored');
-    assert.equal((await api('/api/job-drafts')).body.drafts.filter(draft => draft.hcp_job_id === 'job_0000000000000000000000000000000d').length, 0);
-
-    // Canceled in HCP: the tracker keeps its data and shows the warning.
-    await deliver({ event: 'job.canceled', event_occurred_at: at(40), job: { ...scheduledJob, work_status: 'pro canceled', canceled_at: at(40) } });
-    row = await find(a1.id);
-    assert.equal(row.hcp.status, 'canceled');
-    assert.equal(row.job_completed, 1);
+    // Canceled in HCP: nothing changes and nothing is shown.
+    await deliver({ event: 'job.canceled', event_occurred_at: at(40), job: hcpSays({ ...fake.jobs.get(JOB_B), work_status: 'pro canceled', canceled_at: at(40) }) });
+    row = await find(b.id);
+    assert.equal(row.hcp, null);
+    assert.equal(row.job_scheduled, 1);
 
     // Sync finds the HCP job for an order that only has a job number.
     fake.jobs.set('job_0000000000000000000000000000000e', syntheticHcpJob({ id: 'job_0000000000000000000000000000000e', invoice_number: '10230001', work_status: 'scheduled', schedule: { scheduled_start: '2026-11-10T15:00:00Z' }, created_at: '2026-09-01T00:00:00Z' }));
@@ -1167,24 +1140,61 @@ test('Housecall Pro webhooks and sync keep linked orders in step with their HCP 
     const sync = await api('/api/hcp/sync', {});
     assert.equal(sync.status, 200);
     assert.equal(sync.body.jobs_found_by_number, 1);
-    // The preview sample orders' job numbers (HC-2048...) are not in HCP.
-    assert.ok(sync.body.numbers_not_found >= 1);
     assert.ok(sync.body.order_ids.includes(d.id));
     row = await find(d.id);
     assert.equal(row.hcp_job_id, 'job_0000000000000000000000000000000e');
     assert.equal(row.scheduled_date, '2026-11-10');
+    await waitFor(() => (fake.jobs.get('job_0000000000000000000000000000000e').tags || []).includes('Materials ordered'), 'sync re-matching tags');
+
+    // Admins choose the category each HCP job type fills in.
+    const types = await api('/api/hcp/job-types');
+    assert.deepEqual(types.body.job_types, [{ id: 'jt_window', name: 'Window Replacement', category: 'Windows', chosen: false }]);
+    assert.equal((await api('/api/hcp/job-types', { categories: { jt_window: 'Flat Glass' } }, 'PUT')).status, 200);
+    assert.equal((await api(`/api/hcp/lookup?q=${encodeURIComponent(link(JOB_A))}`)).body.job.category, 'Flat Glass');
 
     const status = (await api('/api/hcp/status')).body;
     assert.equal(status.api, true);
     assert.equal(status.webhooks, true);
+    assert.equal(status.writes, true);
     assert.equal(status.linked_jobs, 3, 'jobs that active orders point at');
     assert.ok(status.last_event_at);
     assert.ok(status.last_sync_at);
+    assert.ok(status.last_write_at);
+    assert.equal(status.last_write_error, '');
     assert.ok(status.recent_events.some(event => event.event === 'job.scheduled' && event.outcome === 'applied'));
     assert.ok(fake.requests.every(request => request.auth === `Token ${fake.apiKey}`));
   } finally {
     child.kill('SIGTERM');
     await fake.close();
+  }
+});
+
+test('Start fresh empties the tracker for admins, keeping logins and, if asked, Master Lists', async () => {
+  const child = startServer();
+  const cookieJar = createCookieJar();
+  const api = (route, body, method = body ? 'POST' : 'GET') => requestJson('http://127.0.0.1:4100' + route, { method, headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), cookieJar });
+  try {
+    await delay(1500);
+    assert.equal((await api('/api/admin/start-fresh', { confirmation: 'DELETE ALL' })).status, 401);
+    assert.equal((await api('/api/admin/login', { username: 'admin', password: 'admin123' })).status, 200);
+    const counts = (await api('/api/admin/start-fresh')).body;
+    assert.ok(counts.orders > 0 && counts.suppliers > 0);
+    assert.equal((await api('/api/admin/start-fresh', { confirmation: 'delete all' })).status, 400);
+    const kept = await api('/api/admin/start-fresh', { confirmation: 'DELETE ALL', include_lists: false });
+    assert.equal(kept.status, 200);
+    assert.equal(kept.body.deleted.orders, counts.orders);
+    assert.equal(kept.body.deleted.suppliers, 0);
+    assert.equal((await api('/api/orders?status=All%20Orders')).body.orders.length, 0);
+    assert.equal((await api('/api/job-drafts')).body.drafts.length, 0);
+    assert.equal((await api('/api/master-lists')).body.suppliers.length, counts.suppliers);
+    const everything = await api('/api/admin/start-fresh', { confirmation: 'DELETE ALL', include_lists: true });
+    assert.equal(everything.body.deleted.suppliers, counts.suppliers);
+    assert.equal((await api('/api/master-lists')).body.suppliers.length, 0);
+    assert.equal((await api('/api/master-lists')).body.staff_names.length, 0);
+    // Logins survive.
+    assert.equal((await api('/api/login', { username: 'mary', password: 'staff123' })).status, 200);
+  } finally {
+    child.kill('SIGTERM');
   }
 });
 

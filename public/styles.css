@@ -999,7 +999,8 @@ button:disabled {
 #orderDialog,
 #masterListsDialog,
 #progressDialog,
-#sheetImportDialog {
+#receiveDialog,
+#startFreshDialog {
   border: none;
   border-radius: 18px;
   padding: 0;
@@ -1010,25 +1011,64 @@ button:disabled {
 #orderDialog::backdrop,
 #masterListsDialog::backdrop,
 #progressDialog::backdrop,
-#sheetImportDialog::backdrop {
+#receiveDialog::backdrop,
+#startFreshDialog::backdrop {
   background: rgba(15, 23, 42, 0.5);
 }
 
 #orderForm,
 #masterListsForm,
-#progressForm {
+#progressForm,
+#receiveForm {
   padding: 1.2rem 1.25rem 1.4rem;
 }
 
-#progressDialog {
+#progressDialog,
+#startFreshDialog {
   width: min(100%, 560px);
 }
 
-#sheetImportDialog {
-  width: min(100%, 820px);
-  max-height: calc(100vh - 2rem);
+#receiveDialog {
+  width: min(100%, 480px);
+}
+
+#startFreshDialog {
   padding: 1.2rem 1.25rem 1.4rem;
-  overflow: auto;
+}
+
+.hcp-fill-status {
+  margin: -0.5rem 0 0;
+  min-height: 1.1rem;
+  color: var(--scheduled);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.hcp-fill-status:empty {
+  display: none;
+}
+
+.hcp-job-types {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.hcp-job-types h4 {
+  margin: 0;
+}
+
+.hcp-job-types-list {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.hcp-job-type {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 15rem;
+  align-items: center;
+  gap: 0.75rem;
+  font-weight: 500;
 }
 
 .progress-customer {
@@ -1055,73 +1095,14 @@ button:disabled {
 }
 
 .progress-check input,
-.import-mode input {
+#startFreshLists {
   width: auto;
 }
 
 .progress-hint,
-.import-hint,
-.import-current {
+.import-hint {
   color: var(--muted);
   font-size: 0.85rem;
-}
-
-.import-steps {
-  margin: 0 0 1rem;
-  padding-left: 1.25rem;
-  color: var(--muted);
-}
-
-.import-file-row {
-  display: flex;
-  gap: 0.75rem;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.import-file-row input {
-  flex: 1 1 260px;
-}
-
-.import-summary ul {
-  margin: 0.35rem 0 0.75rem;
-}
-
-
-.import-table-wrap {
-  max-height: 320px;
-  overflow: auto;
-  margin-top: 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
-.import-table-wrap table {
-  min-width: 0;
-  font-size: 0.85rem;
-}
-
-.import-table-wrap th,
-.import-table-wrap td {
-  padding: 0.35rem 0.5rem;
-}
-
-.import-mode {
-  display: grid;
-  gap: 0.35rem;
-  margin: 1rem 0;
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-
-.import-mode legend {
-  font-weight: 700;
-  padding: 0 0.35rem;
-}
-
-.import-mode .import-hint {
-  margin: 0 0 0.5rem 1.6rem;
 }
 
 .import-confirm {
@@ -1383,7 +1364,8 @@ button:disabled {
   #orderDialog,
   #masterListsDialog,
   #progressDialog,
-  #sheetImportDialog {
+  #receiveDialog,
+  #startFreshDialog {
     width: min(calc(100vw - 1rem), 760px);
     max-height: calc(100vh - 1rem);
     overflow: auto;
@@ -1391,8 +1373,14 @@ button:disabled {
 
   #orderForm,
   #masterListsForm,
-  #progressForm {
+  #progressForm,
+  #receiveForm {
     padding: 1rem 0.9rem 1.1rem;
+  }
+
+  .hcp-job-type {
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
   }
 
   .progress-grid {

@@ -25,15 +25,19 @@ import {
   dbRun,
   runInTransaction
 } from './db.js';
-import { importStatements, parseOrderSheet } from './sheet-import.js';
 import { HcpError, hcpApiConfigured } from './hcp/client.js';
 import {
   handleHcpWebhook,
+  hcpJobIdFrom,
+  hcpJobTypes,
+  hcpOrderChanged,
   hcpStatus,
   hcpSummary,
   hcpWebhookConfigured,
   refreshHcpJobSoon,
   resolveOrderHcpJobId,
+  lookupHcpJob,
+  saveJobTypeCategories,
   syncHcp,
   verifyWebhookSignature,
   webhookEventId,
@@ -44,6 +48,7 @@ import {
   getOrderGroup,
   isoNow,
   normalizeCategory,
+  normalizeDate,
   normalizeOrderInput,
   normalizeProgressInput,
   normalizeText,
@@ -436,7 +441,7 @@ app.post('/api/job-drafts', requireStaffAuth, asyncRoute(async (req, res) => {
     customer_name: normalizeText(req.body.customer_name),
     housecall_job_number: normalizeText(req.body.housecall_job_number),
     housecall_job_link: normalizeText(req.body.housecall_job_link),
-    hcp_job_id: normalizeText(req.body.hcp_job_id),
+    hcp_job_id: hcpJobIdFrom(req.body.housecall_job_link) || hcpJobIdFrom(req.body.hcp_job_id),
     notes: typeof req.body.notes === 'string' ? req.body.notes.trim() : '',
     deposit_status: normalizeDraftDepositStatus(req.body.deposit_status),
     status: 'Open'
@@ -489,7 +494,7 @@ app.put('/api/job-drafts/:id', requireStaffAuth, asyncRoute(async (req, res) => 
     customer_name: normalizeText(field('customer_name')),
     housecall_job_number: normalizeText(field('housecall_job_number')),
     housecall_job_link: normalizeText(field('housecall_job_link')),
-    hcp_job_id: normalizeText(field('hcp_job_id')),
+    hcp_job_id: hcpJobIdFrom(field('housecall_job_link')) || hcpJobIdFrom(field('hcp_job_id')),
     notes: typeof req.body.notes === 'string' ? req.body.notes.trim() : (draft.notes || ''),
     deposit_status: normalizeDraftDepositStatus(field('deposit_status')),
     status: normalizeText(field('status')) || 'Open'
@@ -560,6 +565,7 @@ app.post('/api/job-drafts/:id/delete', requireStaffAuth, asyncRoute(async (req, 
 
   broadcastLiveEvent('job-drafts', { action: 'deleted', draftId: draft.id, time: isoNow() });
   broadcastLiveEvent('orders', { action: 'deleted', orderIds: deletedOrderIds, time: isoNow() });
+  deletedOrderIds.forEach((orderId) => hcpOrderChanged(orderId));
   return res.json({ deleted: true, draft_id: draft.id, order_ids: deletedOrderIds });
 }));
 
@@ -578,6 +584,7 @@ app.post('/api/job-drafts/:id/restore', requireStaffAuth, asyncRoute(async (req,
 
   broadcastLiveEvent('job-drafts', { action: 'restored', draftId: draft.id, time: isoNow() });
   broadcastLiveEvent('orders', { action: 'restored', orderIds: deletedWithJob, time: isoNow() });
+  deletedWithJob.forEach((orderId) => hcpOrderChanged(orderId));
   return res.json({ restored: restoredDraftIds.length > 0, draft_id: draft.id, order_ids: deletedWithJob });
 }));
 
@@ -691,6 +698,7 @@ app.post('/api/orders/:id/delete', requireStaffAuth, asyncRoute(async (req, res)
 
   await markOrdersArchived([order.id], { reason: `Deleted by ${actor(req)}` });
   broadcastLiveEvent('orders', { action: 'deleted', orderIds: [order.id], time: isoNow() });
+  hcpOrderChanged(order.id);
   return res.json({ deleted: true, order_id: order.id });
 }));
 
@@ -711,6 +719,7 @@ app.post('/api/orders/:id/restore', requireStaffAuth, asyncRoute(async (req, res
   }
 
   broadcastLiveEvent('orders', { action: 'restored', orderId: order.id, time: isoNow() });
+  hcpOrderChanged(order.id);
   return res.json({ restored: restoredIds.length > 0, order_id: order.id });
 }));
 
@@ -763,7 +772,7 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
     if (statusFilter === 'Received' && status !== 'Received') return false;
     if (statusFilter === 'To Schedule' && !(status === 'Received' && !Number(order.job_scheduled) && !Number(order.job_completed))) return false;
     if (statusFilter === 'Scheduled' && !(Number(order.job_scheduled) && !Number(order.job_completed))) return false;
-    if (statusFilter === 'Need Invoice' && !(Number(order.job_completed) && !Number(order.invoiced))) return false;
+    if (statusFilter === 'Done' && !Number(order.job_completed)) return false;
 
     if (viewFilter === 'Windows / Flat Glass' && !['Windows / Flat Glass'].includes(resolvedGroup)) {
       return false;
@@ -783,7 +792,7 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
     if (!matchesFilter(order, orderedByFilters, 'ordered_by_id', 'ordered_by', staffNames, staffById)) return false;
 
     if (searchTerm) {
-      const haystack = [order.customer_name, order.housecall_job_number, order.supplier, order.po_number, order.category || '', resolvedGroup, order.shop_location, order.schedule_note, order.invoice_reference].join(' ').toLowerCase();
+      const haystack = [order.customer_name, order.housecall_job_number, order.supplier, order.po_number, order.category || '', resolvedGroup, order.shop_location, order.schedule_note].join(' ').toLowerCase();
       if (!haystack.includes(searchTerm)) {
         return false;
       }
@@ -832,7 +841,6 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
     hcp: hcpSummary(hcpJobById.get(order.hcp_job_id)),
     job_scheduled: Number(order.job_scheduled || 0),
     job_completed: Number(order.job_completed || 0),
-    invoiced: Number(order.invoiced || 0),
     is_overdue: order.expected_delivery_date && order.status === 'Ordered' && order.expected_delivery_date < todayPhoenixString()
   }));
 
@@ -918,6 +926,7 @@ app.post('/api/orders', requireStaffAuth, asyncRoute(async (req, res) => {
   const created = await dbGet('SELECT * FROM orders WHERE id = ?', [orderId]);
   broadcastLiveEvent('orders', { action: 'created', orderId, updatedAt: created.updated_at, time: isoNow() });
   refreshHcpJobSoon(hcpJobId, (orderIds) => broadcastLiveEvent('orders', { action: 'housecall-pro', orderIds }));
+  if (hcpJobId) hcpOrderChanged(orderId, orderData.date_received ? 'received' : 'ordered');
   return res.status(201).json({
     order: {
       ...created,
@@ -1017,6 +1026,10 @@ app.put('/api/orders/:id', requireStaffAuth, asyncRoute(async (req, res) => {
   const updated = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   broadcastLiveEvent('orders', { action: 'updated', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
   if (hcpJobId && hcpJobId !== existing.hcp_job_id) refreshHcpJobSoon(hcpJobId, (orderIds) => broadcastLiveEvent('orders', { action: 'housecall-pro', orderIds }));
+  if (hcpJobId || existing.hcp_job_id) {
+    const newlyReceived = Boolean(updated.date_received) && !existing.date_received;
+    hcpOrderChanged(req.params.id, hcpJobId && hcpJobId !== existing.hcp_job_id ? 'ordered' : newlyReceived ? 'received' : 'changed');
+  }
   return res.json({
     order: {
       ...updated,
@@ -1034,9 +1047,7 @@ function progressValues(row) {
     scheduled_date: row.scheduled_date || '',
     schedule_note: row.schedule_note || '',
     job_completed: Number(row.job_completed || 0),
-    completed_date: row.completed_date || '',
-    invoiced: Number(row.invoiced || 0),
-    invoice_reference: row.invoice_reference || ''
+    completed_date: row.completed_date || ''
   };
 }
 
@@ -1116,15 +1127,17 @@ app.post('/api/orders/:id/mark-received', requireStaffAuth, asyncRoute(async (re
   }
 
   const incomingVersion = (req.body?.updated_at || '').toString();
-  const receivedDate = normalizeText(req.body?.date_received) || todayPhoenixString();
+  const receivedDate = normalizeDate(req.body?.date_received) || todayPhoenixString();
+  const shopLocation = Object.hasOwn(req.body || {}, 'shop_location') ? normalizeText(req.body.shop_location) : (existing.shop_location || '');
   const now = isoNow();
-  const result = await dbRun(`UPDATE orders SET date_received = ?, status = ?, updated_at = ?, updated_by = ? WHERE id = ?${incomingVersion ? ' AND updated_at = ?' : ''}`, [receivedDate, 'Received', now, actor(req), req.params.id, ...(incomingVersion ? [incomingVersion] : [])]);
+  const result = await dbRun(`UPDATE orders SET date_received = ?, status = ?, shop_location = ?, updated_at = ?, updated_by = ? WHERE id = ?${incomingVersion ? ' AND updated_at = ?' : ''}`, [receivedDate, 'Received', shopLocation, now, actor(req), req.params.id, ...(incomingVersion ? [incomingVersion] : [])]);
   if (!result.changes) {
     return res.status(409).json({ error: 'Someone else changed this order. Refresh and try again.' });
   }
 
   const updated = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   broadcastLiveEvent('orders', { action: 'received', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
+  hcpOrderChanged(req.params.id, 'received');
   return res.json({ order: { ...updated, status: statusFromOrder(updated) } });
 }));
 
@@ -1135,14 +1148,16 @@ app.post('/api/orders/:id/reopen', requireStaffAuth, asyncRoute(async (req, res)
   }
 
   const incomingVersion = (req.body?.updated_at || '').toString();
+  const shopLocation = Object.hasOwn(req.body || {}, 'shop_location') ? normalizeText(req.body.shop_location) : (existing.shop_location || '');
   const now = isoNow();
-  const result = await dbRun(`UPDATE orders SET date_received = NULL, status = ?, updated_at = ?, updated_by = ? WHERE id = ?${incomingVersion ? ' AND updated_at = ?' : ''}`, ['Ordered', now, actor(req), req.params.id, ...(incomingVersion ? [incomingVersion] : [])]);
+  const result = await dbRun(`UPDATE orders SET date_received = NULL, status = ?, shop_location = ?, updated_at = ?, updated_by = ? WHERE id = ?${incomingVersion ? ' AND updated_at = ?' : ''}`, ['Ordered', shopLocation, now, actor(req), req.params.id, ...(incomingVersion ? [incomingVersion] : [])]);
   if (!result.changes) {
     return res.status(409).json({ error: 'Someone else changed this order. Refresh and try again.' });
   }
 
   const updated = await dbGet('SELECT * FROM orders WHERE id = ?', [req.params.id]);
   broadcastLiveEvent('orders', { action: 'reopened', orderId: req.params.id, updatedAt: updated.updated_at, time: isoNow() });
+  hcpOrderChanged(req.params.id);
   return res.json({ order: { ...updated, status: statusFromOrder(updated) } });
 }));
 
@@ -1162,80 +1177,70 @@ app.post('/api/hcp/sync', requireAdminAuth, asyncRoute(async (req, res) => {
   }
 }));
 
-// One-time import from the office's Google Sheet, downloaded as .xlsx.
-// Preview parses the file and keeps the plan for 30 minutes; nothing is
-// written until the admin confirms with IMPORT (add) or REPLACE.
-const sheetImports = new Map();
-let sheetImportRunning = false;
-
-app.post('/api/admin/sheet-import/preview', requireAdminAuth, express.raw({ type: () => true, limit: '25mb' }), asyncRoute(async (req, res) => {
-  if (!Buffer.isBuffer(req.body) || !req.body.length) {
-    return res.status(400).json({ error: 'Choose the sheet file (.xlsx) first.' });
+// Paste an HCP job link (or job number) on an order or approved job and the
+// screen fills in what HCP knows.
+app.get('/api/hcp/lookup', requireStaffAuth, asyncRoute(async (req, res) => {
+  if (!hcpApiConfigured()) {
+    return res.status(503).json({ error: "Housecall Pro isn't connected yet." });
   }
-  let plan;
   try {
-    plan = await parseOrderSheet(req.body, { today: todayPhoenixString() });
-  } catch {
-    return res.status(400).json({ error: 'That file is not the order sheet. In Google Sheets use File > Download > Microsoft Excel (.xlsx).' });
+    const job = await lookupHcpJob(req.query.q);
+    if (!job) return res.status(404).json({ error: "Couldn't find that job in Housecall Pro." });
+    return res.json({ job });
+  } catch (error) {
+    if (error instanceof HcpError) return res.status(502).json({ error: error.message });
+    throw error;
   }
-
-  for (const [token, entry] of sheetImports) if (entry.expires < Date.now()) sheetImports.delete(token);
-  const token = randomUUID();
-  sheetImports.set(token, { plan, expires: Date.now() + 30 * 60 * 1000 });
-  const count = async (sql) => Number((await dbGet(sql))?.count || 0);
-  const existingSuppliers = (await dbAll('SELECT name FROM suppliers')).map((row) => row.name.trim().toLowerCase());
-  const existingStaff = (await dbAll('SELECT name FROM staff_names')).map((row) => row.name.trim().toLowerCase());
-  return res.json({
-    token,
-    tabs: plan.tabs,
-    orders: plan.orders.map((order) => ({
-      tab: order.tab, row: order.row, customer_name: order.customer_name, supplier: order.supplier, category: order.category,
-      date_ordered: order.date_ordered, date_received: order.date_received, job_scheduled: order.job_scheduled,
-      job_completed: order.job_completed, invoiced: order.invoiced, housecall_job_number: order.housecall_job_number
-    })),
-    suppliers: plan.suppliers.map((name) => ({ name, existing: existingSuppliers.includes(name.trim().toLowerCase()) })),
-    staff: plan.staff.map((name) => ({ name, existing: existingStaff.includes(name.trim().toLowerCase()) })),
-    skipped: plan.skipped,
-    current: {
-      orders: await count('SELECT COUNT(*) AS count FROM orders'),
-      jobs: await count('SELECT COUNT(*) AS count FROM job_drafts'),
-      suppliers: existingSuppliers.length,
-      staff: existingStaff.length
-    }
-  });
 }));
 
-app.post('/api/admin/sheet-import/apply', requireAdminAuth, asyncRoute(async (req, res) => {
-  const entry = sheetImports.get(String(req.body.token || ''));
-  if (!entry || entry.expires < Date.now()) {
-    return res.status(409).json({ error: 'Preview the sheet again before importing.' });
+// Which tracker category each HCP job type fills in.
+app.get('/api/hcp/job-types', requireAdminAuth, asyncRoute(async (req, res) => {
+  if (!hcpApiConfigured()) {
+    return res.status(503).json({ error: "Housecall Pro isn't connected yet." });
   }
-  const mode = req.body.mode === 'replace' ? 'replace' : 'add';
-  if (req.body.confirmation !== (mode === 'replace' ? 'REPLACE' : 'IMPORT')) {
-    return res.status(400).json({ error: `Type ${mode === 'replace' ? 'REPLACE' : 'IMPORT'} to confirm.` });
-  }
-
-  if (sheetImportRunning) {
-    return res.status(409).json({ error: 'An import is already running.' });
-  }
-  // Claim the preview before anything async, so a double click imports once.
-  sheetImportRunning = true;
-  sheetImports.delete(String(req.body.token));
   try {
-    const existing = {
-      suppliers: await dbAll('SELECT id, name, active FROM suppliers'),
-      staff: await dbAll('SELECT id, name FROM staff_names'),
-      orders: await dbAll('SELECT customer_name, supplier, date_ordered FROM orders WHERE is_archived = 0')
-    };
-    const { statements, result } = importStatements(entry.plan, { mode, existing, now: isoNow(), actor: actor(req) });
-    await runInTransaction(statements);
-    broadcastLiveEvent('master-lists', { action: 'sheet-import' });
-    broadcastLiveEvent('job-drafts', { action: 'sheet-import' });
-    broadcastLiveEvent('orders', { action: 'sheet-import' });
-    return res.json(result);
-  } finally {
-    sheetImportRunning = false;
+    return res.json({ job_types: await hcpJobTypes() });
+  } catch (error) {
+    if (error instanceof HcpError) return res.status(502).json({ error: error.message });
+    throw error;
   }
+}));
+
+app.put('/api/hcp/job-types', requireAdminAuth, asyncRoute(async (req, res) => {
+  return res.json({ categories: await saveJobTypeCategories(req.body.categories) });
+}));
+
+// Start fresh: empties the tracker (orders and approved jobs, and optionally
+// suppliers and staff) for go-live. Logins, Freeport Billing and the Housecall
+// Pro settings stay. Needs the separate admin login and the typed words.
+const trackerCounts = async () => {
+  const count = async (sql) => Number((await dbGet(sql))?.count || 0);
+  return {
+    orders: await count('SELECT COUNT(*) AS count FROM orders'),
+    jobs: await count('SELECT COUNT(*) AS count FROM job_drafts'),
+    suppliers: await count('SELECT COUNT(*) AS count FROM suppliers'),
+    staff: await count('SELECT COUNT(*) AS count FROM staff_names')
+  };
+};
+
+app.get('/api/admin/start-fresh', requireAdminAuth, asyncRoute(async (req, res) => res.json(await trackerCounts())));
+
+app.post('/api/admin/start-fresh', requireAdminAuth, asyncRoute(async (req, res) => {
+  if (req.body.confirmation !== 'DELETE ALL') {
+    return res.status(400).json({ error: 'Type DELETE ALL to confirm.' });
+  }
+  const before = await trackerCounts();
+  const includeLists = req.body.include_lists === true;
+  await runInTransaction([
+    { sql: 'DELETE FROM orders' },
+    { sql: 'DELETE FROM job_drafts' },
+    { sql: 'DELETE FROM hcp_jobs' },
+    ...(includeLists ? [{ sql: 'DELETE FROM suppliers' }, { sql: 'DELETE FROM staff_names' }] : [])
+  ]);
+  broadcastLiveEvent('orders', { action: 'start-fresh' });
+  broadcastLiveEvent('job-drafts', { action: 'start-fresh' });
+  broadcastLiveEvent('master-lists', { action: 'start-fresh' });
+  return res.json({ deleted: { orders: before.orders, jobs: before.jobs, suppliers: includeLists ? before.suppliers : 0, staff: includeLists ? before.staff : 0 } });
 }));
 
 app.use((error, req, res, next) => {
@@ -1243,7 +1248,7 @@ app.use((error, req, res, next) => {
   console.error('Request failed', { method: req.method, route: req.route?.path || 'middleware', code: error.code || 'REQUEST_ERROR' });
   if (res.headersSent) return next(error);
   if (error.type === 'entity.too.large') {
-    return res.status(413).json({ error: 'That file is too large. Download the sheet as .xlsx again without pictures, or ask for help.' });
+    return res.status(413).json({ error: 'That request is too large.' });
   }
   if (error.expose && error.status >= 400 && error.status < 500) {
     return res.status(error.status).json({ error: 'The request could not be read. Try again.' });

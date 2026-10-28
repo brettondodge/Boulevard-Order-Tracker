@@ -211,9 +211,7 @@ if (!isProduction) {
     scheduled_date: 'TEXT',
     schedule_note: 'TEXT',
     job_completed: 'INTEGER NOT NULL DEFAULT 0',
-    completed_date: 'TEXT',
-    invoiced: 'INTEGER NOT NULL DEFAULT 0',
-    invoice_reference: 'TEXT'
+    completed_date: 'TEXT'
   };
   for (const [column, type] of Object.entries({ ...progressColumns, hcp_job_id: 'TEXT' })) {
     const exists = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('orders') WHERE name = ?").get(column);
@@ -221,6 +219,8 @@ if (!isProduction) {
   }
   // Housecall Pro tables (migrations/007-housecall.sql is portable SQL).
   db.exec(fs.readFileSync(new URL('../migrations/007-housecall.sql', import.meta.url), 'utf8'));
+  const hasHcpTags = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('hcp_jobs') WHERE name = 'tags'").get();
+  if (Number(hasHcpTags.count) === 0) db.exec('ALTER TABLE hcp_jobs ADD COLUMN tags TEXT;');
 
   const hasStaffTable = db.prepare("SELECT COUNT(*) as count FROM sqlite_master WHERE type = 'table' AND name = 'staff_names'").get();
   if (Number(hasStaffTable.count) === 0) {

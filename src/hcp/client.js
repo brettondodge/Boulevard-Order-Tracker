@@ -1,6 +1,8 @@
 // Housecall Pro public API client (https://docs.housecallpro.com).
 // The company API key comes from the server environment (HCP_API_KEY) and
-// never reaches the browser or the database. Only GET requests are made.
+// never reaches the browser or the database. The tracker reads jobs, job
+// types and tags; its only writes are job tags and job notes, which need a
+// key created with Full access.
 const DEFAULT_BASE = 'https://api.housecallpro.com';
 const MAX_RATE_LIMIT_WAIT_MS = 30000;
 const REQUEST_TIMEOUT_MS = 20000;
@@ -14,8 +16,8 @@ export class HcpError extends Error {
 
 export const hcpApiConfigured = () => Boolean(process.env.HCP_API_KEY);
 
-// Every HCP request in the app (sync, webhook re-reads, refreshes after an
-// edit) waits its turn, so the tracker never sends HCP a burst.
+// Every HCP request in the app (sync, webhook re-reads, lookups, tags and
+// notes) waits its turn, so the tracker never sends HCP a burst.
 let queue = Promise.resolve();
 function oneAtATime(task) {
   const run = queue.then(task, task);
@@ -36,9 +38,9 @@ function rateLimitWait(headers) {
 export function createHcpClient({ apiKey = process.env.HCP_API_KEY, baseUrl = process.env.HCP_API_BASE || DEFAULT_BASE, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   if (!apiKey) throw new HcpError("Housecall Pro isn't connected. Add HCP_API_KEY to the server settings.", 503);
 
-  const get = (path, query) => oneAtATime(() => request(path, query));
+  const call = (method, path, options) => oneAtATime(() => request(method, path, options));
 
-  async function request(path, query = {}) {
+  async function request(method, path, { query = {}, body } = {}) {
     const url = new URL(path, baseUrl);
     for (const [key, value] of Object.entries(query)) {
       for (const item of [].concat(value)) if (item !== undefined && item !== null && item !== '') url.searchParams.append(key, String(item));
@@ -47,25 +49,53 @@ export function createHcpClient({ apiKey = process.env.HCP_API_KEY, baseUrl = pr
       let response;
       try {
         // A hung request must not stall the hourly sync.
-        response = await fetch(url, { headers: { Authorization: `Token ${apiKey}`, Accept: 'application/json' }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+        response = await fetch(url, {
+          method,
+          headers: { Authorization: `Token ${apiKey}`, Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+          body: body ? JSON.stringify(body) : undefined,
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+        });
       } catch {
         throw new HcpError('Could not reach Housecall Pro.');
       }
-      // Over the limit: HCP sends RateLimit-Reset (epoch seconds). Wait, then retry a few times.
+      // Over the limit: wait as HCP asks, then retry a few times. Nothing was
+      // changed on a 429, so retrying a write is safe.
       if (response.status === 429 && attempt < 3) {
         await sleep(Math.min(Math.max(1000, rateLimitWait(response.headers)), MAX_RATE_LIMIT_WAIT_MS));
         continue;
       }
-      if (response.status === 401 || response.status === 403) throw new HcpError('Housecall Pro rejected the API key. Check HCP_API_KEY.', response.status);
+      if (response.status === 401 || response.status === 403) {
+        throw new HcpError(method === 'GET'
+          ? 'Housecall Pro rejected the API key. Check HCP_API_KEY.'
+          : "Housecall Pro didn't allow the change. The API key needs Full access to add tags and notes.", response.status);
+      }
       if (response.status === 404) return null;
       if (!response.ok) throw new HcpError(`Housecall Pro answered ${response.status}.`, response.status);
-      return response.json();
+      const text = await response.text();
+      return text ? JSON.parse(text) : {};
     }
   }
 
+  async function allPages(path, key) {
+    const items = [];
+    for (let page = 1; page <= 20; page += 1) {
+      const result = await call('GET', path, { query: { page, page_size: 100 } });
+      const batch = result?.[key] || [];
+      items.push(...batch);
+      if (!batch.length || page >= Number(result?.total_pages || page)) break;
+    }
+    return items;
+  }
+
+  const job = id => `/jobs/${encodeURIComponent(id)}`;
   return {
-    getJob: id => get(`/jobs/${encodeURIComponent(id)}`),
-    getJobInvoices: async id => (await get(`/jobs/${encodeURIComponent(id)}/invoices`))?.invoices || [],
-    listJobs: ({ page = 1, pageSize = 100, sortBy = 'created_at', sortDirection = 'desc' } = {}) => get('/jobs', { page, page_size: pageSize, sort_by: sortBy, sort_direction: sortDirection })
+    getJob: (id, { expand = [] } = {}) => call('GET', job(id), { query: { 'expand[]': expand } }),
+    listJobs: ({ page = 1, pageSize = 100, sortBy = 'created_at', sortDirection = 'desc' } = {}) => call('GET', '/jobs', { query: { page, page_size: pageSize, sort_by: sortBy, sort_direction: sortDirection } }),
+    listJobTypes: () => allPages('/job_fields/job_types', 'job_types'),
+    listTags: () => allPages('/tags', 'tags'),
+    createTag: name => call('POST', '/tags', { body: { name } }),
+    addJobTag: (jobId, tagId) => call('POST', `${job(jobId)}/tags`, { body: { tag_id: tagId } }),
+    removeJobTag: (jobId, tagId) => call('DELETE', `${job(jobId)}/tags/${encodeURIComponent(tagId)}`),
+    addJobNote: (jobId, content) => call('POST', `${job(jobId)}/notes`, { body: { content } })
   };
 }
