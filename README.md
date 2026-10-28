@@ -53,7 +53,7 @@ Local preview runs include fictional sample orders. They are kept in the local S
 - Job progress on every order: shop location, scheduled (date and note) and complete. Each order keeps its own; with Housecall Pro connected, scheduled and complete come from HCP.
 - Views for the labor meeting: To schedule (received and not scheduled), Scheduled and Done. Each line shows its furthest step and the next one; complete is the last step.
 - PO: the reference put on the supplier order, shown next to the customer.
-- Housecall Pro: paste an HCP job link (or job #) on an order or approved job and the customer, job #, category and notes fill in. Webhooks and an hourly sync keep scheduled / complete in step with HCP, and the tracker tags the HCP job "Materials ordered" / "Materials received" with a note. Setup: [docs/housecall-pro.md](docs/housecall-pro.md).
+- Housecall Pro: paste an HCP job link (or job #) on an order or approved job and the customer, job #, category and notes fill in. Webhooks and an hourly sync keep scheduled / complete in step with HCP, and the tracker tags the HCP job "Materials ordered" / "Materials received" with a note. Setup: [docs/housecall-pro.md](docs/housecall-pro.md). Every API call and webhook: [docs/housecall-pro-connections.md](docs/housecall-pro-connections.md).
 - Master Lists › Start fresh clears orders and approved jobs (and optionally suppliers and staff) for go-live.
 - Received orders remain searchable for history.
 - Overdue is a calculated flag, not a separate status.

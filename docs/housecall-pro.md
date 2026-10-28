@@ -8,8 +8,10 @@ when it arrived and which shelf it's on. This replaces the HCP Pipeline
 add-on ($100/month), which you can cancel.
 
 Built against HCP's official documentation (docs.housecallpro.com,
-help.housecallpro.com) and tested against a stand-in for HCP. Not yet
-connected to the real HCP account: that needs the setup steps below.
+help.housecallpro.com) and tested against a stand-in for HCP. The live site
+has had the API key since October 27, 2026; the setup steps below list the
+rest. Every API call and webhook the tracker uses is listed in
+[housecall-pro-connections.md](housecall-pro-connections.md).
 
 ## How it works day to day
 
