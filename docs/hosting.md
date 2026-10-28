@@ -64,7 +64,7 @@ First check for an existing tracker web service. Reuse it if present. If none ex
 | CF_ACCESS_AUD | Exact Access application AUD tag |
 | OMEGA_API_KEY | Omega EDI API key for Freeport's read-only invoice import, entered directly (added October 22, 2026). Without it the import button is disabled; replace it here and in local `.env` if the key is ever regenerated |
 | HCP_API_KEY | Housecall Pro company API key (MAX plan, Full access so the tracker can add job tags and notes), entered directly. See docs/housecall-pro.md |
-| HCP_WEBHOOK_SECRET | Signing secret Housecall Pro shows after the webhook URL is saved, entered directly. Without it /api/hcp/webhooks answers 503 |
+| HCP_WEBHOOK_SECRET | Signing secret Housecall Pro shows after the webhook URL is saved, entered directly. Until it is set, /api/hcp/webhooks answers HCP's save-time test but changes nothing |
 | HCP_SYNC_INTERVAL_MINUTES | Optional. Housecall Pro catch-up interval, default 60; 0 turns it off |
 | HCP_WRITE_BACK | Optional. `off` stops the tracker adding tags and notes to HCP jobs |
 

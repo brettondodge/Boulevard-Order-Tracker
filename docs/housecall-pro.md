@@ -80,8 +80,11 @@ secrets into chat or email: enter them only in Render.
    in Render first. Then add your real suppliers and Ordered by staff in
    Master Lists.
 6. **Turn on webhooks in HCP:** My Apps › All Apps › **Webhooks** › switch it
-   on › URL `https://tools.blvdglass.com/api/hcp/webhooks` › Save. HCP then
-   shows a **signing secret**: copy it. Choose these events: all `job.*` and
+   on › URL `https://tools.blvdglass.com/api/hcp/webhooks` › Save. HCP sends a
+   test request to that address when you save, so this only works once the
+   new version is live (step 4) and the Cloudflare rule is in place (step 3);
+   otherwise HCP says "Error testing webhook request". HCP then shows a
+   **signing secret**: copy it. Choose these events: all `job.*` and
    all `job.appointment.*`. (Others are accepted and ignored.)
 7. **Add the secret to Render:** `HCP_WEBHOOK_SECRET` = the signing secret.
    Save and let Render restart the service.
@@ -98,7 +101,7 @@ secrets into chat or email: enter them only in Render.
 | Render variable | Needed | Meaning |
 |---|---|---|
 | `HCP_API_KEY` | Yes | HCP company API key (MAX plan). Full access for tags and notes. |
-| `HCP_WEBHOOK_SECRET` | Yes | Signing secret HCP shows after saving the webhook URL. Without it the webhook address answers 503. |
+| `HCP_WEBHOOK_SECRET` | Yes | Signing secret HCP shows after saving the webhook URL. Until it is set, the webhook address answers HCP's test but changes nothing; once set, only requests signed with it are accepted. |
 | `HCP_SYNC_INTERVAL_MINUTES` | No | Catch-up interval, default 60. `0` turns the automatic sync off (the button still works). |
 | `HCP_WRITE_BACK` | No | `off` stops the tags and notes. Default on. |
 

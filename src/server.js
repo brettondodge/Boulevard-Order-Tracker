@@ -87,7 +87,9 @@ app.get('/healthz', asyncRoute(async (req, res) => {
 // HCP's signature instead (docs/housecall-pro.md).
 app.post('/api/hcp/webhooks', express.raw({ type: () => true, limit: '1mb' }), asyncRoute(async (req, res) => {
   if (!hcpWebhookConfigured()) {
-    return res.status(503).json({ error: 'Housecall Pro webhooks are not set up.' });
+    // HCP sends a test request when the URL is saved, before it shows the
+    // signing secret. Answer it, doing nothing, so the URL can be saved.
+    return res.json({ received: true, outcome: 'not set up' });
   }
   const timestamp = req.get('Api-Timestamp');
   const signature = req.get('Api-Signature');

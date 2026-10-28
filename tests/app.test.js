@@ -1198,12 +1198,15 @@ test('Start fresh empties the tracker for admins, keeping logins and, if asked, 
   }
 });
 
-test('Housecall Pro webhooks are refused until a signing secret is set', async () => {
+test('before the signing secret is set, webhooks are answered but change nothing (HCP tests the URL first)', async () => {
   const child = startServer();
   try {
     await delay(1500);
-    const response = await requestJson('http://127.0.0.1:4100/api/hcp/webhooks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"event":"job.created"}' });
-    assert.equal(response.status, 503);
+    const before = (await requestJson('http://127.0.0.1:4100/api/orders?status=All%20Orders')).body.orders;
+    const response = await requestJson('http://127.0.0.1:4100/api/hcp/webhooks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ event: 'job.completed', job: { id: 'job_0000000000000000000000000000000a', invoice_number: before[0]?.housecall_job_number || '1', work_status: 'complete unrated' } }) });
+    assert.equal(response.status, 200);
+    assert.equal(response.body.outcome, 'not set up');
+    assert.deepEqual((await requestJson('http://127.0.0.1:4100/api/orders?status=All%20Orders')).body.orders.map(order => [order.id, order.job_completed]), before.map(order => [order.id, order.job_completed]));
   } finally {
     child.kill('SIGTERM');
   }
