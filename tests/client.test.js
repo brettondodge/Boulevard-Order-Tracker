@@ -211,6 +211,27 @@ test('clicking a row opens its details with every action; buttons, links and cop
   assert.equal(dialog.open, false, 'an order that leaves the list closes its details');
 });
 
+test('Master Lists: several new names before saving each stay, even starting from an empty list', () => {
+  const { node, tracker } = client();
+  tracker.bindEvents();
+  tracker.state.masterSuppliers = [{ id: 's1', name: 'Existing Supplier', active: true }];
+  tracker.state.masterStaffNames = [];
+  const type = (editor, kind, index, value) => node(editor).listeners.input({ target: { dataset: { kind, field: 'name', index: String(index), id: '' }, value } });
+
+  node('addSupplierEntry').listeners.click();
+  type('supplierMasterList', 'supplier', 1, 'New Supplier One');
+  node('addSupplierEntry').listeners.click();
+  type('supplierMasterList', 'supplier', 2, 'New Supplier Two');
+  assert.deepEqual(tracker.state.masterSuppliers.map(item => item.name), ['Existing Supplier', 'New Supplier One', 'New Supplier Two']);
+
+  // An empty list (after Start fresh) shows one blank row; what's typed there is kept.
+  type('orderedByMasterList', 'staff', 0, 'AB');
+  node('addStaffEntry').listeners.click();
+  type('orderedByMasterList', 'staff', 1, 'CD');
+  node('orderedByMasterList').listeners.change({ target: { dataset: { kind: 'staff', field: 'active', index: '1', id: '' }, checked: false } });
+  assert.deepEqual(tracker.state.masterStaffNames.map(item => [item.name, item.active]), [['AB', true], ['CD', false]]);
+});
+
 test('condensed toggle preserves filters, uses the loaded orders and switches layout on desktop and phone', () => {
   const { context, node, tracker } = client(() => { throw new Error('Toggling layout must not request new data'); });
   tracker.state.orders = [{ id: 'filtered-order', customer_name: 'Synthetic <Customer>', supplier: 'Keep Supplier', status: 'Received', notes: 'Check clearance', date_received: '2026-10-12' }];

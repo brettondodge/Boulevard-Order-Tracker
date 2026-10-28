@@ -471,59 +471,29 @@ function bindEvents() {
     await logoutAsAdmin();
   });
 
-  elements.addSupplierEntry.addEventListener('click', () => {
-    state.masterSuppliers.push({ id: '', name: '', active: true });
-    renderMasterListsEditor();
-  });
+  elements.addSupplierEntry.addEventListener('click', () => addMasterListEntry(state.masterSuppliers, elements.supplierMasterList));
+  elements.addStaffEntry.addEventListener('click', () => addMasterListEntry(state.masterStaffNames, elements.orderedByMasterList));
 
-  elements.addStaffEntry.addEventListener('click', () => {
-    state.masterStaffNames.push({ id: '', name: '', active: true });
-    renderMasterListsEditor();
-  });
-
-  elements.supplierMasterList.addEventListener('input', (event) => {
-    const target = event.target;
-    if (!target.dataset.kind) return;
+  // A row's data-index is its place in the list it was drawn from. New rows
+  // have no id yet, so they can't be told apart by id.
+  const masterListRow = (target) => {
+    if (!target.dataset.kind) return null;
     const list = target.dataset.kind === 'supplier' ? state.masterSuppliers : state.masterStaffNames;
-    const activeRow = list.find((item) => item.id === target.dataset.id || (!item.id && target.dataset.index === String(list.indexOf(item))));
-    if (!activeRow) return;
-    if (target.dataset.field === 'name') {
-      activeRow.name = target.value;
-    }
-  });
-
-  elements.supplierMasterList.addEventListener('change', (event) => {
-    const target = event.target;
-    if (!target.dataset.kind) return;
-    const list = target.dataset.kind === 'supplier' ? state.masterSuppliers : state.masterStaffNames;
-    const activeRow = list.find((item) => item.id === target.dataset.id || (!item.id && target.dataset.index === String(list.indexOf(item))));
-    if (!activeRow) return;
-    if (target.dataset.field === 'active') {
-      activeRow.active = target.checked;
-    }
-  });
-
-  elements.orderedByMasterList.addEventListener('input', (event) => {
-    const target = event.target;
-    if (!target.dataset.kind) return;
-    const list = target.dataset.kind === 'staff' ? state.masterStaffNames : state.masterSuppliers;
-    const activeRow = list.find((item) => item.id === target.dataset.id || (!item.id && target.dataset.index === String(list.indexOf(item))));
-    if (!activeRow) return;
-    if (target.dataset.field === 'name') {
-      activeRow.name = target.value;
-    }
-  });
-
-  elements.orderedByMasterList.addEventListener('change', (event) => {
-    const target = event.target;
-    if (!target.dataset.kind) return;
-    const list = target.dataset.kind === 'staff' ? state.masterStaffNames : state.masterSuppliers;
-    const activeRow = list.find((item) => item.id === target.dataset.id || (!item.id && target.dataset.index === String(list.indexOf(item))));
-    if (!activeRow) return;
-    if (target.dataset.field === 'active') {
-      activeRow.active = target.checked;
-    }
-  });
+    const index = Number(target.dataset.index);
+    // The blank row shown for an empty list becomes a real entry once used.
+    if (index === list.length) list.push({ id: '', name: '', active: true });
+    return list[index] || null;
+  };
+  for (const editor of [elements.supplierMasterList, elements.orderedByMasterList]) {
+    editor.addEventListener('input', (event) => {
+      const row = masterListRow(event.target);
+      if (row && event.target.dataset.field === 'name') row.name = event.target.value;
+    });
+    editor.addEventListener('change', (event) => {
+      const row = masterListRow(event.target);
+      if (row && event.target.dataset.field === 'active') row.active = event.target.checked;
+    });
+  }
 
   elements.supplierMasterList.addEventListener('click', (event) => {
     const button = event.target.closest('button[data-action]');
@@ -891,6 +861,13 @@ function renderOrderedBySelection() {
     input.checked = state.orderedBy.includes(input.value);
   });
   renderFilterCount();
+}
+
+// Adds a blank row and puts the cursor in it.
+function addMasterListEntry(list, editor) {
+  list.push({ id: '', name: '', active: true });
+  renderMasterListsEditor();
+  [...editor.querySelectorAll('input[data-field="name"]')].at(-1)?.focus();
 }
 
 function renderMasterListsEditor() {
