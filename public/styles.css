@@ -895,6 +895,16 @@ tr.overdue {
 }
 
 .status-badge.invoiced {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.status-badge.archived {
+  background: var(--panel-alt);
+  color: var(--muted);
+}
+
+.status-badge.invoiced {
   background: var(--panel-alt);
   color: var(--muted);
 }

@@ -108,6 +108,7 @@ export function createHcpClient({ apiKey = process.env.HCP_API_KEY, baseUrl = pr
     addJobTag: (jobId, tagId) => call('POST', `${job(jobId)}/tags`, { body: { tag_id: tagId } }),
     removeJobTag: (jobId, tagId) => call('DELETE', `${job(jobId)}/tags/${encodeURIComponent(tagId)}`),
     addJobNote: (jobId, content) => call('POST', `${job(jobId)}/notes`, { body: { content } }),
+    listJobInvoices: jobId => call('GET', `${job(jobId)}/invoices`),
     // Pipeline add-on. HCP only moves a record forward on the board.
     listPipelineStatuses: resourceType => allPages('/pipeline/statuses', 'statuses', { resource_type: resourceType }),
     updatePipelineStatus: ({ resourceType, resourceId, statusId }) => call('PUT', '/pipeline/statuses', { body: { resource_type: resourceType, resource_id: resourceId, status_id: statusId } })

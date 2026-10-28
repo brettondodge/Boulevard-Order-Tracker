@@ -14,7 +14,7 @@ process.env.PREVIEW_MODE = 'false';
 // Never reach the real Housecall Pro API, even with a key in the local .env.
 process.env.HCP_API_KEY = '';
 process.env.HCP_WEBHOOK_SECRET = '';
-const { applyHcpJob, guessCategory, handleHcpWebhook, hcpApprovedJobChanged, hcpJobIdFrom, hcpJobIdFromLink, hcpJobRow, hcpJobTypes, hcpOrderChanged, hcpPipeline, hcpSummary, lookupHcpJob, phoenixDate, progressFromHcp, saveJobTypeCategories, savePipelineSteps, syncHcp, testPipelineMove, verifyWebhookSignature, webhookEventId, workStatusOf } = await import('../src/hcp/sync.js');
+const { applyHcpJob, guessCategory, handleHcpWebhook, hcpApprovedJobChanged, invoiceSummary, hcpJobIdFrom, hcpJobIdFromLink, hcpJobRow, hcpJobTypes, hcpOrderChanged, hcpPipeline, hcpSummary, lookupHcpJob, phoenixDate, progressFromHcp, saveJobTypeCategories, savePipelineSteps, syncHcp, testPipelineMove, verifyWebhookSignature, webhookEventId, workStatusOf } = await import('../src/hcp/sync.js');
 const { dbRun, dbGet } = await import('../src/db.js');
 await (await import('../src/db.js')).initializeDatabase();
 
@@ -90,7 +90,7 @@ test('an HCP job maps onto tracker progress: scheduled and complete mirror HCP',
   assert.equal(scheduled.tags, '["VIP"]');
   assert.equal(scheduled.assigned_names, undefined, 'tech names are not kept');
   const current = { job_scheduled: 0, scheduled_date: '', schedule_note: 'Two-man job', job_completed: 0, completed_date: '' };
-  assert.deepEqual(progressFromHcp(scheduled, current), { job_scheduled: 1, scheduled_date: '2026-11-03', schedule_note: 'Two-man job', job_completed: 0, completed_date: '' });
+  assert.deepEqual(progressFromHcp(scheduled, current), { job_scheduled: 1, scheduled_date: '2026-11-03', schedule_note: 'Two-man job', job_completed: 0, completed_date: '', invoiced: 0, invoiced_date: '', paid: 0, paid_date: '' });
 
   const local = hcpJobRow(syntheticHcpJob({ work_status: 'scheduled', schedule: { scheduled_start: '2026-11-05T15:00:00Z', scheduled_start_local: '2026-11-05T08:00:00-07:00' } }), 'now');
   assert.equal(local.scheduled_local_date, '2026-11-05');
@@ -103,6 +103,26 @@ test('an HCP job maps onto tracker progress: scheduled and complete mirror HCP',
   const finished = progressFromHcp({ ...scheduled, work_status: 'complete unrated', completed_at: '2026-11-04T01:00:00Z' }, current);
   assert.equal(finished.job_completed, 1);
   assert.equal(finished.completed_date, '2026-11-03');
+  assert.equal(scheduled.outstanding_balance, 125000, "the job's balance is kept");
+  assert.equal(finished.paid, 0, 'complete with a balance due is not paid');
+
+  // An unpaid invoice sent: invoiced. Balance paid on a complete job: paid in full.
+  const invoiced = progressFromHcp({ ...scheduled, work_status: 'complete unrated', completed_at: '2026-11-04T01:00:00Z', invoice_sent_at: '2026-11-05T17:00:00Z' }, current);
+  assert.deepEqual([invoiced.invoiced, invoiced.invoiced_date, invoiced.paid], [1, '2026-11-05', 0]);
+  const settled = progressFromHcp({ ...scheduled, work_status: 'complete unrated', completed_at: '2026-11-04T01:00:00Z', outstanding_balance: 0, invoice_sent_at: null, invoice_paid_at: '2026-11-07T17:00:00Z' }, { ...current, invoiced: 1, invoiced_date: '2026-11-05' });
+  assert.deepEqual([settled.paid, settled.paid_date, settled.invoiced, settled.invoiced_date], [1, '2026-11-07', 1, '2026-11-05'], 'paid keeps the invoice it settled');
+  // Paid up front: not paid in full for the tracker until the job is complete.
+  assert.equal(progressFromHcp({ ...scheduled, outstanding_balance: 0, invoice_paid_at: '2026-10-20T17:00:00Z' }, current).paid, 0);
+  // A balance not reported yet is not "paid".
+  assert.equal(progressFromHcp({ ...scheduled, work_status: 'complete unrated', outstanding_balance: null }, current).paid, 0);
+  // Only invoices sent and still open count as "sent"; voided ones don't.
+  assert.deepEqual(invoiceSummary([
+    { status: 'paid', sent_at: '2026-10-01T00:00:00Z', paid_at: '2026-10-02T00:00:00Z' },
+    { status: 'open', sent_at: '2026-11-05T17:00:00Z' },
+    { status: 'voided', sent_at: '2026-11-06T17:00:00Z' },
+    { status: 'open', sent_at: null }
+  ]), { invoice_sent_at: '2026-11-05T17:00:00.000Z', invoice_paid_at: '2026-10-02T00:00:00.000Z' });
+  assert.deepEqual(invoiceSummary([]), { invoice_sent_at: null, invoice_paid_at: null });
 
   // Unscheduled in HCP clears the tracker's scheduled date.
   const back = progressFromHcp({ ...scheduled, work_status: 'needs scheduling', scheduled_start: null, scheduled_local_date: null }, { ...current, job_scheduled: 1, scheduled_date: '2026-11-03' });
@@ -165,17 +185,17 @@ test('one job HCP cannot read does not stop the sync from finding the others by 
     fake.jobs.set('job_found', syntheticHcpJob({ id: 'job_found', invoice_number: '22222222', work_status: 'scheduled', schedule: { scheduled_start: '2026-11-03T15:00:00Z' } }));
     fake.failJob('job_broken', 500);
     const now = '2026-10-26T00:00:00.000Z';
-    const insert = (id, number, link, extra = '') => dbRun(`INSERT INTO orders (id, customer_name, supplier, date_ordered, housecall_job_number, housecall_job_link, created_at, updated_at, status${extra ? ', job_completed' : ''}) VALUES (?, 'Synthetic Sync', 'Synthetic Supplier', '2026-10-01', ?, ?, ?, ?, 'Ordered'${extra})`, [id, number, link, now, now]);
+    const insert = (id, number, link, extra = '') => dbRun(`INSERT INTO orders (id, customer_name, supplier, date_ordered, housecall_job_number, housecall_job_link, created_at, updated_at, status${extra ? ', job_completed, paid' : ''}) VALUES (?, 'Synthetic Sync', 'Synthetic Supplier', '2026-10-01', ?, ?, ?, ?, 'Ordered'${extra})`, [id, number, link, now, now]);
     await insert('o-broken', '', 'https://pro.housecallpro.com/app/jobs/job_broken');
     await insert('o-number', '22222222', '');
-    await insert('o-settled', '33333333', '', ', 1');
+    await insert('o-settled', '33333333', '', ', 1, 1');
     const client = createHcpClient({ apiKey: fake.apiKey, baseUrl: fake.url, sleep: async () => {} });
     const result = await syncHcp({ client });
     assert.equal(result.jobs_failed, 1);
     assert.equal(result.jobs_found_by_number, 1);
     assert.equal((await dbGet('SELECT hcp_job_id, job_scheduled FROM orders WHERE id = ?', ['o-number'])).job_scheduled, 1);
     assert.match((await dbGet("SELECT value FROM hcp_state WHERE name = 'last_error'")).value, /1 jobs could not be read/);
-    // Finished orders aren't looked up by number.
+    // Finished orders (complete and paid) aren't looked up by number.
     assert.equal(result.numbers_not_found, 0);
   } finally {
     await fake.close();
@@ -316,6 +336,49 @@ test('ordering and receiving tag the HCP job and add a note, after the Undo wind
     assert.match((await dbGet("SELECT value FROM hcp_state WHERE name = 'last_write_error'")).value, /needs Full access/);
   } finally {
     for (const [name, value] of [['HCP_API_KEY', saved.key], ['HCP_API_BASE', saved.base], ['HCP_WRITE_DELAY_MS', saved.delay]]) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    await fake.close();
+  }
+});
+
+test('invoice events and the catch-up mark a complete job invoiced, then paid in full', async () => {
+  const fake = await startFakeHcp();
+  const saved = { key: process.env.HCP_API_KEY, base: process.env.HCP_API_BASE };
+  Object.assign(process.env, { HCP_API_KEY: fake.apiKey, HCP_API_BASE: fake.url });
+  const order = id => dbGet('SELECT job_completed, completed_date, invoiced, invoiced_date, paid, paid_date FROM orders WHERE id = ?', [id]);
+  try {
+    const JOB = 'job_00000000000000000000000000000e01';
+    const finished = { work_status: 'complete unrated', work_timestamps: { completed_at: '2026-11-04T20:00:00Z' } };
+    fake.jobs.set(JOB, { ...syntheticHcpJob({ id: JOB, invoice_number: '10260001', ...finished }), invoices: [{ id: 'invoice_1', status: 'open', sent_at: '2026-11-05T17:00:00Z' }] });
+    const now = '2026-11-01T00:00:00.000Z';
+    await dbRun("INSERT INTO orders (id, customer_name, supplier, date_ordered, hcp_job_id, created_at, updated_at, status) VALUES ('inv-1', 'Synthetic Invoiced', 'Jeld-Wen', '2026-10-01', ?, ?, ?, 'Received')", [JOB, now, now]);
+
+    // Invoice sent: the event carries one invoice, so the job and all its invoices are read.
+    const sent = await handleHcpWebhook({ event: 'invoice.sent', event_occurred_at: '2026-11-05T17:00:01Z', invoice: { id: 'invoice_1', job_id: JOB, status: 'open', sent_at: '2026-11-05T17:00:00Z' } }, { eventId: 'evt-invoice-sent' });
+    assert.equal(sent.outcome, 'applied');
+    assert.ok(fake.requests.some(request => request.path === `/jobs/${JOB}/invoices`));
+    assert.deepEqual({ ...(await order('inv-1')) }, { job_completed: 1, completed_date: '2026-11-04', invoiced: 1, invoiced_date: '2026-11-05', paid: 0, paid_date: '' });
+
+    // Paid in full: the balance is zero and the invoice is paid.
+    fake.jobs.set(JOB, { ...fake.jobs.get(JOB), outstanding_balance: 0, invoices: [{ id: 'invoice_1', status: 'paid', sent_at: '2026-11-05T17:00:00Z', paid_at: '2026-11-07T18:00:00Z' }] });
+    assert.equal((await handleHcpWebhook({ event: 'invoice.paid', event_occurred_at: '2026-11-07T18:00:01Z', invoice: { id: 'invoice_1', job_id: JOB, status: 'paid' } }, { eventId: 'evt-invoice-paid' })).outcome, 'applied');
+    assert.deepEqual({ ...(await order('inv-1')) }, { job_completed: 1, completed_date: '2026-11-04', invoiced: 1, invoiced_date: '2026-11-05', paid: 1, paid_date: '2026-11-07' });
+
+    // Invoices for jobs the tracker doesn't follow are ignored.
+    assert.equal((await handleHcpWebhook({ event: 'invoice.sent', invoice: { id: 'invoice_x', job_id: 'job_00000000000000000000000000000e99' } }, { eventId: 'evt-invoice-other' })).outcome, 'ignored');
+
+    // The catch-up keeps reading a complete job until it is paid, invoices included.
+    const LATER = 'job_00000000000000000000000000000e02';
+    fake.jobs.set(LATER, { ...syntheticHcpJob({ id: LATER, invoice_number: '10260002', ...finished }), invoices: [] });
+    await dbRun("INSERT INTO orders (id, customer_name, supplier, date_ordered, hcp_job_id, job_completed, completed_date, created_at, updated_at, status) VALUES ('inv-2', 'Synthetic Later', 'Jeld-Wen', '2026-10-01', ?, 1, '2026-11-04', ?, ?, 'Received')", [LATER, now, now]);
+    fake.jobs.get(LATER).invoices = [{ id: 'invoice_2', status: 'open', sent_at: '2026-11-06T17:00:00Z' }];
+    await syncHcp();
+    assert.equal((await order('inv-2')).invoiced, 1);
+    assert.equal((await order('inv-2')).invoiced_date, '2026-11-06');
+  } finally {
+    for (const [name, value] of [['HCP_API_KEY', saved.key], ['HCP_API_BASE', saved.base]]) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }

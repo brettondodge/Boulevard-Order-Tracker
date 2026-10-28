@@ -24,7 +24,8 @@ board moves also need the Pipeline add-on, which you're keeping.
 | Order materials on an approved job | Same as a pasted link | Fills the category and notes on the order form. |
 | An order is saved with a new HCP link | `GET /jobs/{id}` | Shows the job's HCP status on the order right away. |
 | An appointment webhook arrives, or a webhook looks older than what the tracker has | `GET /jobs/{id}` | Reads the whole job so no change is missed. |
-| Hourly catch-up, or Master Lists › **Sync with Housecall Pro now** | `GET /jobs/{id}` for every unfinished linked job, and `GET /jobs` (newest 3,000) for orders that only have a job # | Updates scheduled and complete. Links orders found by job #. Re-matches tags. |
+| Hourly catch-up, or Master Lists › **Sync with Housecall Pro now** | `GET /jobs/{id}` for every linked job not yet complete and paid, and `GET /jobs` (newest 3,000) for orders that only have a job # | Updates scheduled, complete, invoiced and paid. Links orders found by job #. Re-matches tags. |
+| A job is complete (whenever it is read), or an invoice webhook arrives | `GET /jobs/{id}/invoices` | Whether an unpaid invoice has been sent, and when the last one was paid. |
 | An admin opens Master Lists › Housecall Pro | `GET /job_fields/job_types` | Lists your HCP job types so each can be given a tracker category. |
 | The first time a tag is needed | `GET /tags` | Finds the tracker's two tags in HCP. |
 | An admin opens Master Lists › Housecall Pro, or saves or tries the Pipeline columns | `GET /pipeline/statuses?resource_type=job` | Lists your Jobs board columns so each tracker step can be given one. |
@@ -107,7 +108,8 @@ it has orders or approved jobs for, and records the rest as ignored.
 |---|---|
 | `job.created`, `job.updated`, `job.scheduled`, `job.on_my_way`, `job.started`, `job.completed`, `job.paid`, `job.canceled`, `job.deleted` | Takes the status, schedule, completion time and tags from the event and updates that job's orders |
 | `job.appointment.*` (scheduled, rescheduled, discarded, …) | Reads the whole job from the API, because the event only describes the visit |
-| Anything else (invoices, estimates, customers, …) | Recorded and ignored |
+| `invoice.*` (sent, paid, created, voided, …) | Reads the job and all of its invoices from the API, because the event only describes one invoice |
+| Anything else (estimates, customers, leads, …) | Recorded and ignored |
 
 Master Lists › Housecall Pro lists the last 10 events. The history is kept
 for 90 days.
@@ -121,6 +123,8 @@ for 90 days.
 | Rescheduled | The date changes |
 | Unscheduled again | Back to not scheduled |
 | Complete (rated or unrated) | **Done**, with HCP's completion date |
+| Complete, and an unpaid invoice has been sent | **Invoiced**, with the day it was sent |
+| Complete, and the balance is paid in full | **Archived** for 7 days, then deleted. Paid up front isn't archived until the job is complete. |
 | Canceled or deleted | Left as it is. The HCP line goes away and the tracker's own Mark scheduled / Mark complete buttons come back. |
 
 Linked orders show what HCP says ("HCP: Scheduled Nov 3"). Instead of the
@@ -141,11 +145,13 @@ point at the same HCP job.
 ## 6. What the tracker keeps from HCP
 
 - **For each job it follows:** the HCP id, job #, work status, scheduled
-  start and day, completed, canceled and deleted times, tags, and when it
-  was last read.
+  start and day, completed, canceled and deleted times, tags, the balance
+  due, when an unpaid invoice was last sent and when one was last paid, and
+  when it was last read.
 - **Copied into an order when it's filled in:** the customer name, job #,
   category and notes.
-- **Nothing else:** no addresses, prices, invoices, payments or employees.
+- **Nothing else:** no addresses, prices, invoice line items, payment
+  details or employees.
 
 ## 7. What it never does
 
@@ -154,8 +160,8 @@ point at the same HCP job.
   Pipeline's automations.
 - **No changes to jobs:** it never creates, schedules, completes or cancels
   an HCP job. HCP's API can't mark a job complete.
-- **No other records:** it never touches customers, estimates, invoices or
-  payments.
+- **No other records:** it never changes customers, estimates, invoices or
+  payments. It only reads whether an invoice was sent and the balance.
 - **No messages:** it never sends texts or emails.
 - **No automatic entries:** it doesn't add orders or approved jobs on its own.
   Staff add them, using the paste-to-fill box.

@@ -49,6 +49,7 @@ import {
 } from './hcp/sync.js';
 import {
   ORDER_CATEGORIES,
+  archiveDeleteDate,
   getOrderGroup,
   isoNow,
   normalizeCategory,
@@ -194,7 +195,7 @@ function normalizeDraftDepositStatus(value) {
 
 function normalizeArchiveSource(value) {
   const source = normalizeText(value || 'manual');
-  return source === 'future_hcp_automation' ? 'future_hcp_automation' : 'manual';
+  return ['future_hcp_automation', 'archived_7_days', 'with_job'].includes(source) ? source : 'manual';
 }
 
 async function getJobDraftById(id) {
@@ -570,7 +571,7 @@ app.post('/api/job-drafts/:id/delete', requireStaffAuth, asyncRoute(async (req, 
   const linkedOrders = await getActiveOrdersForDraft(draft.id);
   const metadata = { stamp: isoNow(), reason: `Deleted by ${actor(req)}` };
   await markDraftsArchived([draft.id], metadata);
-  const deletedOrderIds = await markOrdersArchived(linkedOrders.map((order) => order.id), metadata);
+  const deletedOrderIds = await markOrdersArchived(linkedOrders.map((order) => order.id), { ...metadata, source: 'with_job' });
 
   broadcastLiveEvent('job-drafts', { action: 'deleted', draftId: draft.id, time: isoNow() });
   hcpApprovedJobChanged(draft.id);
@@ -587,7 +588,7 @@ app.post('/api/job-drafts/:id/restore', requireStaffAuth, asyncRoute(async (req,
   }
 
   const deletedWithJob = draft.archived_at
-    ? (await dbAll('SELECT id FROM orders WHERE job_draft_id = ? AND is_archived = 1 AND archived_at = ?', [draft.id, draft.archived_at])).map((row) => row.id)
+    ? (await dbAll("SELECT id FROM orders WHERE job_draft_id = ? AND is_archived = 1 AND archive_source = 'with_job' AND archived_at = ?", [draft.id, draft.archived_at])).map((row) => row.id)
     : [];
   const restoredDraftIds = await restoreDrafts([draft.id]);
   await restoreOrders(deletedWithJob);
@@ -769,12 +770,16 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
     const status = statusFromOrder(order);
     const resolvedGroup = order.category ? getOrderGroup(order.category) : (order.combined_group || '');
 
-    if (Number(order.is_archived || 0) === 1 && statusFilter !== 'Archived') {
+    // Deleted orders (is_archived) only under "Deleted"; complete, paid
+    // orders only under "Archived" until they are deleted.
+    if (Number(order.is_archived || 0) === 1 && statusFilter !== 'Deleted') {
       return false;
     }
-    if (statusFilter === 'Archived' && Number(order.is_archived || 0) !== 1) {
+    if (statusFilter === 'Deleted' && Number(order.is_archived || 0) !== 1) {
       return false;
     }
+    const stage = orderStage(order);
+    if ((stage === 'archived') !== (statusFilter === 'Archived') && statusFilter !== 'Deleted') return false;
 
     if (statusFilter === 'Outstanding' && status !== 'Ordered') return false;
     if (statusFilter === 'Overdue') {
@@ -782,10 +787,10 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
       if (!order.expected_delivery_date) return false;
       if (order.expected_delivery_date >= todayPhoenixString()) return false;
     }
-    if (statusFilter === 'Received' && status !== 'Received') return false;
+    if (statusFilter === 'Invoiced' && stage !== 'invoiced') return false;
     if (statusFilter === 'To Schedule' && !(status === 'Received' && !Number(order.job_scheduled) && !Number(order.job_completed))) return false;
     if (statusFilter === 'Scheduled' && !(Number(order.job_scheduled) && !Number(order.job_completed))) return false;
-    if (statusFilter === 'Done' && !Number(order.job_completed)) return false;
+    if (statusFilter === 'Done' && stage !== 'complete') return false;
 
     if (viewFilter === 'Windows / Flat Glass' && !['Windows / Flat Glass'].includes(resolvedGroup)) {
       return false;
@@ -854,6 +859,9 @@ app.get('/api/orders', asyncRoute(async (req, res) => {
     hcp: hcpSummary(hcpJobById.get(order.hcp_job_id)),
     job_scheduled: Number(order.job_scheduled || 0),
     job_completed: Number(order.job_completed || 0),
+    invoiced: Number(order.invoiced || 0),
+    paid: Number(order.paid || 0),
+    archive_delete_date: orderStage(order) === 'archived' ? archiveDeleteDate(order) : '',
     is_overdue: order.expected_delivery_date && order.status === 'Ordered' && order.expected_delivery_date < todayPhoenixString()
   }));
 
@@ -1068,7 +1076,11 @@ function progressValues(row) {
     scheduled_date: row.scheduled_date || '',
     schedule_note: row.schedule_note || '',
     job_completed: Number(row.job_completed || 0),
-    completed_date: row.completed_date || ''
+    completed_date: row.completed_date || '',
+    invoiced: Number(row.invoiced || 0),
+    invoiced_date: row.invoiced_date || '',
+    paid: Number(row.paid || 0),
+    paid_date: row.paid_date || ''
   };
 }
 
@@ -1090,8 +1102,9 @@ app.put('/api/orders/:id/progress', requireStaffAuth, asyncRoute(async (req, res
     return res.status(400).json({ error: 'Refresh the page and try again.' });
   }
 
-  // A job that is already complete keeps its (possibly unknown) completion date.
-  const progress = normalizeProgressInput(req.body, { fillCompletedDate: !Number(order.job_completed) });
+  // Newly ticked complete, invoiced or paid gets today; one already ticked
+  // keeps its (possibly unknown) date.
+  const progress = normalizeProgressInput(req.body, { fill: [['completed', 'job_completed'], ['invoiced', 'invoiced'], ['paid', 'paid']].filter(([, column]) => !Number(order[column])).map(([name]) => name) });
   const shopLocation = Object.hasOwn(req.body, 'shop_location') ? normalizeText(req.body.shop_location) : (order.shop_location || '');
   const now = isoNow();
   const result = await dbRun(
@@ -1122,7 +1135,7 @@ app.post('/api/order-progress/restore', requireStaffAuth, asyncRoute(async (req,
   const now = isoNow();
   try {
     await runInTransaction([...items].sort((left, right) => left.id.localeCompare(right.id)).map((item) => {
-      const progress = normalizeProgressInput(item, { fillCompletedDate: false });
+      const progress = normalizeProgressInput(item, { fill: [] });
       const restoreShop = Object.hasOwn(item, 'shop_location');
       return {
         sql: `UPDATE orders SET ${progressAssignments}${restoreShop ? ', shop_location = ?' : ''}, updated_at = ?, updated_by = ? WHERE id = ? AND updated_at = ?`,
@@ -1297,6 +1310,22 @@ app.use((error, req, res, next) => {
 app.listen(port, () => {
   console.log(`Boulevard Glass Order Tracker listening at http://localhost:${port}`);
 });
+
+// Archived orders (complete and paid) are deleted ARCHIVE_DAYS later, checked
+// hourly (ARCHIVE_CLEANUP_SECONDS for tests). Deleted the usual way, so they
+// stay in the database, hidden.
+async function deleteExpiredArchive() {
+  const today = todayPhoenixString();
+  const done = await dbAll('SELECT id, completed_date, paid_date FROM orders WHERE is_archived = 0 AND job_completed = 1 AND paid = 1');
+  const expired = done.filter(order => archiveDeleteDate(order) && archiveDeleteDate(order) <= today).map(order => order.id);
+  const deleted = await markOrdersArchived(expired, { source: 'archived_7_days', reason: 'Archived for 7 days' });
+  if (deleted.length) broadcastLiveEvent('orders', { action: 'deleted', orderIds: deleted, time: isoNow() });
+  return deleted;
+}
+const archiveCleanupSeconds = Number(process.env.ARCHIVE_CLEANUP_SECONDS ?? 3600);
+const runArchiveCleanup = () => deleteExpiredArchive().catch(() => console.error('Clearing archived orders failed; it is tried again later.'));
+setTimeout(runArchiveCleanup, Math.min(30, archiveCleanupSeconds) * 1000).unref();
+setInterval(runArchiveCleanup, archiveCleanupSeconds * 1000).unref();
 
 // Hourly catch-up with Housecall Pro (HCP_SYNC_INTERVAL_MINUTES, 0 = off).
 const hcpSyncMinutes = Number(process.env.HCP_SYNC_INTERVAL_MINUTES ?? 60);

@@ -42,6 +42,17 @@ rest. Every API call and webhook the tracker uses is listed in
 6. **Finished in HCP.** When the job is completed in HCP, the tracker marks the
    order done and it moves to the Done tab. "In progress" in HCP still counts
    as scheduled.
+7. **Invoice sent in HCP.** Once an unpaid invoice has been sent, the order
+   moves from Done to **Invoiced**, with the day it was sent.
+8. **Paid in full.** When the job is complete and its balance is paid, the
+   order moves to **Archived**, which shows the day it will be deleted, and 7
+   days later it is deleted. That matches HCP's own 7-day archive of paid
+   jobs. A customer who paid up front keeps the order until the job is
+   finished, because both have to be true. A paid deposit alone isn't paid
+   in full.
+
+Orders not linked to HCP have **Invoice sent** and **Paid in full** boxes in
+the Job progress window, with the same 7-day rule.
 
 Undoing a change in the tracker inside the Undo window writes nothing to HCP.
 If an order is deleted, the HCP tags are put back to match the remaining
@@ -163,8 +174,10 @@ secrets into chat or email: enter them only in Render.
    test request to that address when you save, so this only works once the
    new version is live (step 4) and the Cloudflare rule is in place (step 3);
    otherwise HCP says "Error testing webhook request". HCP then shows a
-   **signing secret**: copy it. Choose these events: all `job.*` and
-   all `job.appointment.*`. (Others are accepted and ignored.)
+   **signing secret**: copy it. Choose these events: all `job.*`, all
+   `job.appointment.*` and all `invoice.*`. (Others are accepted and
+   ignored.) Without the invoice events, the hourly catch-up still notices
+   invoices, within the hour.
 7. **Add the secret to Render:** `HCP_WEBHOOK_SECRET` = the signing secret.
    Save and let Render restart the service.
 8. **Check it** in Master Lists (admin) › Housecall Pro. It should say "API
@@ -208,7 +221,9 @@ buttons come back.
 - **Every call to HCP goes one at a time**, waits out HCP's rate limits, and
   gives up after 20 seconds. The only writes are job tags, job notes and the
   job's Pipeline column.
-- **Not used:** invoices and payments, tech names, HCP's own deposits (the
+- **Invoices are only read:** whether an unpaid invoice has been sent, and
+  the job's balance. A job keeps being checked until it is complete and paid.
+- **Not used:** payment details, tech names, HCP's own deposits (the
   tracker's deposit status on approved jobs drives the board), and approved
   estimates (approved jobs are added by staff, with the paste-to-fill box).
 
@@ -228,6 +243,10 @@ the first real events (Master Lists › Housecall Pro lists the last 10):
   (`expand[]=attachments`); if not, the "photos or files" count is simply
   left out.
 - Rate limits aren't published.
+- Invoices: how HCP reports a deposit invoice next to the final one isn't
+  documented. The tracker counts an invoice as sent only while it is
+  unpaid, and paid in full only from the job's balance on a complete job;
+  check the first real invoice and payment.
 - Pipeline moves: HCP's docs call the job's id a "UUID", while job ids look
   like `job_…`; **Try one job** shows whether HCP takes them. Also not
   documented: what HCP answers when a move is refused, and whether Pipeline

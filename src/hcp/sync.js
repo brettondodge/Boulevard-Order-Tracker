@@ -111,12 +111,13 @@ export function hcpJobRow(job, sourceTime, previous = null) {
     canceled_at: job.canceled_at || null,
     deleted_at: job.deleted_at || null,
     tags: Array.isArray(job.tags) ? JSON.stringify(job.tags.map(String)) : (previous?.tags ?? null),
+    outstanding_balance: Number.isFinite(Number(job.outstanding_balance)) && job.outstanding_balance !== null ? Number(job.outstanding_balance) : (previous?.outstanding_balance ?? null),
     source_time: sourceTime,
     synced_at: isoNow()
   };
 }
 
-const HCP_JOB_COLUMNS = ['id', 'invoice_number', 'work_status', 'scheduled_start', 'scheduled_local_date', 'completed_at', 'canceled_at', 'deleted_at', 'tags', 'source_time', 'synced_at'];
+const HCP_JOB_COLUMNS = ['id', 'invoice_number', 'work_status', 'scheduled_start', 'scheduled_local_date', 'completed_at', 'canceled_at', 'deleted_at', 'tags', 'outstanding_balance', 'source_time', 'synced_at'];
 
 const getHcpJob = id => dbGet('SELECT * FROM hcp_jobs WHERE id = ?', [id]);
 
@@ -141,12 +142,22 @@ export function progressFromHcp(row, current) {
   if (status === 'canceled') return null;
   const completed = status === 'completed';
   const scheduled = completed || status === 'scheduled' || status === 'in_progress';
+  // Paid in full counts once the job is complete, so a customer who paid up
+  // front keeps the order until the work is done. Invoiced: an invoice was
+  // sent and is still unpaid (kept once paid, for the record).
+  const balance = row.outstanding_balance;
+  const paid = completed && balance !== null && balance !== undefined && Number(balance) <= 0;
+  const invoiced = Boolean(row.invoice_sent_at) || (paid && Boolean(Number(current.invoiced)));
   return {
     job_scheduled: scheduled ? 1 : 0,
     scheduled_date: scheduled ? (row.scheduled_local_date || current.scheduled_date || '') : '',
     schedule_note: current.schedule_note || '',
     job_completed: completed ? 1 : 0,
-    completed_date: completed ? (phoenixDate(row.completed_at) || current.completed_date || phoenixDate(row.source_time)) : ''
+    completed_date: completed ? (phoenixDate(row.completed_at) || current.completed_date || phoenixDate(row.source_time)) : '',
+    invoiced: invoiced ? 1 : 0,
+    invoiced_date: invoiced ? (phoenixDate(row.invoice_sent_at) || current.invoiced_date || phoenixDate(row.source_time)) : '',
+    paid: paid ? 1 : 0,
+    paid_date: paid ? (phoenixDate(row.invoice_paid_at) || current.paid_date || phoenixDate(row.source_time)) : ''
   };
 }
 
@@ -200,7 +211,20 @@ async function setState(name, value) {
   await dbRun('INSERT INTO hcp_state (name, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at', [name, value, isoNow()]);
 }
 
-async function refreshJobFromApi(client, id) {
+// What a job's invoices say: the latest one sent and still unpaid, and the
+// latest one paid.
+export function invoiceSummary(invoices = []) {
+  const state = invoice => String(invoice?.status || '').toLowerCase();
+  const latest = (list, key) => list.map(invoice => isoTime(invoice[key])).filter(Boolean).sort().at(-1) || null;
+  return {
+    invoice_sent_at: latest(invoices.filter(invoice => invoice?.sent_at && !['paid', 'voided', 'canceled', 'uncollectible'].includes(state(invoice))), 'sent_at'),
+    invoice_paid_at: latest(invoices.filter(invoice => state(invoice) === 'paid'), 'paid_at')
+  };
+}
+
+// Reads the job, and its invoices once it is complete (or when asked, for an
+// invoice event). Returns the stored row.
+async function refreshJobFromApi(client, id, { invoices = false } = {}) {
   const job = await client.getJob(id);
   const previous = await getHcpJob(id);
   if (!job) {
@@ -208,7 +232,13 @@ async function refreshJobFromApi(client, id) {
     if (previous && !previous.deleted_at) await dbRun('UPDATE hcp_jobs SET deleted_at = ?, synced_at = ? WHERE id = ?', [isoNow(), isoNow(), id]);
     return previous ? { ...previous, deleted_at: previous.deleted_at || isoNow() } : null;
   }
-  return saveHcpJob(hcpJobRow(job, isoNow(), previous));
+  const saved = await saveHcpJob(hcpJobRow(job, isoNow(), previous));
+  if (!invoices && workStatusOf(saved) !== 'completed') return saved;
+  const list = await client.listJobInvoices(id);
+  if (!list) return saved;
+  const summary = invoiceSummary(list.invoices || []);
+  await dbRun('UPDATE hcp_jobs SET invoice_sent_at = ?, invoice_paid_at = ? WHERE id = ?', [summary.invoice_sent_at, summary.invoice_paid_at, id]);
+  return getHcpJob(id);
 }
 
 const JOB_EVENTS = new Set(['job.created', 'job.updated', 'job.scheduled', 'job.on_my_way', 'job.started', 'job.completed', 'job.paid', 'job.canceled', 'job.deleted']);
@@ -247,6 +277,16 @@ async function processEvent(event, payload, occurredAt) {
     const row = { ...previous, scheduled_start: start, scheduled_local_date: phoenixDate(start), work_status: workStatusOf(previous) === 'unscheduled' ? 'scheduled' : previous.work_status, source_time: occurredAt, synced_at: isoNow() };
     const saved = await saveHcpJob(row);
     return { outcome: 'applied', jobId, orderIds: await applyHcpJob(saved) };
+  }
+
+  if (event.startsWith('invoice.')) {
+    const jobId = payload.invoice?.job_id;
+    if (!jobId) return { outcome: 'ignored', detail: 'No job in the event.' };
+    if (!(await jobIsTracked({ id: jobId }))) return { outcome: 'ignored', jobId, detail: 'Job is not in the tracker.' };
+    if (!hcpApiConfigured()) return { outcome: 'ignored', jobId, detail: 'Needs HCP_API_KEY to read the job.' };
+    // An invoice event carries one invoice: read the job and all of its invoices.
+    const saved = await refreshJobFromApi(createHcpClient(), jobId, { invoices: true });
+    return saved ? { outcome: 'applied', jobId, orderIds: await applyHcpJob(saved) } : { outcome: 'ignored', jobId, detail: 'Job not found in HCP.' };
   }
 
   return { outcome: 'ignored', detail: 'Event not used by the tracker.' };
@@ -580,7 +620,7 @@ async function runSync({ client = createHcpClient(), maxPages = 30 } = {}) {
     }
   };
   try {
-    const orders = await dbAll('SELECT id, hcp_job_id, housecall_job_number, housecall_job_link, job_draft_id, job_completed FROM orders WHERE is_archived = 0');
+    const orders = await dbAll('SELECT id, hcp_job_id, housecall_job_number, housecall_job_link, job_draft_id, job_completed, paid FROM orders WHERE is_archived = 0');
     const drafts = new Map((await dbAll("SELECT id, hcp_job_id FROM job_drafts WHERE hcp_job_id IS NOT NULL AND hcp_job_id <> ''")).map(row => [row.id, hcpJobIdFrom(row.hcp_job_id)]).filter(([, id]) => id));
     const cached = await dbAll('SELECT id, invoice_number FROM hcp_jobs');
     const cachedByNumber = new Map(cached.filter(row => row.invoice_number).map(row => [row.invoice_number.toLowerCase(), row.id]));
@@ -591,7 +631,8 @@ async function runSync({ client = createHcpClient(), maxPages = 30 } = {}) {
     for (const order of orders) {
       const number = String(order.housecall_job_number ?? '').trim().toLowerCase();
       const id = order.hcp_job_id || hcpJobIdFromLink(order.housecall_job_link) || drafts.get(order.job_draft_id) || cachedByNumber.get(number) || '';
-      const done = Boolean(Number(order.job_completed));
+      // Finished means complete and paid; until then invoices still matter.
+      const done = Boolean(Number(order.job_completed) && Number(order.paid));
       if (id) {
         jobIds.set(id, (jobIds.get(id) ?? true) && done);
       } else if (/[1-9]/.test(number) && !done) {

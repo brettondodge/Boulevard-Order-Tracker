@@ -51,7 +51,7 @@ Local preview runs include fictional sample orders. They are kept in the local S
 - Deleting removes an order or job from the tracker. The record stays hidden in the database (marked archived, with who deleted it) so Undo can bring it back.
 - Each change records the signed-in staff email as created_by / updated_by.
 - Job progress on every order: shop location, scheduled (date and note) and complete. Each order keeps its own; with Housecall Pro connected, scheduled and complete come from HCP.
-- Views for the labor meeting: To schedule (received and not scheduled), Scheduled and Done. Each line shows its furthest step and the next one; complete is the last step.
+- Views for the labor meeting: To schedule (received and not scheduled), Scheduled, Done (complete, no invoice sent), Invoiced (an unpaid invoice sent) and Archived (complete and paid in full; deleted 7 days later). Each line shows its furthest step and the next one.
 - PO: the reference put on the supplier order, shown next to the customer.
 - Housecall Pro: paste an HCP job link (or job #) on an order or approved job and the customer, job #, category and notes fill in. Webhooks and an hourly sync keep scheduled / complete in step with HCP, and the tracker tags the HCP job "Materials ordered" / "Materials received" with a note and moves it forward on the Pipeline Jobs board (Deposit Needed → Need to Order Materials → Waiting on Materials → Materials Received). Setup: [docs/housecall-pro.md](docs/housecall-pro.md). Every API call and webhook: [docs/housecall-pro-connections.md](docs/housecall-pro-connections.md).
 - Master Lists › Start fresh clears orders and approved jobs (and optionally suppliers and staff) for go-live.

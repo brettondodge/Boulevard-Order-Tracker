@@ -3,7 +3,8 @@ import { createHmac } from 'node:crypto';
 
 // A stand-in for the Housecall Pro API so tests never reach the real service.
 // It answers the endpoints the tracker uses (jobs, job types, tags, job tags,
-// job notes, Pipeline statuses) in the shapes of HCP's published spec.
+// job notes, job invoices, Pipeline statuses) in the shapes of HCP's
+// published spec.
 // Synthetic records only.
 export async function startFakeHcp({ apiKey = 'synthetic-hcp-key' } = {}) {
   const jobs = new Map();
@@ -79,6 +80,7 @@ export async function startFakeHcp({ apiKey = 'synthetic-hcp-key' } = {}) {
       job.tags = (job.tags || []).filter(name => name !== tag?.name);
       return send(200, { tags: tagNames() });
     }
+    if (parts[2] === 'invoices' && req.method === 'GET') return send(200, { invoices: job.invoices || [] });
     if (parts[2] === 'notes' && req.method === 'POST') {
       const note = { id: `note_${nextId++}`, content: body.content };
       job.notes = [...(job.notes || []), note];

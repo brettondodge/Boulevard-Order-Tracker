@@ -394,21 +394,25 @@ test('supplier filter is a checkbox list: ticking boxes filters, the summary and
   assert.equal(node('filtersToggle').textContent, 'Filters');
 });
 
-test('each order shows its furthest step and offers the next one; complete is done', () => {
+test('each order shows its furthest step and offers the next one; paid is the last step', () => {
   const { tracker } = client();
   const base = { id: 'step', customer_name: 'Synthetic Step', status: 'Received', date_received: '2026-10-20' };
   const cases = [
     [{ ...base, status: 'Ordered', date_received: '', stage: 'ordered' }, /Ordered/, 'mark-received'],
     [{ ...base, stage: 'received' }, /Ready to schedule/, 'schedule'],
     [{ ...base, stage: 'scheduled', job_scheduled: 1, scheduled_date: '2026-11-03' }, /Scheduled Nov 3/, 'mark-complete'],
-    [{ ...base, stage: 'complete', job_scheduled: 1, job_completed: 1 }, /Complete/, null],
+    [{ ...base, stage: 'complete', job_scheduled: 1, job_completed: 1 }, /Complete/, 'mark-invoiced'],
     // A finished job is done even if this order was never ticked received.
-    [{ ...base, status: 'Ordered', date_received: '', stage: 'complete', job_completed: 1 }, /Complete/, null]
+    [{ ...base, status: 'Ordered', date_received: '', stage: 'complete', job_completed: 1 }, /Complete/, 'mark-invoiced'],
+    [{ ...base, stage: 'invoiced', job_completed: 1, invoiced: 1, invoiced_date: '2026-11-05' }, /Invoiced Nov 5/, 'mark-paid'],
+    [{ ...base, stage: 'archived', job_completed: 1, invoiced: 1, paid: 1, archive_delete_date: '2026-11-13' }, /Archived · deletes Nov 13/, null]
   ];
   for (const [order, label, action] of cases) {
     assert.match(tracker.orderStatusBadge(order), label);
     assert.equal(tracker.nextStep(order)?.action ?? null, action);
   }
+  assert.equal(tracker.nextStep(cases[3][0]).label, 'Mark invoiced');
+  assert.equal(tracker.nextStep(cases[5][0]).label, 'Mark paid');
   const early = { ...base, status: 'Ordered', date_received: '', stage: 'overdue', job_scheduled: 1, scheduled_date: '2026-10-28' };
   assert.match(tracker.orderStatusBadge(early), /Scheduled Oct 28, not here yet/);
 });
@@ -428,7 +432,7 @@ test('job progress window saves the order and undo restores it exactly', async (
   assert.equal(node('progressScheduled').checked, true);
   assert.equal(node('progressScheduledDate').disabled, false);
   assert.equal(node('progressScheduledDate').focused, true);
-  assert.equal(node('progressJobHint').textContent, '');
+  assert.match(node('progressJobHint').textContent, /archived for 7 days, then deleted/);
   node('progressScheduledDate').value = '2026-11-03';
   node('progressShopLocation').value = 'H';
   await tracker.saveProgressDialog();
@@ -464,7 +468,9 @@ test('linked orders show what Housecall Pro says and send scheduling to HCP', as
   assert.equal(tracker.nextStep(scheduled).label, 'Open in HCP');
   const done = { ...scheduled, stage: 'complete', job_completed: 1, hcp: { ...scheduled.hcp, status: 'completed' } };
   assert.match(tracker.orderStatusBadge(done), /HCP: Complete/);
-  assert.equal(tracker.nextStep(done), null, 'done in HCP means done in the tracker');
+  assert.deepEqual({ ...tracker.nextStep(done) }, { link: url, label: 'Invoice in HCP', primary: true }, 'complete in HCP: the invoice is next, sent from HCP');
+  assert.equal(tracker.nextStep({ ...done, invoiced: 1 }).label, 'Open in HCP');
+  assert.equal(tracker.nextStep({ ...done, invoiced: 1, paid: 1 }), null, 'paid in full is the last step');
   // Canceled jobs aren't shown and fall back to the tracker's own steps.
   const canceled = { ...base, hcp: { ...base.hcp, status: 'canceled' } };
   assert.doesNotMatch(tracker.orderStatusBadge(canceled), /HCP:/);
@@ -476,6 +482,8 @@ test('linked orders show what Housecall Pro says and send scheduling to HCP', as
   tracker.openProgressDialog(scheduled);
   assert.equal(node('progressScheduled').disabled, true);
   assert.equal(node('progressCompleted').disabled, true);
+  assert.equal(node('progressInvoiced').disabled, true);
+  assert.equal(node('progressPaid').disabled, true);
   assert.equal(node('progressScheduledDate').disabled, true);
   assert.match(node('progressJobHint').textContent, /come from Housecall Pro/);
   tracker.openProgressDialog({ ...base, hcp: null });
@@ -543,13 +551,26 @@ test('Master Lists: a Pipeline column for each step, saved on request, and a one
   assert.equal(node('hcpPipelineSection').classList.contains('hidden'), true, 'without Pipeline the section stays hidden');
 });
 
-test('finished jobs have no next step, and an already-complete job keeps its blank completion date', () => {
+test('paid jobs have no next step, and an already-complete job keeps its blank completion date', async () => {
   const { node, tracker } = client();
-  assert.equal(tracker.nextStep({ id: 'x', date_received: '', job_completed: 1 }), null);
+  tracker.bindEvents();
+  assert.equal(tracker.nextStep({ id: 'x', date_received: '', job_completed: 1, paid: 1 }), null);
   const done = { id: 'done', customer_name: 'Synthetic Done', status: 'Received', date_received: '2026-10-20', job_completed: 1, completed_date: '', updated_at: 'v1' };
   tracker.openProgressDialog(done);
   assert.equal(node('progressCompleted').checked, true);
   assert.equal(node('progressCompletedDate').value, '', 'opening the window does not invent a date');
+  // Ticking Invoice sent suggests today; Paid stays as it was.
+  node('progressInvoiced').checked = true;
+  node('progressInvoiced').listeners.change({ target: node('progressInvoiced') });
+  assert.match(node('progressInvoicedDate').value, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(node('progressInvoicedDate').disabled, false);
+  assert.equal(node('progressPaidDate').disabled, true);
+  // Mark paid opens the window with Paid in full ticked and dated today.
+  tracker.state.orders = [{ ...done, invoiced: 1 }];
+  await node('ordersTableBody').listeners.click({ target: { closest: () => ({ dataset: { action: 'mark-paid', id: 'done' } }) } });
+  assert.equal(node('progressPaid').checked, true);
+  assert.match(node('progressPaidDate').value, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(node('progressInvoiced').checked, true);
 });
 
 

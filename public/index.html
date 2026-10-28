@@ -101,7 +101,8 @@
           <button type="button" class="tab-button" data-view="To Schedule">To schedule</button>
           <button type="button" class="tab-button" data-view="Scheduled">Scheduled</button>
           <button type="button" class="tab-button" data-view="Done">Done</button>
-          <button type="button" class="tab-button" data-view="Received">Received</button>
+          <button type="button" class="tab-button" data-view="Invoiced">Invoiced</button>
+          <button type="button" class="tab-button" data-view="Archived">Archived</button>
           <button type="button" class="tab-button" data-view="All Orders">All orders</button>
           <button type="button" class="tab-button" data-view="Approved – Need to Order">Approved – Need to Order</button>
         </nav>
@@ -461,6 +462,18 @@
           <label>
             Completed on
             <input id="progressCompletedDate" type="date" />
+          </label>
+
+          <label class="checkbox-inline progress-check"><input id="progressInvoiced" type="checkbox" /> Invoice sent</label>
+          <label>
+            Sent on
+            <input id="progressInvoicedDate" type="date" />
+          </label>
+
+          <label class="checkbox-inline progress-check"><input id="progressPaid" type="checkbox" /> Paid in full</label>
+          <label>
+            Paid on
+            <input id="progressPaidDate" type="date" />
           </label>
         </div>
 

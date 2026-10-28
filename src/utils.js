@@ -76,27 +76,51 @@ export function isOrderOverdue(order) {
 // Furthest step an order has reached: ordered (or overdue), received,
 // scheduled, complete. Complete is the last step (done), even if this
 // order's Received box was never ticked.
+// Complete, paid orders are archived: shown for ARCHIVE_DAYS, then deleted.
 export function orderStage(order) {
-  if (Number(order.job_completed)) return 'complete';
+  if (Number(order.job_completed)) {
+    if (Number(order.paid)) return 'archived';
+    return Number(order.invoiced) ? 'invoiced' : 'complete';
+  }
   if (!order.date_received) return isOrderOverdue({ ...order, status: 'Ordered' }) ? 'overdue' : 'ordered';
   if (Number(order.job_scheduled)) return 'scheduled';
   return 'received';
 }
 
-export const PROGRESS_FIELDS = ['job_scheduled', 'scheduled_date', 'schedule_note', 'job_completed', 'completed_date'];
+export const ARCHIVE_DAYS = 7;
 
-// Job progress from a request. Marking a job complete without a date uses
-// today, unless restoring saved values exactly (fillCompletedDate: false).
-export function normalizeProgressInput(payload = {}, { fillCompletedDate = true } = {}) {
+// The day an archived order is deleted: ARCHIVE_DAYS after it was both
+// complete and paid.
+export function archiveDeleteDate(order) {
+  const since = [order.completed_date, order.paid_date].filter(Boolean).sort().at(-1);
+  if (!since) return '';
+  const date = new Date(`${since}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + ARCHIVE_DAYS);
+  return date.toISOString().slice(0, 10);
+}
+
+export const PROGRESS_FIELDS = ['job_scheduled', 'scheduled_date', 'schedule_note', 'job_completed', 'completed_date', 'invoiced', 'invoiced_date', 'paid', 'paid_date'];
+
+// Job progress from a request. Ticking complete, invoiced or paid without a
+// date uses today for the flags named in `fill` (none when restoring saved
+// values exactly).
+export function normalizeProgressInput(payload = {}, { fill = ['completed', 'invoiced', 'paid'] } = {}) {
   const flag = value => (value === true || value === 1 || value === '1' || value === 'true' ? 1 : 0);
+  const dated = (on, value, name) => (on ? normalizeDate(value) || (fill.includes(name) ? todayPhoenixString() : '') : '');
   const scheduled = flag(payload.job_scheduled);
   const completed = flag(payload.job_completed);
+  const invoiced = flag(payload.invoiced);
+  const paid = flag(payload.paid);
   return {
     job_scheduled: scheduled,
     scheduled_date: scheduled ? normalizeDate(payload.scheduled_date) : '',
     schedule_note: normalizeText(payload.schedule_note),
     job_completed: completed,
-    completed_date: completed ? (normalizeDate(payload.completed_date) || (fillCompletedDate ? todayPhoenixString() : '')) : ''
+    completed_date: dated(completed, payload.completed_date, 'completed'),
+    invoiced,
+    invoiced_date: dated(invoiced, payload.invoiced_date, 'invoiced'),
+    paid,
+    paid_date: dated(paid, payload.paid_date, 'paid')
   };
 }
 

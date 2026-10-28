@@ -95,6 +95,10 @@ const elements = {
   progressScheduleNote: document.getElementById('progressScheduleNote'),
   progressCompleted: document.getElementById('progressCompleted'),
   progressCompletedDate: document.getElementById('progressCompletedDate'),
+  progressInvoiced: document.getElementById('progressInvoiced'),
+  progressInvoicedDate: document.getElementById('progressInvoicedDate'),
+  progressPaid: document.getElementById('progressPaid'),
+  progressPaidDate: document.getElementById('progressPaidDate'),
   progressJobHint: document.getElementById('progressJobHint'),
   progressError: document.getElementById('progressError'),
   hcpFillStatus: document.getElementById('hcpFillStatus'),
@@ -379,7 +383,7 @@ function bindEvents() {
     await saveProgressDialog();
   });
   for (const id of ['closeProgressButton', 'cancelProgressButton']) document.getElementById(id).addEventListener('click', () => elements.progressDialog.close());
-  for (const box of [elements.progressScheduled, elements.progressCompleted]) box.addEventListener('change', syncProgressInputs);
+  for (const box of [elements.progressScheduled, elements.progressCompleted, elements.progressInvoiced, elements.progressPaid]) box.addEventListener('change', syncProgressInputs);
 
   elements.showFinishedJobsButton.addEventListener('click', () => {
     state.showFinishedJobs = !state.showFinishedJobs;
@@ -580,8 +584,8 @@ function bindEvents() {
 
     const order = state.orders.find((entry) => entry.id === id);
     if (!order) return;
-    if (action === 'schedule' || action === 'progress') {
-      openProgressDialog(order, action === 'schedule' ? 'schedule' : '');
+    if (['schedule', 'progress', 'mark-invoiced', 'mark-paid'].includes(action)) {
+      openProgressDialog(order, { schedule: 'schedule', 'mark-invoiced': 'invoiced', 'mark-paid': 'paid' }[action] || '');
       return;
     }
 
@@ -1139,7 +1143,7 @@ function renderOrders() {
   refreshOrderDetails();
 }
 
-const STAGE_LABELS = { ordered: 'Ordered', overdue: 'Overdue', received: 'Received', scheduled: 'Scheduled', complete: 'Complete' };
+const STAGE_LABELS = { ordered: 'Ordered', overdue: 'Overdue', received: 'Received', scheduled: 'Scheduled', complete: 'Complete', invoiced: 'Invoiced', archived: 'Archived' };
 
 function stageOf(order) {
   if (STAGE_LABELS[order.stage]) return order.stage;
@@ -1154,6 +1158,8 @@ function orderStatusBadge(order) {
   let label = STAGE_LABELS[stage];
   if (stage === 'received') label = 'Ready to schedule';
   if (stage === 'scheduled' && order.scheduled_date) label = `Scheduled ${formatDate(order.scheduled_date)}`;
+  if (stage === 'invoiced' && order.invoiced_date) label = `Invoiced ${formatDate(order.invoiced_date)}`;
+  if (stage === 'archived' && order.archive_delete_date) label = `Archived · deletes ${formatDate(order.archive_delete_date)}`;
   const warning = Number(order.job_scheduled) && !Number(order.job_completed) && !order.date_received
     ? `<span class="stage-warning">Scheduled${order.scheduled_date ? ` ${formatDate(order.scheduled_date)}` : ''}, not here yet</span>`
     : '';
@@ -1170,9 +1176,14 @@ function hcpStatusLine(order) {
   return `<span class="hcp-status">HCP: ${escapeHtml(label)}</span>`;
 }
 
-// Complete is the last step: nothing more to do in the tracker.
+// After complete: invoice, then paid. Paid is the last step.
 function nextStep(order) {
-  if (Number(order.job_completed)) return null;
+  if (Number(order.job_completed)) {
+    if (Number(order.paid)) return null;
+    const invoiced = Number(order.invoiced);
+    if (order.hcp && order.hcp.status !== 'canceled') return { link: order.hcp.url, label: invoiced ? 'Open in HCP' : 'Invoice in HCP', primary: !invoiced };
+    return invoiced ? { action: 'mark-paid', label: 'Mark paid' } : { action: 'mark-invoiced', label: 'Mark invoiced' };
+  }
   if (!order.date_received) return { action: 'mark-received', label: 'Mark received' };
   // Linked jobs are scheduled and finished in Housecall Pro, which updates the tracker.
   if (order.hcp && order.hcp.status !== 'canceled') {
@@ -1345,6 +1356,9 @@ function renderOrderDetails(order) {
       ${field('Shop', text(order.shop_location))}
       ${field('Scheduled', scheduled)}
       ${field('Completed', completed)}
+      ${field('Invoice sent', Number(order.invoiced) ? (order.invoiced_date ? formatDate(order.invoiced_date) : 'Yes') : 'Not yet')}
+      ${field('Paid in full', Number(order.paid) ? (order.paid_date ? formatDate(order.paid_date) : 'Yes') : 'Not yet')}
+      ${order.archive_delete_date ? field('Deleted on', formatDate(order.archive_delete_date)) : ''}
       ${hcp ? field('Housecall Pro', hcp) : ''}
       ${order.schedule_note ? field('Schedule note', escapeHtml(order.schedule_note), 'full-width order-details-text') : ''}
       ${field('Notes', escapeHtml(String(order.notes || '').trim() || 'No notes.'), 'full-width order-details-text')}
@@ -1775,7 +1789,11 @@ function progressOf(order) {
     scheduled_date: order.scheduled_date || '',
     schedule_note: order.schedule_note || '',
     job_completed: Number(order.job_completed || 0),
-    completed_date: order.completed_date || ''
+    completed_date: order.completed_date || '',
+    invoiced: Number(order.invoiced || 0),
+    invoiced_date: order.invoiced_date || '',
+    paid: Number(order.paid || 0),
+    paid_date: order.paid_date || ''
   };
 }
 
@@ -1797,6 +1815,8 @@ async function markJobComplete(order) {
 function openProgressDialog(order, focus = '') {
   const values = progressOf(order);
   if (focus === 'schedule') values.job_scheduled = 1;
+  // Mark invoiced / Mark paid open the window with that box ticked, dated today.
+  if ((focus === 'invoiced' || focus === 'paid') && !values[focus]) Object.assign(values, { [focus]: 1, [`${focus}_date`]: localToday() });
   state.editingProgress = order;
   elements.progressCustomer.textContent = [order.customer_name, order.supplier, order.housecall_job_number ? `Job ${order.housecall_job_number}` : ''].filter(Boolean).join(' · ');
   elements.progressShopLocation.value = values.shop_location;
@@ -1805,8 +1825,12 @@ function openProgressDialog(order, focus = '') {
   elements.progressScheduleNote.value = values.schedule_note;
   elements.progressCompleted.checked = Boolean(values.job_completed);
   elements.progressCompletedDate.value = values.completed_date;
+  elements.progressInvoiced.checked = Boolean(values.invoiced);
+  elements.progressInvoicedDate.value = values.invoiced_date;
+  elements.progressPaid.checked = Boolean(values.paid);
+  elements.progressPaidDate.value = values.paid_date;
   const fromHcp = Boolean(order.hcp && order.hcp.status !== 'canceled');
-  elements.progressJobHint.textContent = fromHcp ? 'Scheduled and complete come from Housecall Pro; change them there.' : '';
+  elements.progressJobHint.textContent = fromHcp ? 'Scheduled, complete, invoice sent and paid come from Housecall Pro; change them there.' : 'A job that is complete and paid in full is archived for 7 days, then deleted.';
   elements.progressError.textContent = '';
   state.progressFromHcp = fromHcp;
   syncProgressInputs();
@@ -1816,12 +1840,14 @@ function openProgressDialog(order, focus = '') {
 
 function syncProgressInputs(event) {
   const locked = Boolean(state.progressFromHcp);
-  elements.progressScheduled.disabled = locked;
-  elements.progressCompleted.disabled = locked;
   elements.progressScheduledDate.disabled = locked || !elements.progressScheduled.checked;
-  elements.progressCompletedDate.disabled = locked || !elements.progressCompleted.checked;
-  // Ticking Complete suggests today; a job already complete keeps its date (or none).
-  if (event?.target === elements.progressCompleted && elements.progressCompleted.checked && !elements.progressCompletedDate.value) elements.progressCompletedDate.value = localToday();
+  elements.progressScheduled.disabled = locked;
+  // Ticking a box suggests today; one already ticked keeps its date (or none).
+  for (const [box, date] of [[elements.progressCompleted, elements.progressCompletedDate], [elements.progressInvoiced, elements.progressInvoicedDate], [elements.progressPaid, elements.progressPaidDate]]) {
+    box.disabled = locked;
+    date.disabled = locked || !box.checked;
+    if (event?.target === box && box.checked && !date.value) date.value = localToday();
+  }
 }
 
 async function saveProgressDialog() {
@@ -1833,7 +1859,11 @@ async function saveProgressDialog() {
     scheduled_date: elements.progressScheduledDate.value,
     schedule_note: elements.progressScheduleNote.value,
     job_completed: elements.progressCompleted.checked ? 1 : 0,
-    completed_date: elements.progressCompletedDate.value
+    completed_date: elements.progressCompletedDate.value,
+    invoiced: elements.progressInvoiced.checked ? 1 : 0,
+    invoiced_date: elements.progressInvoicedDate.value,
+    paid: elements.progressPaid.checked ? 1 : 0,
+    paid_date: elements.progressPaidDate.value
   };
   try {
     await saveProgress(order, values, 'Job progress saved');

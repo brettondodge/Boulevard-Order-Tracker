@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -38,6 +38,19 @@ function createCookieJar() {
   };
 }
 
+const servers = new Set();
+
+// A failed test never reaches its own kill, and the next test needs port 4100:
+// stop every server and wait for it to exit.
+afterEach(async () => {
+  await Promise.all([...servers].map((child) => new Promise((resolve) => {
+    servers.delete(child);
+    if (child.exitCode !== null || child.signalCode !== null) return resolve();
+    child.once('exit', resolve);
+    child.kill('SIGTERM');
+  })));
+});
+
 function startServer(extraEnv = {}) {
   const env = {
     ...process.env,
@@ -69,6 +82,7 @@ function startServer(extraEnv = {}) {
   });
 
   child.testDataDir = env.SQLITE_DATA_DIR;
+  servers.add(child);
   return child;
 }
 
@@ -790,7 +804,7 @@ test('deleting a job removes it and its orders; undo brings back only what that 
   assert.deepEqual(archiveResponse.body.order_ids, [firstOrder.body.order.id]);
 
   const activeOrders = await requestJson('http://127.0.0.1:4100/api/orders?status=All Orders');
-  const archivedOrders = await requestJson('http://127.0.0.1:4100/api/orders?status=Archived');
+  const archivedOrders = await requestJson('http://127.0.0.1:4100/api/orders?status=Deleted');
   const activeDrafts = await requestJson('http://127.0.0.1:4100/api/job-drafts');
 
   assert.equal(activeOrders.status, 200);
@@ -810,7 +824,7 @@ test('deleting a job removes it and its orders; undo brings back only what that 
   assert.equal(restoreResponse.body.restored, true);
 
   assert.deepEqual(restoreResponse.body.order_ids, [firstOrder.body.order.id]);
-  const restoredOrders = await requestJson('http://127.0.0.1:4100/api/orders?status=Archived');
+  const restoredOrders = await requestJson('http://127.0.0.1:4100/api/orders?status=Deleted');
   assert.equal(restoredOrders.status, 200);
   assert.ok(!restoredOrders.body.orders.some((order) => order.id === firstOrder.body.order.id));
   assert.ok(restoredOrders.body.orders.some((order) => order.id === separatelyDeleted.body.order.id));
@@ -859,7 +873,7 @@ test('master-list IDs survive renaming and deactivation; confirmed cleanup prese
     assert.ok(lists.body.supplier_filter_options.some(row => row.id === removeId && row.active === false));
     assert.equal((await api('/api/suppliers')).body.suppliers.includes('Renamed Supplier'), false);
     assert.equal((await api(`/api/orders/${removedOrder.body.order.id}/delete`, {})).status, 200);
-    filtered = await api(`/api/orders?status=Archived&supplier=${removeId}&ordered_by=${staffId}`);
+    filtered = await api(`/api/orders?status=Deleted&supplier=${removeId}&ordered_by=${staffId}`);
     assert.equal(filtered.body.orders.length, 1);
     let preview = await api('/api/admin/inactive-suppliers/preview');
     assert.equal(preview.body.supplier_count, 1); assert.equal(preview.body.order_count, 1);
@@ -867,7 +881,7 @@ test('master-list IDs survive renaming and deactivation; confirmed cleanup prese
     assert.equal((await api('/api/admin/inactive-suppliers/delete', { confirmation_token: 'forged', confirmation: 'DELETE' })).status, 409);
     await api('/api/master-lists/suppliers', { items: [{ id: removeId, name: 'Renamed Supplier', active: true }] });
     assert.equal((await confirm(preview.body)).status, 409);
-    assert.equal((await api(`/api/orders?status=Archived&supplier=${removeId}`)).body.orders.length, 1);
+    assert.equal((await api(`/api/orders?status=Deleted&supplier=${removeId}`)).body.orders.length, 1);
     await api('/api/master-lists/suppliers', { items: [{ id: removeId, name: 'Renamed Supplier', active: false }] });
     preview = await api('/api/admin/inactive-suppliers/preview');
     const result = await confirm(preview.body);
@@ -953,7 +967,7 @@ test('each order keeps its own shelf, schedule and completion, feeds the labor-m
     const saved = await api(`/api/orders/${first.id}/progress`, { job_scheduled: 1, scheduled_date: '2026-11-03', schedule_note: 'Two-man job', shop_location: 'G', updated_at: row.updated_at }, 'PUT');
     assert.equal(saved.status, 200);
     assert.deepEqual(saved.body.order_ids, [first.id]);
-    assert.deepEqual(saved.body.previous, [{ id: first.id, shop_location: 'H', job_scheduled: 0, scheduled_date: '', schedule_note: '', job_completed: 0, completed_date: '' }]);
+    assert.deepEqual(saved.body.previous, [{ id: first.id, shop_location: 'H', job_scheduled: 0, scheduled_date: '', schedule_note: '', job_completed: 0, completed_date: '', invoiced: 0, invoiced_date: '', paid: 0, paid_date: '' }]);
     const firstAfter = await find(first.id);
     assert.equal(firstAfter.shop_location, 'G');
     assert.equal(firstAfter.job_scheduled, 1);
@@ -981,7 +995,7 @@ test('each order keeps its own shelf, schedule and completion, feeds the labor-m
     assert.equal(restored.scheduled_date, '');
     assert.equal((await api('/api/order-progress/restore', { updated_at: saved.body.updated_at, items: saved.body.previous })).status, 409);
 
-    // Complete is the last step: it moves to Done and out of the working views.
+    // Complete moves it to Done and out of the working views.
     const current = await find(first.id);
     assert.equal((await api(`/api/orders/${first.id}/progress`, { job_scheduled: 1, job_completed: 1, updated_at: current.updated_at }, 'PUT')).status, 200);
     const done = await view('Done');
@@ -1017,6 +1031,21 @@ test('each order keeps its own shelf, schedule and completion, feeds the labor-m
     assert.equal(droppedShop, 'H');
     assert.equal((await api(`/api/orders/${first.id}`, { ...withoutShop, notes: 'Edited elsewhere' }, 'PUT')).status, 200);
     assert.equal((await find(first.id)).shop_location, 'H');
+
+    // Invoice sent, then paid in full: Invoiced, then Archived, out of every other tab.
+    let firstRow = await find(first.id);
+    assert.equal((await api(`/api/orders/${first.id}/progress`, { ...firstRow, invoiced: 1, updated_at: firstRow.updated_at }, 'PUT')).status, 200);
+    assert.deepEqual((await view('Invoiced')).map(order => order.id), [first.id]);
+    assert.equal((await view('Done')).some(order => order.id === first.id), false);
+    firstRow = (await view('Invoiced'))[0];
+    assert.equal(firstRow.stage, 'invoiced');
+    assert.match(firstRow.invoiced_date, /^\d{4}-\d{2}-\d{2}$/);
+    assert.equal((await api(`/api/orders/${first.id}/progress`, { ...firstRow, paid: 1, paid_date: '2026-10-30', completed_date: '2026-10-28', updated_at: firstRow.updated_at }, 'PUT')).status, 200);
+    const archived = await view('Archived');
+    assert.deepEqual(archived.map(order => order.id), [first.id]);
+    assert.equal(archived[0].stage, 'archived');
+    assert.equal(archived[0].archive_delete_date, '2026-11-06', '7 days after it was both complete and paid');
+    for (const tab of ['All Orders', 'Invoiced', 'Done', 'Outstanding']) assert.equal((await view(tab)).some(order => order.id === first.id), false, `not in ${tab}`);
 
     assert.equal((await api(`/api/orders/${second.id}/delete`, {})).status, 200);
     assert.equal((await api(`/api/orders/${second.id}/progress`, { updated_at: 'x' }, 'PUT')).status, 404);
@@ -1130,8 +1159,13 @@ test('Housecall Pro: a pasted link fills the order, webhooks and sync keep it in
     assert.equal(row.hcp.status, 'completed');
     assert.ok((await api('/api/orders?status=Done')).body.orders.some(order => order.id === a1.id));
 
-    // Invoices and approved estimates are not used.
-    assert.equal((await deliver({ event: 'invoice.sent', event_occurred_at: at(25), invoice: { id: 'invoice_1', job_id: JOB_A, sent_at: at(25) } })).body.outcome, 'ignored');
+    // An invoice sent in HCP moves the order from Done to Invoiced.
+    fake.jobs.get(JOB_A).invoices = [{ id: 'invoice_1', status: 'open', sent_at: at(25) }];
+    assert.equal((await deliver({ event: 'invoice.sent', event_occurred_at: at(25), invoice: { id: 'invoice_1', job_id: JOB_A, status: 'open', sent_at: at(25) } })).body.outcome, 'applied');
+    assert.equal((await find(a2.id)).stage, 'invoiced');
+    assert.ok((await api('/api/orders?status=Invoiced')).body.orders.some(order => order.id === a1.id));
+    assert.equal((await api('/api/orders?status=Done')).body.orders.some(order => order.id === a1.id), false);
+    // Approved estimates are not used.
     const estimateJob = syntheticHcpJob({ id: 'job_0000000000000000000000000000000c', invoice_number: '10239600', original_estimate_id: 'est_1' });
     assert.equal((await deliver({ event: 'job.created', event_occurred_at: at(26), job: estimateJob })).body.outcome, 'ignored');
     assert.equal((await api('/api/job-drafts')).body.drafts.filter(entry => entry.hcp_job_id === estimateJob.id).length, 0);
@@ -1210,6 +1244,31 @@ test('Housecall Pro: a pasted link fills the order, webhooks and sync keep it in
   } finally {
     child.kill('SIGTERM');
     await fake.close();
+  }
+});
+
+test('an archived order is deleted 7 days after it was complete and paid; newer ones stay', async () => {
+  const child = startServer({ ARCHIVE_CLEANUP_SECONDS: '1' });
+  const cookieJar = createCookieJar();
+  const api = (route, body, method = body ? 'POST' : 'GET') => requestJson('http://127.0.0.1:4100' + route, { method, headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), cookieJar });
+  const view = async (status) => (await api(`/api/orders?status=${status}&search=synthetic%20archive`)).body.orders;
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Phoenix' }).format(new Date());
+  try {
+    await delay(1500);
+    assert.equal((await api('/api/login', { username: 'mary', password: 'staff123' })).status, 200);
+    const create = name => api('/api/orders', { customer_name: `Synthetic Archive ${name}`, supplier: 'Northline Glass', category: 'Windows', date_ordered: '2026-01-01', ordered_by: 'Admin User' });
+    const finish = (order, day) => api(`/api/orders/${order.id}/progress`, { job_completed: 1, completed_date: day, invoiced: 1, invoiced_date: day, paid: 1, paid_date: day, updated_at: order.updated_at }, 'PUT');
+    const old = (await create('Old')).body.order;
+    const recent = (await create('Recent')).body.order;
+    assert.equal((await finish(old, '2026-01-05')).status, 200);
+    assert.equal((await finish(recent, today)).status, 200);
+    for (let i = 0; i < 100 && !(await view('Deleted')).some(order => order.id === old.id); i += 1) await delay(50);
+    const deleted = (await view('Deleted')).find(order => order.id === old.id);
+    assert.ok(deleted, 'the old one is deleted');
+    assert.equal(deleted.archive_source, 'archived_7_days');
+    assert.deepEqual((await view('Archived')).map(order => order.id), [recent.id], 'the recent one stays archived');
+  } finally {
+    child.kill('SIGTERM');
   }
 });
 
