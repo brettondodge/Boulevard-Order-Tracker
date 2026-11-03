@@ -21,22 +21,30 @@
     <p class="eyebrow">AUTO GLASS PARTS</p>
     <h1>Autoglass Scanning</h1>
     <nav class="ag-tabs" aria-label="Lists">
-      <a href="#receiving" data-tab="receiving">Receiving</a>
+      <a href="#plk" data-tab="receiving">Receiving</a>
       <a href="#stock" data-tab="stock">Stock</a>
       <a href="#old" data-tab="old">Old inventory</a>
     </nav>
+    <nav id="supplierTabs" class="ag-tabs ag-suppliers" aria-label="Receiving lists">
+      <a href="#plk" data-tab="plk" class="plk">PLK <span data-count="plk"></span></a>
+      <a href="#pgw" data-tab="pgw" class="pgw">PGW <span data-count="pgw"></span></a>
+    </nav>
     <p id="tabIntro" class="muted"></p>
+    <div id="printTitle" class="print-only print-title"></div>
 
     <div class="scan-toolbar">
-      <p id="scanSummary" class="scan-summary" aria-live="polite"></p>
+      <input id="searchInput" class="scan-search" type="search" aria-label="Search this list" placeholder="Search this list" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="search">
       <div class="scan-actions">
+        <button id="printList" type="button">Print</button>
         <a id="downloadInventory" class="button" href="#" hidden>Download spreadsheet</a>
         <button id="clearScans" type="button">Clear list</button>
       </div>
     </div>
 
-    <div class="scan-sheet">
+    <div id="scanSheet" class="scan-sheet">
+      <p id="scanSummary" class="scan-summary" aria-live="polite"></p>
       <ol id="scanRows" class="scan-list" aria-label="Scanned parts"></ol>
+      <p id="noResults" class="scan-empty" hidden></p>
       <div class="scan-row scan-next">
         <span id="nextNumber" class="scan-number"></span>
         <input id="scanInput" type="text" aria-label="Next part number" placeholder="Scan the next part" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="done" autofocus>

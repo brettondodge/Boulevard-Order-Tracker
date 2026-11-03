@@ -242,6 +242,9 @@ if (!isProduction) {
   db.exec(fs.readFileSync(new URL('../migrations/007-housecall.sql', import.meta.url), 'utf8'));
   // Autoglass Scanning (migrations/012-autoglass.sql is portable SQL).
   db.exec(fs.readFileSync(new URL('../migrations/012-autoglass.sql', import.meta.url), 'utf8'));
+  // The PLK and PGW receiving lists (migrations/013-autoglass-suppliers.sql for Postgres).
+  const hasScanSupplierColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('autoglass_scans') WHERE name = 'supplier'").get();
+  if (Number(hasScanSupplierColumn.count) === 0) db.exec("ALTER TABLE autoglass_scans ADD COLUMN supplier TEXT NOT NULL DEFAULT 'plk';");
   // Later hcp_jobs columns (migrations 009 and 010 for Postgres).
   for (const [column, type] of Object.entries({ tags: 'TEXT', pipeline_step: 'TEXT', outstanding_balance: 'INTEGER', invoice_sent_at: 'TEXT', invoice_paid_at: 'TEXT' })) {
     const exists = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('hcp_jobs') WHERE name = ?").get(column);

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import { glassNumber, partKey, scheduleMatches, unscannedGlass } from '../public/autoglass-match.js';
+import { glassNumber, matchesSearch, partKey, scheduleMatches, unscannedGlass } from '../public/autoglass-match.js';
 
 const jobs = [
   { number: '501', scheduledDate: '2026-11-04', vehicle: '2019 Toyota Camry', parts: ['DW02842GTYN', 'GGS 901 GEL', 'LABOR'] },
@@ -32,6 +32,14 @@ test('glass on the schedule with no scan of its NAGS number is listed; other par
   assert.deepEqual(unscannedGlass(jobs, []).map(job => [job.number, job.glass]), [['501', 'DW02842'], ['505', 'FW04567']]);
   assert.deepEqual(unscannedGlass(jobs, ['x FW04567GBY x', 'DW02842GBY']), [], 'any version counts as scanned');
   assert.deepEqual(unscannedGlass(jobs, ['DW02843']).map(job => job.glass), ['DW02842', 'FW04567']);
+});
+
+test('search finds every word typed, as text or as a part number without spaces and dashes', () => {
+  const line = ['DW02842 GTYN', 'need', 'WO #501', '2019 Toyota Camry', 'DW02842GTYN'];
+  for (const query of ['', '  ', 'dw02842', 'DW02842-G', '02842gt', 'camry', 'Camry 501', 'need', '#501']) assert.equal(matchesSearch(query, line), true, query);
+  for (const query of ['return', 'FW04567', 'camry 505', 'DW02843']) assert.equal(matchesSearch(query, line), false, query);
+  assert.equal(matchesSearch('h', ['HAH000448', '']), true);
+  assert.equal(matchesSearch('-', ['HAH000448', null]), false);
 });
 
 // ---------- API ----------
@@ -125,7 +133,7 @@ function client() {
   };
 }
 
-test('scans save in order; Need and Return are one or neither; remove and Clear list', { timeout: 60000 }, async () => {
+test('scans save in order on the PLK or PGW list; Need and Return are one or neither; remove and Clear list', { timeout: 60000 }, async () => {
   await startServer();
   const request = client();
   assert.equal((await request('/api/autoglass/scans')).status, 401);
@@ -134,11 +142,16 @@ test('scans save in order; Need and Return are one or neither; remove and Clear 
   assert.match((await request('/autoglass')).text, /Autoglass Scanning/);
   assert.ok((await request('/api/tools')).body.some(tool => tool.path === '/autoglass' && !tool.desktopOnly));
 
-  assert.equal((await request('/api/autoglass/scans', { method: 'POST', body: { part_number: '   ' } })).status, 400);
-  assert.equal((await request('/api/autoglass/scans', { method: 'POST', body: { part_number: 'X'.repeat(81) } })).status, 400);
-  const first = (await request('/api/autoglass/scans', { method: 'POST', body: { part_number: '  DW02842   GTYN ' } })).body.scan;
-  const second = (await request('/api/autoglass/scans', { method: 'POST', body: { part_number: 'FW04567GBY' } })).body.scan;
+  const scan = (supplier, part) => request('/api/autoglass/scans', { method: 'POST', body: { supplier, part_number: part } });
+  assert.equal((await scan(undefined, 'DW02842')).status, 400, 'every scan goes on the PLK or PGW list');
+  assert.equal((await scan('xyz', 'DW02842')).status, 400);
+  assert.equal((await scan('plk', '   ')).status, 400);
+  assert.equal((await scan('plk', 'X'.repeat(81))).status, 400);
+  const first = (await scan('plk', '  DW02842   GTYN ')).body.scan;
+  const second = (await scan('plk', 'FW04567GBY')).body.scan;
+  await scan('pgw', 'FW04567GBY');
   assert.equal(first.part_number, 'DW02842 GTYN');
+  assert.equal(first.supplier, 'plk');
   assert.equal(first.scanned_by, 'mary');
   assert.deepEqual([first.need, first.to_return], [false, false]);
 
@@ -151,11 +164,17 @@ test('scans save in order; Need and Return are one or neither; remove and Clear 
 
   let list = (await request('/api/autoglass/scans')).body;
   assert.equal(list.omegaConnected, false);
-  assert.deepEqual(list.scans.map(scan => [scan.part_number, scan.need, scan.to_return]), [['DW02842 GTYN', false, true], ['FW04567GBY', false, false]]);
+  const lines = () => list.scans.map(entry => [entry.part_number, entry.supplier, entry.need, entry.to_return]);
+  assert.deepEqual(lines(), [['DW02842 GTYN', 'plk', false, true], ['FW04567GBY', 'plk', false, false], ['FW04567GBY', 'pgw', false, false]]);
 
   assert.equal((await request(`/api/autoglass/scans/${second.id}`, { method: 'DELETE' })).status, 200);
   assert.equal((await request(`/api/autoglass/scans/${second.id}`, { method: 'DELETE' })).status, 404);
-  assert.deepEqual((await request('/api/autoglass/clear', { method: 'POST' })).body, { cleared: 1 });
+  const clear = supplier => request('/api/autoglass/clear', { method: 'POST', body: { supplier } });
+  assert.equal((await clear(undefined)).status, 400);
+  assert.deepEqual((await clear('plk')).body, { cleared: 1 });
+  list = (await request('/api/autoglass/scans')).body;
+  assert.deepEqual(lines(), [['FW04567GBY', 'pgw', false, false]], 'clearing PLK leaves the PGW list');
+  assert.deepEqual((await clear('pgw')).body, { cleared: 1 });
   list = (await request('/api/autoglass/scans')).body;
   assert.deepEqual(list.scans, []);
   assert.equal((await markScan(first, { need: true })).status, 404, 'a cleared scan is off the list');

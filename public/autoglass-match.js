@@ -31,3 +31,11 @@ export function unscannedGlass(jobs, partNumbers) {
     .filter(sku => glassNumber(sku) && !scanned.has(glassNumber(sku)))
     .map(sku => ({ ...job, part: sku, glass: glassNumber(sku) })));
 }
+
+// Search: every word typed has to be in one of a line's texts, as plain text
+// or as a part number without spaces and dashes ("dw02842-g" finds DW02842GTYN).
+export function matchesSearch(query, texts) {
+  const words = String(query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+  return words.every(word => texts.some(text => String(text ?? '').toLowerCase().includes(word)
+    || (partKey(word) && partKey(text).includes(partKey(word)))));
+}

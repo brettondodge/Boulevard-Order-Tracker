@@ -1,23 +1,29 @@
-import { partKey, scheduleMatches, unscannedGlass } from './autoglass-match.js';
+import { matchesSearch, partKey, scheduleMatches, unscannedGlass } from './autoglass-match.js';
 
 const $ = id => document.getElementById(id);
+const RECEIVING_INTRO = "Scan each part's barcode; the next line is ready right away. Tick <strong>Need</strong> to keep a part (green) or <strong>Return</strong> to send it back (red).";
+// Receiving has a list per supplier (PLK, PGW); supplier is set on those tabs only.
 const TABS = {
-  receiving: {
-    intro: "Scan each part's barcode; the next line is ready right away. Tick <strong>Need</strong> to keep a part (green) or <strong>Return</strong> to send it back (red).",
-    placeholder: 'Scan the next part'
-  },
+  plk: { supplier: 'plk', label: 'PLK', title: 'PLK receiving', intro: RECEIVING_INTRO, placeholder: 'Scan the next PLK part' },
+  pgw: { supplier: 'pgw', label: 'PGW', title: 'PGW receiving', intro: RECEIVING_INTRO, placeholder: 'Scan the next PGW part' },
   stock: {
+    label: 'Stock',
+    title: 'Stock',
     intro: 'Parts kept on hand. Scan a part to add it; scanning the same part again adds one more.',
     placeholder: 'Scan a part into Stock'
   },
   old: {
+    label: 'Old inventory',
+    title: 'Old inventory',
     intro: "Leftover parts to use up. Scan a part to add it; scanning the same part again adds one more. When an Omega job needs one, you're emailed.",
     placeholder: 'Scan a part into Old inventory'
   }
 };
 const state = {
-  tab: 'receiving',
-  scans: [],
+  tab: 'plk',
+  receiving: 'plk', // the receiving list open last, where the Receiving tab goes
+  scans: [], // both receiving lists
+  search: { plk: '', pgw: '', stock: '', old: '' },
   inventory: [],
   check: null, // the Omega check's settings and last result
   pending: [], // part numbers scanned and still being saved, in order
@@ -58,11 +64,31 @@ function focusScan() {
   $('scanInput').focus();
 }
 
+const listScans = supplier => state.scans.filter(scan => scan.supplier === supplier);
+const searchText = () => state.search[state.tab].trim();
+
+// The band at the top of the list: its name, its counts, and how many lines
+// the search shows.
+function showSummary(counts, shown, total) {
+  const search = searchText();
+  $('scanSummary').textContent = `${TABS[state.tab].label} · ${counts}${search && total ? ` · ${shown} of ${total} match “${search}”` : ''}`;
+  $('noResults').hidden = !(search && total && !shown);
+  $('noResults').textContent = `Nothing on this list matches “${search}”.`;
+}
+
 function render() {
-  const receiving = state.tab === 'receiving';
-  document.querySelectorAll('[data-tab]').forEach(link => link.setAttribute('aria-current', String(link.dataset.tab === state.tab)));
+  const { supplier } = TABS[state.tab];
+  const receiving = Boolean(supplier);
+  document.querySelectorAll('[data-tab]').forEach(link => link.setAttribute('aria-current', String(link.dataset.tab === state.tab || (link.dataset.tab === 'receiving' && receiving))));
+  document.querySelector('[data-tab="receiving"]').href = `#${state.receiving}`;
+  document.querySelectorAll('[data-count]').forEach(count => { count.textContent = listScans(count.dataset.count).length || ''; });
+  $('supplierTabs').hidden = !receiving;
+  $('scanSheet').classList.toggle('plk', supplier === 'plk');
+  $('scanSheet').classList.toggle('pgw', supplier === 'pgw');
   $('tabIntro').innerHTML = TABS[state.tab].intro;
   $('scanInput').placeholder = TABS[state.tab].placeholder;
+  if ($('searchInput').value !== state.search[state.tab]) $('searchInput').value = state.search[state.tab];
+  $('searchInput').placeholder = `Search ${TABS[state.tab].title}`;
   $('clearScans').hidden = !receiving;
   $('downloadInventory').hidden = receiving;
   $('downloadInventory').href = `/api/autoglass/inventory.csv?section=${state.tab}`;
@@ -74,9 +100,17 @@ function render() {
 
 // ---------- Receiving ----------
 
+const scheduleJobs = scan => (state.schedule ? scheduleMatches(scan.part_number, state.schedule.jobs) : []);
+
+// What a search looks in: the part, Need or Return, and the jobs it's on.
+const scanTexts = scan => [
+  scan.part_number, scan.need ? 'need' : '', scan.to_return ? 'return' : '',
+  ...scheduleJobs(scan).flatMap(job => [`WO #${job.number}`, job.vehicle, job.part])
+];
+
 function matchHtml(scan) {
   if (!state.schedule) return '';
-  const jobs = scheduleMatches(scan.part_number, state.schedule.jobs);
+  const jobs = scheduleJobs(scan);
   if (!jobs.length) return `<span class="match none">Not on the Omega schedule (${esc(shortDate(state.schedule.from))} – ${esc(shortDate(state.schedule.to))})</span>`;
   return `<span class="match on">On ${jobs.map(job => esc(jobText(job)) + versionNote(scan.part_number, job.part)).join('; ')}</span>`;
 }
@@ -88,19 +122,19 @@ const pendingRows = (count) => state.pending.map((part, index) => `
     </li>`).join('');
 
 function renderScans() {
-  const { scans } = state;
+  const scans = listScans(TABS[state.tab].supplier);
   const need = scans.filter(scan => scan.need).length;
   const back = scans.filter(scan => scan.to_return).length;
-  $('scanSummary').textContent = scans.length
-    ? `${scans.length} scanned · ${need} need · ${back} return · ${scans.length - need - back} not marked`
-    : 'Nothing scanned yet.';
+  // Lines keep their number in the whole list while a search hides others.
+  const shown = scans.map((scan, index) => ({ scan, number: index + 1 })).filter(({ scan }) => matchesSearch(searchText(), scanTexts(scan)));
+  showSummary(scans.length ? `${scans.length} scanned · ${need} need · ${back} return · ${scans.length - need - back} not marked` : 'Nothing scanned yet.', shown.length, scans.length);
   $('clearScans').disabled = !scans.length;
-  $('scanRows').innerHTML = scans.map((scan, index) => `
+  $('scanRows').innerHTML = shown.map(({ scan, number }) => `
     <li class="scan-row ${scan.need ? 'need' : scan.to_return ? 'return' : ''}" data-id="${esc(scan.id)}">
-      <span class="scan-number">${index + 1}</span>
+      <span class="scan-number">${number}</span>
       <div class="scan-part"><strong>${esc(scan.part_number)}</strong>${matchHtml(scan)}</div>
-      <label class="scan-box"><input type="checkbox" data-mark="need" ${scan.need ? 'checked' : ''}> Need</label>
-      <label class="scan-box"><input type="checkbox" data-mark="to_return" ${scan.to_return ? 'checked' : ''}> Return</label>
+      <label class="scan-box ${scan.need ? 'on' : ''}"><input type="checkbox" data-mark="need" ${scan.need ? 'checked' : ''}> Need</label>
+      <label class="scan-box ${scan.to_return ? 'on' : ''}"><input type="checkbox" data-mark="to_return" ${scan.to_return ? 'checked' : ''}> Return</label>
       <button type="button" class="scan-remove" data-remove aria-label="Remove ${esc(scan.part_number)}">×</button>
     </li>`).join('') + pendingRows(scans.length);
   $('nextNumber').textContent = scans.length + state.pending.length + 1;
@@ -116,7 +150,7 @@ function renderUnscanned() {
   const missing = unscannedGlass(state.schedule.jobs, state.scans.map(scan => scan.part_number));
   const jobs = state.schedule.jobs.length;
   $('scheduleStatus').textContent = `${plural(jobs, 'work order', 'work orders')} scheduled ${shortDate(state.schedule.from)} – ${shortDate(state.schedule.to)}. `
-    + (missing.length ? `Glass on them not scanned yet: ${missing.length}.` : 'All their glass has been scanned.');
+    + (missing.length ? `Glass on them not scanned into PLK or PGW yet: ${missing.length}.` : 'All their glass has been scanned.');
   list.innerHTML = missing.map(job => `<li><strong>${esc(job.glass)}</strong> · ${esc(jobText(job))}</li>`).join('');
 }
 
@@ -139,10 +173,13 @@ async function mark(id, field, checked) {
 }
 
 async function clearList() {
-  if (!state.scans.length || !confirm(`Clear all ${state.scans.length} scans and start a new list?`)) return;
+  const { supplier, label } = TABS[state.tab];
+  const count = listScans(supplier).length;
+  if (!count || !confirm(`Clear all ${count} ${label} scans and start a new ${label} list?`)) return;
   try {
-    await api('/clear', { method: 'POST' });
-    state.scans = [];
+    await api('/clear', { method: 'POST', body: { supplier } });
+    state.scans = state.scans.filter(scan => scan.supplier !== supplier);
+    state.search[state.tab] = '';
     showMessage('');
   } catch (error) {
     showMessage(error.message);
@@ -176,6 +213,11 @@ async function checkSchedule() {
 
 // ---------- Stock and Old inventory ----------
 
+const itemTexts = item => [
+  item.part_number, item.shelf,
+  ...item.matches.flatMap(match => [`${match.status || 'Job'} #${match.job_number}`, match.vehicle, match.part])
+];
+
 function inventoryMatches(item) {
   if (!item.matches.length) return '';
   const jobs = item.matches.map(match => [
@@ -190,12 +232,13 @@ function renderInventory() {
   const items = state.inventory.filter(item => item.section === state.tab);
   const total = items.reduce((sum, item) => sum + item.quantity, 0);
   const matched = items.filter(item => item.matches.length).length;
-  $('scanSummary').textContent = items.length
+  const shown = items.map((item, index) => ({ item, number: index + 1 })).filter(({ item }) => matchesSearch(searchText(), itemTexts(item)));
+  showSummary(items.length
     ? `${plural(items.length, 'part number', 'part numbers')} · ${total} on hand${state.check?.last ? ` · ${matched} needed by open Omega jobs` : ''}`
-    : 'Nothing here yet.';
-  $('scanRows').innerHTML = items.map((item, index) => `
+    : 'Nothing here yet.', shown.length, items.length);
+  $('scanRows').innerHTML = shown.map(({ item, number }) => `
     <li class="scan-row inventory-row ${item.matches.length ? 'matched' : ''}" data-id="${esc(item.id)}">
-      <span class="scan-number">${index + 1}</span>
+      <span class="scan-number">${number}</span>
       <div class="scan-part"><strong>${esc(item.part_number)}</strong>${inventoryMatches(item)}</div>
       <div class="quantity" role="group" aria-label="Quantity of ${esc(item.part_number)}">
         <button type="button" data-quantity="-1" aria-label="One less">−</button>
@@ -266,24 +309,27 @@ async function checkInventory() {
 // ---------- Scanning ----------
 
 // Scans save one at a time, in the order they were scanned, into the list on
-// screen when the scan was made.
+// screen when the scan was made. A scan clears that list's search, so the new
+// line shows.
 function addScan(value) {
   const part = value.trim();
   if (!part) return;
   const tab = state.tab;
+  const { supplier } = TABS[tab];
   showMessage('');
   $('scanNote').textContent = '';
+  state.search[tab] = '';
   state.pending.push(part);
   render();
   saving = saving.then(async () => {
     try {
-      if (tab === 'receiving') {
-        const { scan } = await api('/scans', { method: 'POST', body: { part_number: part } });
+      if (supplier) {
+        const { scan } = await api('/scans', { method: 'POST', body: { supplier, part_number: part } });
         state.scans.push(scan);
       } else {
         const { item } = await api('/inventory', { method: 'POST', body: { section: tab, part_number: part } });
         await loadInventory();
-        if (!item.added) $('scanNote').textContent = `${part}: now ${item.quantity} in ${tab === 'old' ? 'Old inventory' : 'Stock'}.`;
+        if (!item.added) $('scanNote').textContent = `${part}: now ${item.quantity} in ${TABS[tab].title}.`;
       }
     } catch (error) {
       showMessage(`${part} wasn't saved: ${error.message}`);
@@ -297,12 +343,12 @@ function addScan(value) {
 async function removeLine(id) {
   showMessage('');
   try {
-    if (state.tab === 'receiving') {
+    if (TABS[state.tab].supplier) {
       await api(`/scans/${encodeURIComponent(id)}`, { method: 'DELETE' });
       state.scans = state.scans.filter(scan => scan.id !== id);
     } else {
       const item = state.inventory.find(entry => entry.id === id);
-      if (item && !confirm(`Remove ${item.part_number} (${item.quantity} on hand) from ${state.tab === 'old' ? 'Old inventory' : 'Stock'}?`)) return;
+      if (item && !confirm(`Remove ${item.part_number} (${item.quantity} on hand) from ${TABS[state.tab].title}?`)) return;
       await api(`/inventory/${encodeURIComponent(id)}`, { method: 'DELETE' });
       state.inventory = state.inventory.filter(entry => entry.id !== id);
     }
@@ -314,9 +360,11 @@ async function removeLine(id) {
   }
 }
 
+// #receiving (the old link) opens the receiving list used last.
 function showTab() {
   const tab = location.hash.slice(1);
-  state.tab = TABS[tab] ? tab : 'receiving';
+  state.tab = TABS[tab] ? tab : state.receiving;
+  if (TABS[state.tab].supplier) state.receiving = state.tab;
   showMessage('');
   $('scanNote').textContent = '';
   render();
@@ -332,10 +380,47 @@ $('scanInput').addEventListener('keydown', event => {
   addScan(value);
 });
 
+// Printing shows the open list as it is on screen (search included), with a
+// title and the time; Save as PDF names the file after it.
+const pageTitle = document.title;
+function preparePrint() {
+  const search = searchText();
+  const printed = dateTime(new Date().toISOString());
+  $('printTitle').innerHTML = `<h2>${esc(TABS[state.tab].title)}</h2>`
+    + `<p>Printed ${esc(printed)}${search ? ` · only lines matching “${esc(search)}”` : ''}</p>`;
+  document.title = `${TABS[state.tab].title} ${printed}`;
+}
+window.addEventListener('beforeprint', preparePrint);
+window.addEventListener('afterprint', () => { document.title = pageTitle; });
+$('printList').addEventListener('click', () => {
+  preparePrint();
+  window.print();
+  focusScan();
+});
+
+$('searchInput').addEventListener('input', event => {
+  state.search[state.tab] = event.target.value;
+  render();
+});
+$('searchInput').addEventListener('keydown', event => {
+  // Escape clears the search and goes back to scanning.
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    state.search[state.tab] = '';
+    render();
+    focusScan();
+  }
+  // Enter selects the search, so a part scanned into it next replaces it.
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    event.target.select();
+  }
+});
+
 // A scan that starts while a checkbox or button has focus still goes to the scan box.
 document.addEventListener('keydown', event => {
   const active = document.activeElement;
-  const typing = active?.matches?.('input[type="text"], input[type="date"], textarea');
+  const typing = active?.matches?.('input[type="text"], input[type="search"], input[type="date"], textarea');
   if (!typing && event.key.length === 1 && event.key.trim() && !event.ctrlKey && !event.metaKey && !event.altKey) focusScan();
 });
 

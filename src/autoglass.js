@@ -11,17 +11,22 @@ import {
 const route = handler => (req, res, next) => Promise.resolve().then(() => handler(req, res)).catch(next);
 const actor = req => req.session.user.username;
 const MAX_PART_LENGTH = 80;
+// Receiving has one list per supplier.
+const SUPPLIERS = { plk: 'PLK', pgw: 'PGW' };
+const SUPPLIER_ERROR = 'Choose the PLK or PGW list.';
 
 const serialize = row => ({
   id: row.id,
   part_number: row.part_number,
+  supplier: row.supplier,
   need: Boolean(Number(row.need)),
   to_return: Boolean(Number(row.to_return)),
   scanned_at: row.scanned_at,
   scanned_by: row.scanned_by || ''
 });
 
-// The current list is everything scanned since the last Clear list, oldest first.
+// Each supplier's current list is everything scanned into it since its last
+// Clear list, oldest first.
 export function autoglassRouter({ requireStaffAuth }) {
   const router = express.Router();
   router.use(requireStaffAuth);
@@ -32,13 +37,14 @@ export function autoglassRouter({ requireStaffAuth }) {
   }));
 
   router.post('/scans', route(async (req, res) => {
+    if (!SUPPLIERS[req.body.supplier]) return res.status(400).json({ error: SUPPLIER_ERROR });
     const part = partNumberFrom(req, res);
     if (!part) return;
     const id = randomUUID();
     const now = isoNow();
     await dbRun(
-      'INSERT INTO autoglass_scans (id, part_number, need, to_return, scanned_at, scanned_by, updated_at, updated_by) VALUES (?, ?, 0, 0, ?, ?, ?, ?)',
-      [id, part, now, actor(req), now, actor(req)]
+      'INSERT INTO autoglass_scans (id, part_number, supplier, need, to_return, scanned_at, scanned_by, updated_at, updated_by) VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?)',
+      [id, part, req.body.supplier, now, actor(req), now, actor(req)]
     );
     res.status(201).json({ scan: serialize(await dbGet('SELECT * FROM autoglass_scans WHERE id = ?', [id])) });
   }));
@@ -62,10 +68,14 @@ export function autoglassRouter({ requireStaffAuth }) {
     res.json({ deleted: true });
   }));
 
-  // Starts a new list. Cleared scans stay in the database.
+  // Starts a new list for one supplier. Cleared scans stay in the database.
   router.post('/clear', route(async (req, res) => {
+    if (!SUPPLIERS[req.body.supplier]) return res.status(400).json({ error: SUPPLIER_ERROR });
     const now = isoNow();
-    const result = await dbRun('UPDATE autoglass_scans SET cleared_at = ?, updated_at = ?, updated_by = ? WHERE cleared_at IS NULL', [now, now, actor(req)]);
+    const result = await dbRun(
+      'UPDATE autoglass_scans SET cleared_at = ?, updated_at = ?, updated_by = ? WHERE cleared_at IS NULL AND supplier = ?',
+      [now, now, actor(req), req.body.supplier]
+    );
     res.json({ cleared: result.changes });
   }));
 

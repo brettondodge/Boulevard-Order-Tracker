@@ -109,13 +109,18 @@ which. Other parts (mouldings, adhesive) match on the whole number. Omega is
 only read. Omega finds jobs by the day they were written up, so searches look
 back 60 days.
 
-- **Receiving:** each scan is a line with **Need** (green) or **Return** (red),
-  one or neither, checked against Omega work orders scheduled in the chosen
-  dates (default today through a week out). Scheduled glass not scanned yet is
-  listed. **Clear list** starts over (cleared scans stay in the database).
+- **Receiving:** a **PLK** list (light green) and a **PGW** list (light blue).
+  Each scan is a line with **Need** (green) or **Return** (red), one or
+  neither, checked against Omega work orders scheduled in the chosen dates
+  (default today through a week out). Scheduled glass not scanned into either
+  list yet is listed. **Clear list** starts that supplier's list over (cleared
+  scans stay in the database).
 - **Stock** (kept on hand) and **Old inventory** (leftovers to use up): scanning
   a part adds it, and scanning it again adds one more. Each part has a quantity
   and a shelf, and each list downloads as a spreadsheet.
+- **Search and Print:** every list has its own search (part number with or
+  without dashes, shelf, job number, vehicle, or "need" / "return"). **Print**
+  prints the open list as shown, search included, with its name and the time.
 - **Daily check:** every morning at 7 AM Arizona time (`AUTOGLASS_CHECK_HOUR`),
   or with **Check now**, both lists are matched against Omega quotes and work
   orders written up in the last 60 days. Matches show on each part. New

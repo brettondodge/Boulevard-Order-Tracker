@@ -30,9 +30,84 @@ main {
   color: #fff;
 }
 
+/* Receiving's supplier lists: PLK light green, PGW light blue, on the tab, the
+   list's top band and the scan line, so it's clear which list a scan goes in. */
+.ag-suppliers {
+  margin-top: 0;
+}
+
+.ag-suppliers a {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 5.5rem;
+  justify-content: center;
+}
+
+.ag-suppliers a span:not(:empty) {
+  padding: 0 7px;
+  border-radius: 999px;
+  background: #ffffffb3;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-suppliers a.plk,
+.ag-suppliers a.plk[aria-current="true"] {
+  background: #e4f3d3;
+  border-color: #a9d38a;
+  color: #2d5617;
+}
+
+.ag-suppliers a.pgw,
+.ag-suppliers a.pgw[aria-current="true"] {
+  background: #dcebfa;
+  border-color: #9ec4e8;
+  color: #1b4970;
+}
+
+.ag-suppliers a[aria-current="true"] {
+  border-color: currentColor;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+
+.scan-sheet.plk {
+  border-color: #a9d38a;
+}
+
+.scan-sheet.plk .scan-summary {
+  background: #e4f3d3;
+  border-bottom-color: #c3e2aa;
+  color: #2d5617;
+}
+
+.scan-sheet.plk .scan-next {
+  background: #eef8e6;
+}
+
+.scan-sheet.pgw {
+  border-color: #9ec4e8;
+}
+
+.scan-sheet.pgw .scan-summary {
+  background: #dcebfa;
+  border-bottom-color: #bad6f0;
+  color: #1b4970;
+}
+
+.scan-sheet.pgw .scan-next {
+  background: #ebf3fc;
+}
+
 .scan-actions {
   display: flex;
   gap: 8px;
+}
+
+.scan-search {
+  flex: 1 1 240px;
+  max-width: 380px;
+  font-size: 15px;
 }
 
 .scan-note {
@@ -49,7 +124,17 @@ main {
 
 .scan-summary {
   margin: 0;
+  padding: 10px 14px;
+  border-bottom: 1px solid #e5eaf0;
+  background: #f6f8fa;
   font-weight: 600;
+}
+
+.scan-empty {
+  margin: 0;
+  padding: 14px;
+  border-bottom: 1px solid #e5eaf0;
+  color: #657687;
 }
 
 /* The list and the scan box read as one sheet: the box is always the next line. */
@@ -230,8 +315,94 @@ main {
     flex-wrap: wrap;
   }
 
+  .scan-search {
+    flex-basis: 100%;
+    max-width: none;
+  }
+
   .scan-remove {
     width: 2.25rem;
     height: 2.25rem;
+  }
+}
+
+.print-only {
+  display: none;
+}
+
+/* Print: the open list only, with its title and time, colors kept. */
+@media print {
+  @page {
+    margin: 12mm;
+  }
+
+  :root,
+  body {
+    background: #fff;
+  }
+
+  main {
+    max-width: none;
+    padding: 0;
+  }
+
+  header,
+  main > .eyebrow,
+  main > h1,
+  .ag-tabs,
+  #tabIntro,
+  .scan-toolbar,
+  .scan-next,
+  .scan-note,
+  #scanMessage,
+  #checkPanel,
+  #schedulePanel > .muted,
+  #schedulePanel .bar,
+  .scan-remove,
+  .quantity button {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block;
+  }
+
+  .print-title h2 {
+    margin: 0;
+  }
+
+  .print-title p {
+    margin: 2px 0 12px;
+    color: #4b5966;
+  }
+
+  .scan-sheet,
+  .scan-summary,
+  .scan-row {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .scan-row {
+    grid-template-columns: 2.25rem minmax(0, 1fr) auto auto;
+    padding: 6px 12px;
+    break-inside: avoid;
+  }
+
+  .scan-box.on {
+    font-weight: 700;
+  }
+
+  .shelf input {
+    width: auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .panel {
+    margin: 16px 0 0;
+    padding: 0;
+    border: 0;
   }
 }

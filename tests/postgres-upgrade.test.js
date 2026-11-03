@@ -40,6 +40,7 @@ test('a database that ran the first 002-freeport.sql gets every newer Freeport a
     const orderColumn = async name => (await pool.query("SELECT 1 FROM information_schema.columns WHERE table_name = 'orders' AND column_name = $1", [name])).rowCount;
     for (const name of ['shop_location', 'job_scheduled', 'scheduled_date', 'schedule_note', 'job_completed', 'completed_date', 'hcp_job_id']) assert.equal(await orderColumn(name), 1, name);
     for (const name of ['hcp_jobs', 'hcp_events', 'hcp_state']) assert.equal(await table(name), name);
+    assert.equal((await pool.query("SELECT 1 FROM information_schema.columns WHERE table_name = 'autoglass_scans' AND column_name = 'supplier'")).rowCount, 1);
   } finally {
     await pool?.end();
     await cluster.stop();
