@@ -1,4 +1,5 @@
 [
   {"title":"Order Tracker","description":"Manage supplier orders, drafts, deliveries and archived jobs.","path":"/app","label":"Ordering"},
-  {"title":"Freeport Billing","description":"Freeport invoice records and the month-end billing package.","path":"/freeport","label":"Monthly billing","desktopOnly":true}
+  {"title":"Freeport Billing","description":"Freeport invoice records and the month-end billing package.","path":"/freeport","label":"Monthly billing","desktopOnly":true},
+  {"title":"Autoglass Scanning","description":"Scan auto glass parts, mark what's needed and what goes back, and check them against the Omega schedule.","path":"/autoglass","label":"Parts"}
 ]

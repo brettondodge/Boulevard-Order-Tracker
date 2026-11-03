@@ -372,6 +372,36 @@ export async function applyImport({ from, to, numbers }, config, actor) {
   return result;
 }
 
+// Autoglass Scanning: work orders on the Omega schedule between from and to
+// (the appointment's Scheduled Date), with their part numbers. Omega finds jobs
+// by the day they were written up, so the search starts 60 days earlier.
+const SCHEDULE_LOOKBACK_DAYS = 60;
+const MAX_SCHEDULE_DAYS = 31;
+
+export async function scheduledParts(from, to) {
+  if (!isValidDate(from) || !isValidDate(to)) throw new FreeportError(400, 'Choose a From and To date.');
+  if (from > to) throw new FreeportError(400, 'The From date must be on or before the To date.');
+  if (daysBetween(from, to) > MAX_SCHEDULE_DAYS) throw new FreeportError(400, 'Pick a month or less of the schedule.');
+  const searchedFrom = new Date(Date.parse(`${from}T00:00:00Z`) - SCHEDULE_LOOKBACK_DAYS * 86400000).toISOString().slice(0, 10);
+  const text = value => String(value ?? '').trim();
+  const jobs = (await listJobs(searchedFrom, to))
+    .filter(job => String(job.job_status) === WORK_ORDER)
+    .map(job => ({ job, scheduledDate: omegaDate(job.appointment_scheduled_date) }))
+    .filter(({ scheduledDate }) => scheduledDate >= from && scheduledDate <= to)
+    .map(({ job, scheduledDate }) => {
+      // The job list has Items with each SKU; older rows only the "skus" text.
+      const skus = Array.isArray(job.Items) && job.Items.length ? job.Items.map(item => item?.sku) : text(job.skus).split(',');
+      return {
+        number: String(job.id),
+        scheduledDate,
+        vehicle: [job.vehicle_year, job.vehicle_make, job.vehicle_model].map(text).filter(Boolean).join(' '),
+        parts: [...new Set(skus.map(text).filter(Boolean))]
+      };
+    })
+    .sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate) || a.number.localeCompare(b.number));
+  return { searchedFrom, jobs };
+}
+
 // Month close checks against Omega (read-only):
 // - Freeport jobs installed in the month that are still work orders. Work
 //   orders are found by the day they were written up, so the search covers the

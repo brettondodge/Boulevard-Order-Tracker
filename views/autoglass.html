@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Autoglass Scanning · Boulevard Glass Tools</title>
+  <link rel="icon" href="/icon.svg">
+  <link rel="stylesheet" href="/workspace.css">
+  <link rel="stylesheet" href="/autoglass.css">
+  <script type="module" src="/autoglass.js"></script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">BOULEVARD <span>GLASS TOOLS</span></a>
+    <nav>
+      <a href="/">Tools Home</a>
+      <span id="user"></span>
+    </nav>
+  </header>
+  <main>
+    <p class="eyebrow">AUTO GLASS PARTS</p>
+    <h1>Autoglass Scanning</h1>
+    <p class="muted">Scan each part's barcode; the next line is ready right away. Tick <strong>Need</strong> to keep a part (green) or <strong>Return</strong> to send it back (red).</p>
+
+    <div class="scan-toolbar">
+      <p id="scanSummary" class="scan-summary" aria-live="polite"></p>
+      <button id="clearScans" type="button">Clear list</button>
+    </div>
+
+    <div class="scan-sheet">
+      <ol id="scanRows" class="scan-list" aria-label="Scanned parts"></ol>
+      <div class="scan-row scan-next">
+        <span id="nextNumber" class="scan-number"></span>
+        <input id="scanInput" type="text" aria-label="Next part number" placeholder="Scan the next part" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="done" autofocus>
+      </div>
+    </div>
+    <p id="scanMessage" class="error" role="status"></p>
+
+    <section class="panel" aria-labelledby="scheduleTitle">
+      <h2 id="scheduleTitle">Omega schedule</h2>
+      <p class="muted">Each scan is checked against Omega work orders scheduled between these dates.</p>
+      <div class="bar">
+        <label>From<input id="scheduleFrom" type="date"></label>
+        <label>To<input id="scheduleTo" type="date"></label>
+        <button id="checkSchedule" type="button" class="primary">Check Omega</button>
+      </div>
+      <p id="scheduleStatus" aria-live="polite"></p>
+      <ul id="unscanned" class="unscanned"></ul>
+    </section>
+  </main>
+</body>
+</html>

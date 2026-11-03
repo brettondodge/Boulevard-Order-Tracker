@@ -1,6 +1,7 @@
 import express from 'express';
 import { createAccessMiddleware } from './access.js';
 import { freeportRouter } from './freeport/routes.js';
+import { autoglassRouter } from './autoglass.js';
 import { initializeFreeport } from './freeport/store.js';
 import { createPostgresSessionStore, configureSessionMiddleware } from './session-config.js';
 import path from 'node:path';
@@ -317,6 +318,8 @@ app.get('/api/tools', requireStaffAuth, asyncRoute(async (req, res) => {
   res.json(JSON.parse(await readFile(path.join(publicDir, 'tools.json'), 'utf8')));
 }));
 app.use('/api/freeport', freeportRouter({ requireStaffAuth, requireAdminAuth }));
+app.use('/api/autoglass', autoglassRouter({ requireStaffAuth }));
+app.get('/autoglass', (req, res) => req.session.user ? res.sendFile(path.join(publicDir, '../views/autoglass.html')) : res.redirect('/login?next=%2Fautoglass'));
 app.get(['/freeport', '/freeport/*'], (req, res) => req.session.user ? res.sendFile(path.join(publicDir, '../views/freeport.html')) : res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`));
 app.get('/login', (req, res) => res.sendFile(path.join(publicDir, 'login.html')));
 app.get('/app', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));

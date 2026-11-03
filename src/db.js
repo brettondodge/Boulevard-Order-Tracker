@@ -240,6 +240,8 @@ if (!isProduction) {
   }
   // Housecall Pro tables (migrations/007-housecall.sql is portable SQL).
   db.exec(fs.readFileSync(new URL('../migrations/007-housecall.sql', import.meta.url), 'utf8'));
+  // Autoglass Scanning (migrations/012-autoglass-scans.sql is portable SQL).
+  db.exec(fs.readFileSync(new URL('../migrations/012-autoglass-scans.sql', import.meta.url), 'utf8'));
   // Later hcp_jobs columns (migrations 009 and 010 for Postgres).
   for (const [column, type] of Object.entries({ tags: 'TEXT', pipeline_step: 'TEXT', outstanding_balance: 'INTEGER', invoice_sent_at: 'TEXT', invoice_paid_at: 'TEXT' })) {
     const exists = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('hcp_jobs') WHERE name = ?").get(column);
