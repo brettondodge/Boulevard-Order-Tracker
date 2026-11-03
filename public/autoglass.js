@@ -27,6 +27,7 @@ const state = {
   inventory: [],
   check: null, // the Omega check's settings and last result
   pending: [], // part numbers scanned and still being saved, in order
+  editing: null, // { id, part, supplier } while a line's part number is being edited
   schedule: null // { jobs, from, to } once Omega has been checked
 };
 let saving = Promise.resolve();
@@ -51,7 +52,7 @@ async function api(path, { method = 'GET', body } = {}) {
     throw new Error('Sign in again.');
   }
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || 'Something went wrong. Try again.');
+  if (!response.ok) throw Object.assign(new Error(data.error || 'Something went wrong. Try again.'), { status: response.status, data });
   return data;
 }
 
@@ -67,6 +68,25 @@ function focusScan() {
 const listScans = supplier => state.scans.filter(scan => scan.supplier === supplier);
 const searchText = () => state.search[state.tab].trim();
 
+// The part number opens the line's edit box.
+const partButton = line => `<button type="button" class="part-button" data-edit aria-label="Edit ${esc(line.part_number)}"><strong>${esc(line.part_number)}</strong><span class="edit-hint">Edit</span></button>`;
+
+// A line being edited: the part number, and for receiving the list it's on.
+function editRow(number) {
+  const { id, part, supplier, saving } = state.editing;
+  const lists = supplier ? `<select data-edit-supplier aria-label="List">${['plk', 'pgw'].map(key => `<option value="${key}" ${key === supplier ? 'selected' : ''}>${TABS[key].label}</option>`).join('')}</select>` : '';
+  return `
+    <li class="scan-row editing" data-id="${esc(id)}">
+      <span class="scan-number">${number}</span>
+      <div class="scan-edit">
+        <input type="text" data-edit-part value="${esc(part)}" maxlength="80" aria-label="Part number" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="done">
+        ${lists}
+        <button type="button" class="primary" data-edit-save ${saving ? 'disabled' : ''}>Save</button>
+        <button type="button" data-edit-cancel>Cancel</button>
+      </div>
+    </li>`;
+}
+
 // The band at the top of the list: its name, its counts, and how many lines
 // the search shows.
 function showSummary(counts, shown, total) {
@@ -77,6 +97,7 @@ function showSummary(counts, shown, total) {
 }
 
 function render() {
+  const editFocused = document.activeElement?.matches?.('[data-edit-part]');
   const { supplier } = TABS[state.tab];
   const receiving = Boolean(supplier);
   document.querySelectorAll('[data-tab]').forEach(link => link.setAttribute('aria-current', String(link.dataset.tab === state.tab || (link.dataset.tab === 'receiving' && receiving))));
@@ -96,6 +117,7 @@ function render() {
   $('checkPanel').hidden = receiving;
   if (receiving) renderScans();
   else renderInventory();
+  if (editFocused) focusEdit();
 }
 
 // ---------- Receiving ----------
@@ -126,17 +148,17 @@ function renderScans() {
   const need = scans.filter(scan => scan.need).length;
   const back = scans.filter(scan => scan.to_return).length;
   // Lines keep their number in the whole list while a search hides others.
-  const shown = scans.map((scan, index) => ({ scan, number: index + 1 })).filter(({ scan }) => matchesSearch(searchText(), scanTexts(scan)));
+  const shown = scans.map((scan, index) => ({ scan, number: index + 1 })).filter(({ scan }) => scan.id === state.editing?.id || matchesSearch(searchText(), scanTexts(scan)));
   showSummary(scans.length ? `${scans.length} scanned · ${need} need · ${back} return · ${scans.length - need - back} not marked` : 'Nothing scanned yet.', shown.length, scans.length);
   $('clearScans').disabled = !scans.length;
-  $('scanRows').innerHTML = shown.map(({ scan, number }) => `
+  $('scanRows').innerHTML = shown.map(({ scan, number }) => (scan.id === state.editing?.id ? editRow(number) : `
     <li class="scan-row ${scan.need ? 'need' : scan.to_return ? 'return' : ''}" data-id="${esc(scan.id)}">
       <span class="scan-number">${number}</span>
-      <div class="scan-part"><strong>${esc(scan.part_number)}</strong>${matchHtml(scan)}</div>
+      <div class="scan-part">${partButton(scan)}${matchHtml(scan)}</div>
       <label class="scan-box ${scan.need ? 'on' : ''}"><input type="checkbox" data-mark="need" ${scan.need ? 'checked' : ''}> Need</label>
       <label class="scan-box ${scan.to_return ? 'on' : ''}"><input type="checkbox" data-mark="to_return" ${scan.to_return ? 'checked' : ''}> Return</label>
       <button type="button" class="scan-remove" data-remove aria-label="Remove ${esc(scan.part_number)}">×</button>
-    </li>`).join('') + pendingRows(scans.length);
+    </li>`)).join('') + pendingRows(scans.length);
   $('nextNumber').textContent = scans.length + state.pending.length + 1;
   renderUnscanned();
 }
@@ -232,14 +254,14 @@ function renderInventory() {
   const items = state.inventory.filter(item => item.section === state.tab);
   const total = items.reduce((sum, item) => sum + item.quantity, 0);
   const matched = items.filter(item => item.matches.length).length;
-  const shown = items.map((item, index) => ({ item, number: index + 1 })).filter(({ item }) => matchesSearch(searchText(), itemTexts(item)));
+  const shown = items.map((item, index) => ({ item, number: index + 1 })).filter(({ item }) => item.id === state.editing?.id || matchesSearch(searchText(), itemTexts(item)));
   showSummary(items.length
     ? `${plural(items.length, 'part number', 'part numbers')} · ${total} on hand${state.check?.last ? ` · ${matched} needed by open Omega jobs` : ''}`
     : 'Nothing here yet.', shown.length, items.length);
-  $('scanRows').innerHTML = shown.map(({ item, number }) => `
+  $('scanRows').innerHTML = shown.map(({ item, number }) => (item.id === state.editing?.id ? editRow(number) : `
     <li class="scan-row inventory-row ${item.matches.length ? 'matched' : ''}" data-id="${esc(item.id)}">
       <span class="scan-number">${number}</span>
-      <div class="scan-part"><strong>${esc(item.part_number)}</strong>${inventoryMatches(item)}</div>
+      <div class="scan-part">${partButton(item)}${inventoryMatches(item)}</div>
       <div class="quantity" role="group" aria-label="Quantity of ${esc(item.part_number)}">
         <button type="button" data-quantity="-1" aria-label="One less">−</button>
         <span>${item.quantity}</span>
@@ -247,7 +269,7 @@ function renderInventory() {
       </div>
       <label class="shelf">Shelf<input type="text" data-shelf value="${esc(item.shelf)}" maxlength="40" autocomplete="off"></label>
       <button type="button" class="scan-remove" data-remove aria-label="Remove ${esc(item.part_number)}">×</button>
-    </li>`).join('') + pendingRows(items.length);
+    </li>`)).join('') + pendingRows(items.length);
   $('nextNumber').textContent = items.length + state.pending.length + 1;
   renderCheck();
 }
@@ -304,6 +326,68 @@ async function checkInventory() {
   } catch {}
   button.disabled = false;
   render();
+}
+
+// ---------- Editing a part number ----------
+
+function focusEdit({ select = false } = {}) {
+  const input = $('scanRows').querySelector('[data-edit-part]');
+  if (!input) return;
+  input.focus();
+  if (select) input.select();
+  else input.setSelectionRange(input.value.length, input.value.length);
+}
+
+function startEdit(id) {
+  const line = state.scans.find(scan => scan.id === id) || state.inventory.find(item => item.id === id);
+  if (!line) return;
+  showMessage('');
+  state.editing = { id, part: line.part_number, supplier: line.supplier || '' };
+  render();
+  focusEdit({ select: true });
+}
+
+function cancelEdit() {
+  state.editing = null;
+  render();
+  focusScan();
+}
+
+// Receiving lines save the part number and the list; inventory lines save
+// the part number, and a part number already on the list can be combined
+// into that line.
+async function saveEdit({ combine = false } = {}) {
+  const edit = state.editing;
+  if (!edit || edit.saving) return;
+  const { supplier, title } = TABS[state.tab];
+  edit.saving = true;
+  showMessage('');
+  $('scanNote').textContent = '';
+  render();
+  try {
+    if (supplier) {
+      const { scan } = await api(`/scans/${encodeURIComponent(edit.id)}`, { method: 'PUT', body: { part_number: edit.part, supplier: edit.supplier } });
+      Object.assign(state.scans.find(entry => entry.id === edit.id), scan);
+      if (scan.supplier !== supplier) $('scanNote').textContent = `${scan.part_number} moved to the ${TABS[scan.supplier].label} list.`;
+    } else {
+      const item = state.inventory.find(entry => entry.id === edit.id);
+      const before = partKey(item.part_number);
+      const result = await api(`/inventory/${encodeURIComponent(edit.id)}`, { method: 'PUT', body: { quantity: item.quantity, shelf: item.shelf, part_number: edit.part, combine } });
+      await loadInventory();
+      const combined = state.inventory.find(entry => entry.id === result.combined);
+      if (combined) $('scanNote').textContent = `Combined: ${combined.part_number}, now ${combined.quantity} in ${title}.`;
+      else if (partKey(edit.part) !== before && state.check?.omegaConnected) $('scanNote').textContent = `Saved. The Omega jobs that need ${edit.part.trim()} show after the next check, or use Check now.`;
+    }
+    state.editing = null;
+  } catch (error) {
+    edit.saving = false;
+    const other = error.data?.existing;
+    if (other && !combine && confirm(`${other.part_number} is already in ${title} (${other.quantity} on hand). Combine them into one line?`)) return saveEdit({ combine: true });
+    showMessage(error.message);
+  }
+  render();
+  if (state.editing) focusEdit();
+  else focusScan();
 }
 
 // ---------- Scanning ----------
@@ -365,6 +449,7 @@ function showTab() {
   const tab = location.hash.slice(1);
   state.tab = TABS[tab] ? tab : state.receiving;
   if (TABS[state.tab].supplier) state.receiving = state.tab;
+  state.editing = null;
   showMessage('');
   $('scanNote').textContent = '';
   render();
@@ -420,7 +505,7 @@ $('searchInput').addEventListener('keydown', event => {
 // A scan that starts while a checkbox or button has focus still goes to the scan box.
 document.addEventListener('keydown', event => {
   const active = document.activeElement;
-  const typing = active?.matches?.('input[type="text"], input[type="search"], input[type="date"], textarea');
+  const typing = active?.matches?.('input[type="text"], input[type="search"], input[type="date"], select, textarea');
   if (!typing && event.key.length === 1 && event.key.trim() && !event.ctrlKey && !event.metaKey && !event.altKey) focusScan();
 });
 
@@ -429,18 +514,36 @@ $('scanRows').addEventListener('change', event => {
   if (!row) return;
   if (event.target.matches('[data-mark]')) mark(row.dataset.id, event.target.dataset.mark, event.target.checked);
   if (event.target.matches('[data-shelf]')) changeInventory(row.dataset.id, { shelf: event.target.value.trim() });
+  if (event.target.matches('[data-edit-supplier]') && state.editing) state.editing.supplier = event.target.value;
 });
-// Enter in a shelf box saves it and goes back to scanning.
+$('scanRows').addEventListener('input', event => {
+  if (event.target.matches('[data-edit-part]') && state.editing) state.editing.part = event.target.value;
+});
+// Enter in a shelf box saves it and goes back to scanning. Enter in the edit
+// box saves it (a part scanned into it too); Escape cancels.
 $('scanRows').addEventListener('keydown', event => {
   if (event.key === 'Enter' && event.target.matches('[data-shelf]')) {
     event.preventDefault();
     focusScan();
+  }
+  if (event.target.matches('[data-edit-part], [data-edit-supplier]')) {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveEdit();
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelEdit();
+    }
   }
 });
 $('scanRows').addEventListener('click', event => {
   const row = event.target.closest('[data-id]');
   if (!row) return;
   if (event.target.closest('[data-remove]')) removeLine(row.dataset.id);
+  if (event.target.closest('[data-edit]')) startEdit(row.dataset.id);
+  if (event.target.closest('[data-edit-save]')) saveEdit();
+  if (event.target.closest('[data-edit-cancel]')) cancelEdit();
   const step = event.target.closest('[data-quantity]');
   if (step) {
     const item = state.inventory.find(entry => entry.id === row.dataset.id);

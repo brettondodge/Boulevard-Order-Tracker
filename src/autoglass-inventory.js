@@ -55,12 +55,34 @@ export async function addInventory(section, partNumber, actor) {
   return { id: item.id, quantity: Number(item.quantity), added: item.id === id };
 }
 
-export async function updateInventory(id, { quantity, shelf }, actor) {
-  const result = await dbRun(
-    'UPDATE autoglass_inventory SET quantity = ?, shelf = ?, updated_at = ?, updated_by = ? WHERE id = ?',
-    [quantity, shelf, isoNow(), actor, id]
+// Quantity and shelf, and the part number when one is given. A new part
+// number drops the line's Omega matches (they were for the old one) until the
+// next check. A part number already in the section is combined into that
+// line, quantities added, only when asked (combine); otherwise that line is
+// returned as existing.
+export async function updateInventory(id, { quantity, shelf, partNumber, combine = false }, actor) {
+  const item = await dbGet('SELECT * FROM autoglass_inventory WHERE id = ?', [id]);
+  if (!item) return { missing: true };
+  const key = partNumber ? partKey(partNumber) : item.part_key;
+  const now = isoNow();
+  if (key !== item.part_key) {
+    const other = await dbGet('SELECT * FROM autoglass_inventory WHERE section = ? AND part_key = ?', [item.section, key]);
+    if (other && !combine) return { existing: { id: other.id, part_number: other.part_number, quantity: Number(other.quantity) } };
+    if (other) {
+      await dbRun(
+        'UPDATE autoglass_inventory SET quantity = ?, shelf = ?, updated_at = ?, updated_by = ? WHERE id = ?',
+        [Math.min(Number(other.quantity) + quantity, MAX_QUANTITY), other.shelf || shelf, now, actor, other.id]
+      );
+      await deleteInventory(id);
+      return { combined: other.id };
+    }
+    await dbRun('DELETE FROM autoglass_matches WHERE item_id = ?', [id]);
+  }
+  await dbRun(
+    'UPDATE autoglass_inventory SET part_number = ?, part_key = ?, quantity = ?, shelf = ?, updated_at = ?, updated_by = ? WHERE id = ?',
+    [partNumber || item.part_number, key, quantity, shelf, now, actor, id]
   );
-  return result.changes > 0;
+  return { updated: true };
 }
 
 export async function deleteInventory(id) {

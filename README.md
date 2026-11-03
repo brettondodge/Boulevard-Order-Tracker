@@ -118,6 +118,11 @@ back 60 days.
 - **Stock** (kept on hand) and **Old inventory** (leftovers to use up): scanning
   a part adds it, and scanning it again adds one more. Each part has a quantity
   and a shelf, and each list downloads as a spreadsheet.
+- **Edit:** tap a part number to fix it (or scan the right barcode into the
+  box). A receiving line can also move to the other list. In Stock and Old
+  inventory, a part number already on the list can be combined into that line
+  (quantities added); a new part number gets its Omega matches at the next
+  check.
 - **Search and Print:** every list has its own search (part number with or
   without dashes, shelf, job number, vehicle, or "need" / "return"). **Print**
   prints the open list as shown, search included, with its name and the time.

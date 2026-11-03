@@ -160,6 +160,12 @@ test('scans save in order on the PLK or PGW list; Need and Return are one or nei
   assert.equal((await markScan(first, { need: true, to_return: true })).status, 400);
   const switched = (await markScan(first, { need: false, to_return: true })).body.scan;
   assert.deepEqual([switched.need, switched.to_return], [false, true]);
+  // Editing the part number or the list keeps Need / Return.
+  const edited = (await markScan(first, { part_number: ' DW02824  GTYN ', supplier: 'pgw' })).body.scan;
+  assert.deepEqual([edited.part_number, edited.supplier, edited.need, edited.to_return], ['DW02824 GTYN', 'pgw', false, true]);
+  assert.equal((await markScan(first, { supplier: 'abc' })).status, 400);
+  assert.equal((await markScan(first, { part_number: ' -- ' })).status, 400, 'a part number needs letters or digits');
+  assert.equal((await markScan(first, { part_number: 'DW02842 GTYN', supplier: 'plk' })).status, 200);
   assert.equal((await markScan({ id: 'missing' }, { need: true })).status, 404);
 
   let list = (await request('/api/autoglass/scans')).body;
@@ -240,7 +246,8 @@ test('stock and old inventory count scans; the check finds open Omega jobs that 
   const moulding = (await add('old', 'HAH000448')).body.item;
   const stock = (await add('stock', 'DW02842GBY')).body.item;
   assert.notEqual(stock.id, glass.body.item.id, 'Stock and Old inventory are counted apart');
-  assert.equal((await add('stock', 'FW04567GBY')).status, 201);
+  const fw = await add('stock', 'FW04567GBY');
+  assert.equal(fw.status, 201);
   const save = (id, body) => request(`/api/autoglass/inventory/${id}`, { method: 'PUT', body });
   assert.equal((await save(glass.body.item.id, { quantity: 0, shelf: '' })).status, 400);
   assert.equal((await save(glass.body.item.id, { quantity: 2, shelf: ' H ' })).status, 200);
@@ -276,6 +283,25 @@ test('stock and old inventory count scans; the check finds open Omega jobs that 
   assert.equal(csv.status, 200);
   assert.equal(csv.text, 'Part number,NAGS number,Quantity,Shelf,Open Omega jobs that need it\r\nDW02842GBY,DW02842,1,,\r\nFW04567GBY,FW04567,1,,Work order #702\r\n');
   assert.equal((await request('/api/autoglass/inventory.csv?section=other')).status, 400);
+
+  // Editing a part number: written another way keeps its matches; a different
+  // part drops them until the next check; one already on the list combines.
+  const edit = (id, body) => save(id, { quantity: 1, shelf: '', ...body });
+  assert.equal((await edit(fw.body.item.id, { part_number: 'fw04567-gby' })).status, 200);
+  items = (await inventory()).items;
+  assert.deepEqual(matchesOf(fw.body.item.id), [['702', 'Work order', false]]);
+  assert.equal((await edit(fw.body.item.id, { part_number: '--' })).status, 400);
+  assert.deepEqual((await edit(fw.body.item.id, { part_number: 'FW04567GTN', shelf: 'B2' })).body, { updated: true });
+  items = (await inventory()).items;
+  assert.deepEqual(items.filter(entry => entry.id === fw.body.item.id).map(entry => [entry.part_number, entry.shelf]), [['FW04567GTN', 'B2']]);
+  assert.deepEqual(matchesOf(fw.body.item.id), []);
+  const taken = await edit(fw.body.item.id, { part_number: 'dw02842 gby', shelf: 'B2' });
+  assert.equal(taken.status, 409);
+  assert.deepEqual(taken.body.existing, { id: stock.id, part_number: 'DW02842GBY', quantity: 1 });
+  assert.deepEqual((await edit(fw.body.item.id, { part_number: 'dw02842 gby', shelf: 'B2', combine: true })).body, { combined: stock.id });
+  items = (await inventory()).items;
+  assert.deepEqual(items.filter(entry => entry.section === 'stock').map(entry => [entry.part_number, entry.quantity, entry.shelf]), [['DW02842GBY', 2, 'B2']]);
+  assert.equal((await edit(fw.body.item.id, { part_number: 'FW04567GBY' })).status, 404);
   assert.equal((await request(`/api/autoglass/inventory/${stock.id}`, { method: 'DELETE' })).status, 200);
   assert.equal((await request(`/api/autoglass/inventory/${stock.id}`, { method: 'DELETE' })).status, 404);
   await stop();
