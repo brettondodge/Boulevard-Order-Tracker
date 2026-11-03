@@ -67,6 +67,10 @@ First check for an existing tracker web service. Reuse it if present. If none ex
 | HCP_WEBHOOK_SECRET | Signing secret Housecall Pro shows after the webhook URL is saved, entered directly. Until it is set, /api/hcp/webhooks answers HCP's save-time test but changes nothing |
 | HCP_SYNC_INTERVAL_MINUTES | Optional. Housecall Pro catch-up interval, default 60; 0 turns it off |
 | HCP_WRITE_BACK | Optional. `off` stops the tracker adding tags and notes to HCP jobs and moving them on the Pipeline board |
+| RESEND_API_KEY | Resend (resend.com) API key for Autoglass Scanning's old-inventory emails, entered directly. Without it (or without INVENTORY_ALERT_EMAIL) matches only show on the page |
+| INVENTORY_ALERT_EMAIL | Who gets the old-inventory emails: one address, or several separated by commas |
+| ALERT_EMAIL_FROM | Optional. Sender, e.g. `Boulevard Glass Tools <tools@blvdglass.com>`, on a domain verified in Resend. Until the domain is verified, Resend's default sender only delivers to the Resend account's own email |
+| AUTOGLASS_CHECK_HOUR | Optional. Hour (Arizona time, 0–23) of the daily Autoglass inventory check against Omega, default 7 |
 
 The Housecall Pro webhook address `/api/hcp/webhooks` must be reachable without a Google sign-in: add a Cloudflare Access self-hosted application for `tools.blvdglass.com/api/hcp/webhooks` with a single Bypass / Everyone policy. The app authenticates those requests by HCP's HMAC signature; every other path still requires Access.
 

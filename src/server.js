@@ -2,6 +2,7 @@ import express from 'express';
 import { createAccessMiddleware } from './access.js';
 import { freeportRouter } from './freeport/routes.js';
 import { autoglassRouter } from './autoglass.js';
+import { startDailyInventoryCheck } from './autoglass-inventory.js';
 import { initializeFreeport } from './freeport/store.js';
 import { createPostgresSessionStore, configureSessionMiddleware } from './session-config.js';
 import path from 'node:path';
@@ -1361,6 +1362,8 @@ const archiveCleanupSeconds = Number(process.env.ARCHIVE_CLEANUP_SECONDS ?? 3600
 const runArchiveCleanup = () => deleteExpiredArchive().catch(() => console.error('Clearing archived orders failed; it is tried again later.'));
 setTimeout(runArchiveCleanup, Math.min(30, archiveCleanupSeconds) * 1000).unref();
 setInterval(runArchiveCleanup, archiveCleanupSeconds * 1000).unref();
+// Autoglass inventory against Omega, once a day (src/autoglass-inventory.js).
+startDailyInventoryCheck();
 
 // Hourly catch-up with Housecall Pro (HCP_SYNC_INTERVAL_MINUTES, 0 = off).
 const hcpSyncMinutes = Number(process.env.HCP_SYNC_INTERVAL_MINUTES ?? 60);

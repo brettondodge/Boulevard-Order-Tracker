@@ -1,9 +1,12 @@
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { dbAll, dbGet, dbRun } from './db.js';
-import { isoNow } from './utils.js';
+import { isoNow, todayPhoenixString } from './utils.js';
 import { omegaConnected, scheduledParts } from './freeport/omega.js';
 import { FreeportError } from './freeport/validate.js';
+import {
+  MAX_QUANTITY, SECTIONS, addInventory, checkStatus, deleteInventory, inventoryCsv, listInventory, runInventoryCheck, updateInventory
+} from './autoglass-inventory.js';
 
 const route = handler => (req, res, next) => Promise.resolve().then(() => handler(req, res)).catch(next);
 const actor = req => req.session.user.username;
@@ -29,9 +32,8 @@ export function autoglassRouter({ requireStaffAuth }) {
   }));
 
   router.post('/scans', route(async (req, res) => {
-    const part = typeof req.body.part_number === 'string' ? req.body.part_number.trim().replace(/\s+/g, ' ') : '';
-    if (!part) return res.status(400).json({ error: 'Scan or type a part number.' });
-    if (part.length > MAX_PART_LENGTH) return res.status(400).json({ error: `That's longer than a part number (${MAX_PART_LENGTH} characters at most).` });
+    const part = partNumberFrom(req, res);
+    if (!part) return;
     const id = randomUUID();
     const now = isoNow();
     await dbRun(
@@ -79,5 +81,56 @@ export function autoglassRouter({ requireStaffAuth }) {
     }
   }));
 
+  // Stock and Old inventory.
+  router.get('/inventory', route(async (req, res) => res.json({ items: await listInventory(), check: await checkStatus() })));
+
+  router.post('/inventory', route(async (req, res) => {
+    if (!SECTIONS[req.body.section]) return res.status(400).json({ error: 'Choose Stock or Old inventory.' });
+    const part = partNumberFrom(req, res);
+    if (!part) return;
+    const item = await addInventory(req.body.section, part, actor(req));
+    res.status(item.added ? 201 : 200).json({ item });
+  }));
+
+  router.put('/inventory/:id', route(async (req, res) => {
+    const quantity = Number(req.body.quantity);
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QUANTITY) return res.status(400).json({ error: `Quantity is a whole number from 1 to ${MAX_QUANTITY}.` });
+    const shelf = typeof req.body.shelf === 'string' ? req.body.shelf.trim().slice(0, 40) : '';
+    if (!(await updateInventory(req.params.id, { quantity, shelf }, actor(req)))) return res.status(404).json({ error: 'That part is no longer in inventory. Reload the page.' });
+    res.json({ updated: true });
+  }));
+
+  router.delete('/inventory/:id', route(async (req, res) => {
+    if (!(await deleteInventory(req.params.id))) return res.status(404).json({ error: 'That part is no longer in inventory. Reload the page.' });
+    res.json({ deleted: true });
+  }));
+
+  router.get('/inventory.csv', route(async (req, res) => {
+    const section = String(req.query.section || '');
+    if (!SECTIONS[section]) return res.status(400).json({ error: 'Choose Stock or Old inventory.' });
+    res.set('Content-Type', 'text/csv; charset=utf-8');
+    res.set('Content-Disposition', `attachment; filename="autoglass-${section}-${todayPhoenixString()}.csv"`);
+    res.send(await inventoryCsv(section));
+  }));
+
+  router.post('/inventory/check', route(async (req, res) => {
+    if (!omegaConnected()) return res.status(503).json({ error: "Omega isn't connected, so inventory can't be checked." });
+    try {
+      res.json({ result: await runInventoryCheck() });
+    } catch (error) {
+      if (error instanceof FreeportError) return res.status(error.status).json({ error: error.message });
+      throw error;
+    }
+  }));
+
   return router;
+}
+
+// A scanned or typed part number, or '' after answering with what's wrong.
+function partNumberFrom(req, res) {
+  const part = typeof req.body.part_number === 'string' ? req.body.part_number.trim().replace(/\s+/g, ' ') : '';
+  if (!part) res.status(400).json({ error: 'Scan or type a part number.' });
+  else if (part.length > MAX_PART_LENGTH) res.status(400).json({ error: `That's longer than a part number (${MAX_PART_LENGTH} characters at most).` });
+  else return part;
+  return '';
 }

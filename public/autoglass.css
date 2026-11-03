@@ -2,6 +2,43 @@ main {
   max-width: 920px;
 }
 
+/* workspace.css gives buttons display: inline-block, which would beat hidden. */
+[hidden] {
+  display: none !important;
+}
+
+.ag-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 18px 0 6px;
+}
+
+.ag-tabs a {
+  padding: 8px 16px;
+  border: 1px solid #ccd6df;
+  border-radius: 999px;
+  background: #fff;
+  color: #20334a;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.ag-tabs a[aria-current="true"] {
+  background: #215777;
+  border-color: #215777;
+  color: #fff;
+}
+
+.scan-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.scan-note {
+  margin: 8px 0 0;
+}
+
 .scan-toolbar {
   display: flex;
   align-items: center;
@@ -46,6 +83,11 @@ main {
 .scan-row.return {
   background: #fbe4e6;
   box-shadow: inset 4px 0 #9e2832;
+}
+
+.scan-row.matched {
+  background: #fff4df;
+  box-shadow: inset 4px 0 #a65d00;
 }
 
 .scan-row.saving {
@@ -103,6 +145,37 @@ main {
   line-height: 1;
 }
 
+.quantity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.quantity button {
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.quantity span {
+  min-width: 2ch;
+  text-align: center;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.shelf {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.shelf input {
+  width: 5.5rem;
+}
+
 .scan-next {
   grid-template-columns: 2.25rem minmax(0, 1fr);
   border-bottom: 0;
@@ -139,6 +212,22 @@ main {
     flex-direction: column;
     gap: 2px;
     font-size: 11px;
+  }
+
+  /* Phones: quantity and shelf go on a second line under the part number. */
+  .inventory-row {
+    grid-template-columns: 1.5rem minmax(0, 1fr) 2.25rem;
+    grid-template-areas: "number part remove" ". controls controls";
+  }
+
+  .inventory-row .scan-number { grid-area: number; }
+  .inventory-row .scan-part { grid-area: part; }
+  .inventory-row .scan-remove { grid-area: remove; }
+  .inventory-row .quantity { grid-area: controls; justify-self: start; }
+  .inventory-row .shelf { grid-area: controls; justify-self: end; }
+
+  .scan-toolbar {
+    flex-wrap: wrap;
   }
 
   .scan-remove {

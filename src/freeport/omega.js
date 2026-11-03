@@ -372,33 +372,49 @@ export async function applyImport({ from, to, numbers }, config, actor) {
   return result;
 }
 
-// Autoglass Scanning: work orders on the Omega schedule between from and to
-// (the appointment's Scheduled Date), with their part numbers. Omega finds jobs
-// by the day they were written up, so the search starts 60 days earlier.
-const SCHEDULE_LOOKBACK_DAYS = 60;
+// Autoglass Scanning reads Omega jobs with their part numbers. Omega finds jobs
+// by the day they were written up, so searches look back 60 days.
+const AUTOGLASS_LOOKBACK_DAYS = 60;
 const MAX_SCHEDULE_DAYS = 31;
+const OPEN_STATUSES = { QO: 'Quote', WO: 'Work order' };
+const addDays = (day, days) => new Date(Date.parse(`${day}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
 
+function partsJob(job) {
+  const text = value => String(value ?? '').trim();
+  // The job list has Items with each SKU; older rows only the "skus" text.
+  const skus = Array.isArray(job.Items) && job.Items.length ? job.Items.map(item => item?.sku) : text(job.skus).split(',');
+  return {
+    number: String(job.id),
+    status: OPEN_STATUSES[String(job.job_status)] || '',
+    writtenUp: omegaDate(job.document_date),
+    scheduledDate: omegaDate(job.appointment_scheduled_date),
+    vehicle: [job.vehicle_year, job.vehicle_make, job.vehicle_model].map(text).filter(Boolean).join(' '),
+    parts: [...new Set(skus.map(text).filter(Boolean))]
+  };
+}
+
+// Work orders scheduled from..to (the appointment's Scheduled Date).
 export async function scheduledParts(from, to) {
   if (!isValidDate(from) || !isValidDate(to)) throw new FreeportError(400, 'Choose a From and To date.');
   if (from > to) throw new FreeportError(400, 'The From date must be on or before the To date.');
   if (daysBetween(from, to) > MAX_SCHEDULE_DAYS) throw new FreeportError(400, 'Pick a month or less of the schedule.');
-  const searchedFrom = new Date(Date.parse(`${from}T00:00:00Z`) - SCHEDULE_LOOKBACK_DAYS * 86400000).toISOString().slice(0, 10);
-  const text = value => String(value ?? '').trim();
+  const searchedFrom = addDays(from, -AUTOGLASS_LOOKBACK_DAYS);
   const jobs = (await listJobs(searchedFrom, to))
     .filter(job => String(job.job_status) === WORK_ORDER)
-    .map(job => ({ job, scheduledDate: omegaDate(job.appointment_scheduled_date) }))
-    .filter(({ scheduledDate }) => scheduledDate >= from && scheduledDate <= to)
-    .map(({ job, scheduledDate }) => {
-      // The job list has Items with each SKU; older rows only the "skus" text.
-      const skus = Array.isArray(job.Items) && job.Items.length ? job.Items.map(item => item?.sku) : text(job.skus).split(',');
-      return {
-        number: String(job.id),
-        scheduledDate,
-        vehicle: [job.vehicle_year, job.vehicle_make, job.vehicle_model].map(text).filter(Boolean).join(' '),
-        parts: [...new Set(skus.map(text).filter(Boolean))]
-      };
-    })
+    .map(partsJob)
+    .filter(job => job.scheduledDate >= from && job.scheduledDate <= to)
     .sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate) || a.number.localeCompare(b.number));
+  return { searchedFrom, jobs };
+}
+
+// Quotes and work orders written up in the 60 days up to today: the jobs that
+// might still need a part from inventory.
+export async function openJobParts(today) {
+  const searchedFrom = addDays(today, -AUTOGLASS_LOOKBACK_DAYS);
+  const jobs = (await listJobs(searchedFrom, today))
+    .filter(job => OPEN_STATUSES[String(job.job_status)])
+    .map(partsJob)
+    .sort((a, b) => a.writtenUp.localeCompare(b.writtenUp) || a.number.localeCompare(b.number));
   return { searchedFrom, jobs };
 }
 

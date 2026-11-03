@@ -20,11 +20,19 @@
   <main>
     <p class="eyebrow">AUTO GLASS PARTS</p>
     <h1>Autoglass Scanning</h1>
-    <p class="muted">Scan each part's barcode; the next line is ready right away. Tick <strong>Need</strong> to keep a part (green) or <strong>Return</strong> to send it back (red).</p>
+    <nav class="ag-tabs" aria-label="Lists">
+      <a href="#receiving" data-tab="receiving">Receiving</a>
+      <a href="#stock" data-tab="stock">Stock</a>
+      <a href="#old" data-tab="old">Old inventory</a>
+    </nav>
+    <p id="tabIntro" class="muted"></p>
 
     <div class="scan-toolbar">
       <p id="scanSummary" class="scan-summary" aria-live="polite"></p>
-      <button id="clearScans" type="button">Clear list</button>
+      <div class="scan-actions">
+        <a id="downloadInventory" class="button" href="#" hidden>Download spreadsheet</a>
+        <button id="clearScans" type="button">Clear list</button>
+      </div>
     </div>
 
     <div class="scan-sheet">
@@ -34,9 +42,10 @@
         <input id="scanInput" type="text" aria-label="Next part number" placeholder="Scan the next part" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="done" autofocus>
       </div>
     </div>
-    <p id="scanMessage" class="error" role="status"></p>
+    <p id="scanNote" class="muted scan-note" role="status"></p>
+    <p id="scanMessage" class="error" role="alert"></p>
 
-    <section class="panel" aria-labelledby="scheduleTitle">
+    <section id="schedulePanel" class="panel" aria-labelledby="scheduleTitle">
       <h2 id="scheduleTitle">Omega schedule</h2>
       <p class="muted">Each scan is checked against Omega work orders scheduled between these dates.</p>
       <div class="bar">
@@ -46,6 +55,13 @@
       </div>
       <p id="scheduleStatus" aria-live="polite"></p>
       <ul id="unscanned" class="unscanned"></ul>
+    </section>
+
+    <section id="checkPanel" class="panel" aria-labelledby="checkTitle" hidden>
+      <h2 id="checkTitle">Omega check</h2>
+      <p id="checkAbout" class="muted"></p>
+      <div class="bar"><button id="checkInventory" type="button" class="primary">Check now</button></div>
+      <p id="checkStatus" aria-live="polite"></p>
     </section>
   </main>
 </body>

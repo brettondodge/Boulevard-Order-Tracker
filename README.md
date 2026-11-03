@@ -101,18 +101,23 @@ Freeport billing is at `/freeport`. Freeport is being rebuilt; see the
 
 ## Autoglass Scanning (draft)
 
-At `/autoglass`, on Tools Home. Scan a part's barcode (a scanner that types the
-code and presses Enter) and it's added to the list; the scan box moves to the
-next line, ready for the next part. Each part has **Need** (row turns green)
-and **Return** (red); one or neither. The list is shared and saved until
-someone uses **Clear list** (cleared scans stay in the database).
+At `/autoglass`, on Tools Home, with three lists. A barcode scanner types the
+code and presses Enter; the part is saved and the scan box is ready on the
+next line. Glass matches Omega on its NAGS number (DW02842), whatever the
+version letters after it; when Omega lists another version, the line says
+which. Other parts (mouldings, adhesive) match on the whole number. Omega is
+only read. Omega finds jobs by the day they were written up, so searches look
+back 60 days.
 
-With `OMEGA_API_KEY` set, each scan is checked against Omega work orders
-scheduled in the chosen dates (default: today through a week out): **On** a
-work order, or not on the schedule. Glass matches on its NAGS number (DW02842),
-whatever the version letters after it; when Omega lists another version, the
-line says which. Other parts (mouldings, adhesive) match on the whole number.
-Glass on those work orders that hasn't been scanned is listed under the
-schedule by its NAGS number. Omega is only read. Omega finds jobs by the day they were
-written up, so work orders written up more than 60 days before the From date
-aren't found.
+- **Receiving:** each scan is a line with **Need** (green) or **Return** (red),
+  one or neither, checked against Omega work orders scheduled in the chosen
+  dates (default today through a week out). Scheduled glass not scanned yet is
+  listed. **Clear list** starts over (cleared scans stay in the database).
+- **Stock** (kept on hand) and **Old inventory** (leftovers to use up): scanning
+  a part adds it, and scanning it again adds one more. Each part has a quantity
+  and a shelf, and each list downloads as a spreadsheet.
+- **Daily check:** every morning at 7 AM Arizona time (`AUTOGLASS_CHECK_HOUR`),
+  or with **Check now**, both lists are matched against Omega quotes and work
+  orders written up in the last 60 days. Matches show on each part. New
+  old-inventory matches are emailed once each through Resend
+  (`RESEND_API_KEY`, `INVENTORY_ALERT_EMAIL`; see docs/hosting.md).
