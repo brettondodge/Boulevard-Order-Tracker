@@ -109,8 +109,10 @@ someone uses **Clear list** (cleared scans stay in the database).
 
 With `OMEGA_API_KEY` set, each scan is checked against Omega work orders
 scheduled in the chosen dates (default: today through a week out): **On** a
-work order, **Close** (same NAGS glass, other version letters), or not on the
-schedule. Glass on those work orders that hasn't been scanned is listed under
-the schedule. Omega is only read. Omega finds jobs by the day they were
+work order, or not on the schedule. Glass matches on its NAGS number (DW02842),
+whatever the version letters after it; when Omega lists another version, the
+line says which. Other parts (mouldings, adhesive) match on the whole number.
+Glass on those work orders that hasn't been scanned is listed under the
+schedule by its NAGS number. Omega is only read. Omega finds jobs by the day they were
 written up, so work orders written up more than 60 days before the From date
 aren't found.

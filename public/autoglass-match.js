@@ -3,36 +3,31 @@
 // Part numbers compare without spaces, dashes or case: "dw02842-gtyn" is DW02842GTYN.
 export const partKey = text => String(text ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-// NAGS glass numbers start with two letters and five digits (DW02842); the
-// letters after that are the version (tint, features).
-export const glassBase = key => key.match(/^[A-Z]{2}\d{5}/)?.[0] || '';
-export const isGlassPart = sku => Boolean(glassBase(partKey(sku)));
+// Glass matches on its NAGS number: D or F, a letter, then five digits
+// (DW02842). The letters after it (GTYN, GBY) are the version and are ignored.
+// It's found anywhere in a scan, so a barcode with extra characters still works.
+export const glassNumber = text => partKey(text).match(/[DF][A-Z]\d{5}/)?.[0] || '';
 
-// A barcode can carry the part number with extra characters around it, so a
-// scan that contains a scheduled SKU (6 characters or more) counts as that part.
-const sameKey = (scanKey, skuKey) => scanKey === skuKey || (skuKey.length >= 6 && scanKey.includes(skuKey));
+// Other parts (mouldings, adhesive) match on the whole number, or a barcode
+// that contains it (6 characters or more).
+const samePart = (scanKey, skuKey) => scanKey === skuKey || (skuKey.length >= 6 && scanKey.includes(skuKey));
 
-// Work orders that need the scanned part (exact), or the same glass in another
-// version (close). Each job is listed once, with the SKU it matched.
+// The work orders that need the scanned part, each with the SKU it matched.
 export function scheduleMatches(partNumber, jobs) {
+  const glass = glassNumber(partNumber);
   const key = partKey(partNumber);
-  const exact = [];
-  const close = [];
-  if (!key) return { exact, close };
-  const base = glassBase(key);
-  for (const job of jobs) {
-    const exactPart = job.parts.find(sku => sameKey(key, partKey(sku)));
-    const closePart = !exactPart && base && job.parts.find(sku => glassBase(partKey(sku)) === base);
-    if (exactPart) exact.push({ ...job, part: exactPart });
-    else if (closePart) close.push({ ...job, part: closePart });
-  }
-  return { exact, close };
+  if (!key) return [];
+  const matches = sku => (glass ? glassNumber(sku) === glass : samePart(key, partKey(sku)));
+  return jobs.flatMap(job => {
+    const part = job.parts.find(matches);
+    return part ? [{ ...job, part }] : [];
+  });
 }
 
-// Glass on the schedule that no scan matches exactly yet.
+// Glass on the schedule that no scan has the NAGS number of yet.
 export function unscannedGlass(jobs, partNumbers) {
-  const keys = partNumbers.map(partKey).filter(Boolean);
+  const scanned = new Set(partNumbers.map(glassNumber).filter(Boolean));
   return jobs.flatMap(job => job.parts
-    .filter(sku => isGlassPart(sku) && !keys.some(key => sameKey(key, partKey(sku))))
-    .map(sku => ({ ...job, part: sku })));
+    .filter(sku => glassNumber(sku) && !scanned.has(glassNumber(sku)))
+    .map(sku => ({ ...job, part: sku, glass: glassNumber(sku) })));
 }

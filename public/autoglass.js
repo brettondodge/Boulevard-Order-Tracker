@@ -1,4 +1,4 @@
-import { scheduleMatches, unscannedGlass } from './autoglass-match.js';
+import { partKey, scheduleMatches, unscannedGlass } from './autoglass-match.js';
 
 const $ = id => document.getElementById(id);
 const state = {
@@ -39,10 +39,11 @@ function focusScan() {
 
 function matchHtml(scan) {
   if (!state.schedule) return '';
-  const { exact, close } = scheduleMatches(scan.part_number, state.schedule.jobs);
-  if (exact.length) return `<span class="match on">On ${exact.map(jobText).map(esc).join('; ')}</span>`;
-  if (close.length) return `<span class="match close">Close: ${close.map(job => `${esc(jobText(job))} needs ${esc(job.part)}`).join('; ')}</span>`;
-  return `<span class="match none">Not on the Omega schedule (${esc(shortDate(state.schedule.from))} – ${esc(shortDate(state.schedule.to))})</span>`;
+  const jobs = scheduleMatches(scan.part_number, state.schedule.jobs);
+  if (!jobs.length) return `<span class="match none">Not on the Omega schedule (${esc(shortDate(state.schedule.from))} – ${esc(shortDate(state.schedule.to))})</span>`;
+  // When Omega lists another version of the glass, say which, so it can be checked.
+  const scanned = partKey(scan.part_number);
+  return `<span class="match on">On ${jobs.map(job => esc(jobText(job)) + (scanned.includes(partKey(job.part)) ? '' : ` (Omega: ${esc(job.part)})`)).join('; ')}</span>`;
 }
 
 function renderScans() {
@@ -79,7 +80,7 @@ function renderUnscanned() {
   const jobs = state.schedule.jobs.length;
   $('scheduleStatus').textContent = `${jobs} work ${jobs === 1 ? 'order' : 'orders'} scheduled ${shortDate(state.schedule.from)} – ${shortDate(state.schedule.to)}. `
     + (missing.length ? `Glass on them not scanned yet: ${missing.length}.` : 'All their glass has been scanned.');
-  list.innerHTML = missing.map(job => `<li><strong>${esc(job.part)}</strong> · ${esc(jobText(job))}</li>`).join('');
+  list.innerHTML = missing.map(job => `<li><strong>${esc(job.glass)}</strong> · ${esc(jobText(job))}</li>`).join('');
 }
 
 // Scans save one at a time, in the order they were scanned.

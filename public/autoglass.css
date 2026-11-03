@@ -79,10 +79,6 @@ main {
   color: #23735b;
 }
 
-.match.close {
-  color: #a65d00;
-}
-
 .scan-box {
   flex-direction: row;
   align-items: center;

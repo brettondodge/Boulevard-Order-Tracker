@@ -7,28 +7,31 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import { partKey, scheduleMatches, unscannedGlass } from '../public/autoglass-match.js';
+import { glassNumber, partKey, scheduleMatches, unscannedGlass } from '../public/autoglass-match.js';
 
 const jobs = [
   { number: '501', scheduledDate: '2026-11-04', vehicle: '2019 Toyota Camry', parts: ['DW02842GTYN', 'GGS 901 GEL', 'LABOR'] },
   { number: '505', scheduledDate: '2026-11-03', vehicle: '2017 Ford F-150', parts: ['FW04567GBY', 'HAH000448'] }
 ];
 
-test('a scan matches scheduled parts exactly, inside a longer barcode, or as the same glass in another version', () => {
+test('glass matches on its NAGS number (DW02842), whatever the version letters; other parts on the whole number', () => {
   assert.equal(partKey(' dw02842-gtyn '), 'DW02842GTYN');
-  const numbers = result => [result.exact.map(job => [job.number, job.part]), result.close.map(job => [job.number, job.part])];
-  assert.deepEqual(numbers(scheduleMatches('dw02842 gtyn', jobs)), [[['501', 'DW02842GTYN']], []]);
-  assert.deepEqual(numbers(scheduleMatches('0DW02842GTYN17', jobs)), [[['501', 'DW02842GTYN']], []], 'barcode with extra characters');
-  assert.deepEqual(numbers(scheduleMatches('DW02842GBY', jobs)), [[], [['501', 'DW02842GTYN']]], 'same glass, other version');
-  assert.deepEqual(numbers(scheduleMatches('HAH000448', jobs)), [[['505', 'HAH000448']], []], 'mouldings and other parts match too');
-  assert.deepEqual(numbers(scheduleMatches('DB00123', jobs)), [[], []]);
-  assert.deepEqual(numbers(scheduleMatches('LAB', jobs)), [[], []], 'short SKUs only match exactly');
-  assert.deepEqual(numbers(scheduleMatches('', jobs)), [[], []]);
+  assert.equal(glassNumber('0dw02842gtyn17'), 'DW02842');
+  assert.equal(glassNumber('HAH000448'), '', 'mouldings are not glass');
+  const found = scan => scheduleMatches(scan, jobs).map(job => [job.number, job.part]);
+  for (const scan of ['DW02842GTYN', 'dw02842 gtyn', 'DW02842', 'DW02842GBY', '0DW02842GTYN17']) assert.deepEqual(found(scan), [['501', 'DW02842GTYN']], scan);
+  assert.deepEqual(found('X0FW04567'), [['505', 'FW04567GBY']], 'barcode with extra characters');
+  assert.deepEqual(found('DW02843GTYN'), [], 'a different glass number');
+  assert.deepEqual(found('HAH000448'), [['505', 'HAH000448']]);
+  assert.deepEqual(found('HAH00044'), [], 'other parts need the whole number');
+  assert.deepEqual(found('LAB'), [], 'short SKUs only match exactly');
+  assert.deepEqual(found(''), []);
 });
 
-test('glass on the schedule that nothing scanned matches is listed; other parts are not', () => {
-  assert.deepEqual(unscannedGlass(jobs, []).map(job => [job.number, job.part]), [['501', 'DW02842GTYN'], ['505', 'FW04567GBY']]);
-  assert.deepEqual(unscannedGlass(jobs, ['x FW04567GBY x', 'DW02842GBY']).map(job => job.part), ['DW02842GTYN'], 'another version is not the scheduled part');
+test('glass on the schedule with no scan of its NAGS number is listed; other parts are not', () => {
+  assert.deepEqual(unscannedGlass(jobs, []).map(job => [job.number, job.glass]), [['501', 'DW02842'], ['505', 'FW04567']]);
+  assert.deepEqual(unscannedGlass(jobs, ['x FW04567GBY x', 'DW02842GBY']), [], 'any version counts as scanned');
+  assert.deepEqual(unscannedGlass(jobs, ['DW02843']).map(job => job.glass), ['DW02842', 'FW04567']);
 });
 
 // ---------- API ----------
