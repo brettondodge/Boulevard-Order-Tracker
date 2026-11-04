@@ -125,7 +125,9 @@ back 60 days.
   check.
 - **Search and Print:** every list has its own search (part number with or
   without dashes, shelf, job number, vehicle, or "need" / "return"). **Print**
-  prints the open list as shown, search included, with its name and the time.
+  prints the open list, search included, with the time: PLK or PGW in large
+  letters, then the Return list, the Need list and anything not marked yet;
+  Stock and Old inventory print as shown.
 - **Daily check:** every morning at 7 AM Arizona time (`AUTOGLASS_CHECK_HOUR`),
   or with **Check now**, both lists are matched against Omega quotes and work
   orders written up in the last 60 days. Matches show on each part. New

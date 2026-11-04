@@ -430,6 +430,92 @@ main {
     color: #4b5966;
   }
 
+  /* Receiving prints as the vendor, then Return, Need and Not marked lists. */
+  .scan-sheet.plk,
+  .scan-sheet.pgw {
+    display: none !important;
+  }
+
+  .print-vendor {
+    display: inline-block;
+    padding: 2px 18px;
+    border: 2px solid;
+    border-radius: 8px;
+    font-size: 40px;
+    letter-spacing: 2px;
+  }
+
+  .print-vendor.plk {
+    background: #e4f3d3;
+    border-color: #a9d38a;
+    color: #2d5617;
+  }
+
+  .print-vendor.pgw {
+    background: #dcebfa;
+    border-color: #9ec4e8;
+    color: #1b4970;
+  }
+
+  .print-section {
+    margin: 0 0 14px;
+    border: 1px solid #dbe2e8;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .print-section h3 {
+    margin: 0;
+    padding: 6px 12px;
+    font-size: 15px;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    break-after: avoid;
+  }
+
+  .print-section.return h3 {
+    background: #fbe4e6;
+    color: #7d1f28;
+  }
+
+  .print-section.need h3 {
+    background: #e3f4ea;
+    color: #1b5c48;
+  }
+
+  .print-section.unmarked h3 {
+    background: #f6f8fa;
+    color: #4b5966;
+  }
+
+  .print-section ol {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .print-section li {
+    display: grid;
+    grid-template-columns: 2.25rem minmax(0, 1fr);
+    gap: 14px;
+    padding: 6px 12px;
+    border-top: 1px solid #e5eaf0;
+    break-inside: avoid;
+  }
+
+  .print-section > p {
+    margin: 0;
+    padding: 6px 12px;
+    border-top: 1px solid #e5eaf0;
+    color: #657687;
+  }
+
+  .print-vendor,
+  .print-section h3 {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
   .scan-sheet,
   .scan-summary,
   .scan-row {

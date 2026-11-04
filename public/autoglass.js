@@ -143,12 +143,16 @@ const pendingRows = (count) => state.pending.map((part, index) => `
       <div class="scan-part"><strong>${esc(part)}</strong><span class="match">Saving…</span></div>
     </li>`).join('');
 
+// Lines keep their number in the whole list while a search hides others.
+const shownScans = () => listScans(TABS[state.tab].supplier)
+  .map((scan, index) => ({ scan, number: index + 1 }))
+  .filter(({ scan }) => scan.id === state.editing?.id || matchesSearch(searchText(), scanTexts(scan)));
+
 function renderScans() {
   const scans = listScans(TABS[state.tab].supplier);
   const need = scans.filter(scan => scan.need).length;
   const back = scans.filter(scan => scan.to_return).length;
-  // Lines keep their number in the whole list while a search hides others.
-  const shown = scans.map((scan, index) => ({ scan, number: index + 1 })).filter(({ scan }) => scan.id === state.editing?.id || matchesSearch(searchText(), scanTexts(scan)));
+  const shown = shownScans();
   showSummary(scans.length ? `${scans.length} scanned · ${need} need · ${back} return · ${scans.length - need - back} not marked` : 'Nothing scanned yet.', shown.length, scans.length);
   $('clearScans').disabled = !scans.length;
   $('scanRows').innerHTML = shown.map(({ scan, number }) => (scan.id === state.editing?.id ? editRow(number) : `
@@ -465,15 +469,35 @@ $('scanInput').addEventListener('keydown', event => {
   addScan(value);
 });
 
-// Printing shows the open list as it is on screen (search included), with a
-// title and the time; Save as PDF names the file after it.
+// Printed receiving: the vendor at the top, then the returns, what's needed,
+// and what isn't marked yet (left off when there's nothing).
+function receivingSections() {
+  const lines = shownScans();
+  const section = (name, kind, entries) => `
+    <section class="print-section ${kind}">
+      <h3>${name} (${entries.length})</h3>
+      ${entries.length ? `<ol>${entries.map(({ scan, number }) => `
+        <li><span class="scan-number">${number}</span><div class="scan-part"><strong>${esc(scan.part_number)}</strong>${matchHtml(scan)}</div></li>`).join('')}</ol>` : '<p>None.</p>'}
+    </section>`;
+  const unmarked = lines.filter(({ scan }) => !scan.need && !scan.to_return);
+  return section('Return', 'return', lines.filter(({ scan }) => scan.to_return))
+    + section('Need', 'need', lines.filter(({ scan }) => scan.need))
+    + (unmarked.length ? section('Not marked', 'unmarked', unmarked) : '');
+}
+
+// Printing shows the open list (search included) with a title and the time;
+// Save as PDF names the file after it. Stock and Old inventory print as shown.
 const pageTitle = document.title;
 function preparePrint() {
+  const { supplier, label, title } = TABS[state.tab];
   const search = searchText();
   const printed = dateTime(new Date().toISOString());
-  $('printTitle').innerHTML = `<h2>${esc(TABS[state.tab].title)}</h2>`
-    + `<p>Printed ${esc(printed)}${search ? ` · only lines matching “${esc(search)}”` : ''}</p>`;
-  document.title = `${TABS[state.tab].title} ${printed}`;
+  const only = search ? ` · only lines matching “${esc(search)}”` : '';
+  $('printTitle').innerHTML = supplier
+    ? `<h2 class="print-vendor ${supplier}">${esc(label)}</h2><p>Receiving · printed ${esc(printed)}${only}</p>`
+    : `<h2>${esc(title)}</h2><p>Printed ${esc(printed)}${only}</p>`;
+  $('printSections').innerHTML = supplier ? receivingSections() : '';
+  document.title = `${title} ${printed}`;
 }
 window.addEventListener('beforeprint', preparePrint);
 window.addEventListener('afterprint', () => { document.title = pageTitle; });
