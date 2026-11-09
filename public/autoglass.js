@@ -60,9 +60,11 @@ function showMessage(text) {
   $('scanMessage').textContent = text;
 }
 
-// The scan box always gets the next key press, so a scan never lands in a checkbox.
-function focusScan() {
-  $('scanInput').focus();
+// The scan box always gets the next key press, so a scan never lands in a
+// checkbox. It doesn't scroll the page there (ticking Need or Return low in a
+// long list stays put), except when a scan starts while focus is elsewhere.
+function focusScan({ scroll = false } = {}) {
+  $('scanInput').focus({ preventScroll: !scroll });
 }
 
 const listScans = supplier => state.scans.filter(scan => scan.supplier === supplier);
@@ -244,21 +246,27 @@ const itemTexts = item => [
   ...item.matches.flatMap(match => [`${match.status || 'Job'} #${match.job_number}`, match.vehicle, match.part])
 ];
 
+const matchText = (item, match) => [
+  `${match.status || 'Job'} #${match.job_number}`,
+  match.scheduled_date ? `scheduled ${shortDate(match.scheduled_date)}` : '',
+  match.vehicle
+].filter(Boolean).map(esc).join(' · ') + versionNote(item.part_number, match.part);
+
 function inventoryMatches(item) {
   if (!item.matches.length) return '';
-  const jobs = item.matches.map(match => [
-    `${match.status || 'Job'} #${match.job_number}`,
-    match.scheduled_date ? `scheduled ${shortDate(match.scheduled_date)}` : '',
-    match.vehicle
-  ].filter(Boolean).map(esc).join(' · ') + versionNote(item.part_number, match.part) + (match.emailed ? ' · emailed' : ''));
-  return `<span class="match on">Needed by ${jobs.join('; ')}</span>`;
+  return `<span class="match on">Needed by ${item.matches.map(match => matchText(item, match) + (match.emailed ? ' · emailed' : '')).join('; ')}</span>`;
 }
 
+const listItems = () => state.inventory.filter(item => item.section === state.tab);
+const shownItems = () => listItems()
+  .map((item, index) => ({ item, number: index + 1 }))
+  .filter(({ item }) => item.id === state.editing?.id || matchesSearch(searchText(), itemTexts(item)));
+
 function renderInventory() {
-  const items = state.inventory.filter(item => item.section === state.tab);
+  const items = listItems();
   const total = items.reduce((sum, item) => sum + item.quantity, 0);
   const matched = items.filter(item => item.matches.length).length;
-  const shown = items.map((item, index) => ({ item, number: index + 1 })).filter(({ item }) => item.id === state.editing?.id || matchesSearch(searchText(), itemTexts(item)));
+  const shown = shownItems();
   showSummary(items.length
     ? `${plural(items.length, 'part number', 'part numbers')} · ${total} on hand${state.check?.last ? ` · ${matched} needed by open Omega jobs` : ''}`
     : 'Nothing here yet.', shown.length, items.length);
@@ -469,34 +477,61 @@ $('scanInput').addEventListener('keydown', event => {
   addScan(value);
 });
 
-// Printed receiving: the vendor at the top, then the returns, what's needed,
-// and what isn't marked yet (left off when there's nothing).
-function receivingSections() {
+// ---------- Printing ----------
+// A plain black-and-white sheet, not the screen: the list's name and the
+// time, then compact tables. A search limits what prints. Save as PDF names
+// the file after the list.
+
+const printTable = (headings, rows) => (rows.length
+  ? `<table><thead><tr>${headings.map(([text, kind = '']) => `<th class="${kind}">${text}</th>`).join('')}</tr></thead>`
+    + `<tbody>${rows.map(cells => `<tr>${cells.join('')}</tr>`).join('')}</tbody></table>`
+  : '<p class="print-none">None</p>');
+
+// Receiving: Return to the vendor first, then Need, then anything not marked
+// (left off when there's nothing). The Omega column shows only work orders.
+function receivingPrint(supplier) {
   const lines = shownScans();
-  const section = (name, kind, entries) => `
-    <section class="print-section ${kind}">
-      <h3>${name} (${entries.length})</h3>
-      ${entries.length ? `<ol>${entries.map(({ scan, number }) => `
-        <li><span class="scan-number">${number}</span><div class="scan-part"><strong>${esc(scan.part_number)}</strong>${matchHtml(scan)}</div></li>`).join('')}</ol>` : '<p>None.</p>'}
-    </section>`;
+  const omega = Boolean(state.schedule);
+  const table = entries => printTable(
+    [['#', 'num'], ['Part number', 'part'], ...(omega ? [['Omega work order']] : [])],
+    entries.map(({ scan, number }) => [
+      `<td class="num">${number}</td>`,
+      `<td class="part">${esc(scan.part_number)}</td>`,
+      ...(omega ? [`<td>${scheduleJobs(scan).map(job => esc(jobText(job)) + versionNote(scan.part_number, job.part)).join('; ')}</td>`] : [])
+    ])
+  );
+  const section = (name, entries) => `<section class="print-section"><h3>${name} <span>(${entries.length})</span></h3>${table(entries)}</section>`;
   const unmarked = lines.filter(({ scan }) => !scan.need && !scan.to_return);
-  return section('Return', 'return', lines.filter(({ scan }) => scan.to_return))
-    + section('Need', 'need', lines.filter(({ scan }) => scan.need))
-    + (unmarked.length ? section('Not marked', 'unmarked', unmarked) : '');
+  return section(`Return to ${TABS[supplier].label}`, lines.filter(({ scan }) => scan.to_return))
+    + section('Need', lines.filter(({ scan }) => scan.need))
+    + (unmarked.length ? section('Not marked', unmarked) : '');
 }
 
-// Printing shows the open list (search included) with a title and the time;
-// Save as PDF names the file after it. Stock and Old inventory print as shown.
+function inventoryPrint() {
+  const lines = shownItems();
+  const omega = Boolean(state.check?.omegaConnected);
+  const total = lines.reduce((sum, { item }) => sum + item.quantity, 0);
+  return `<section class="print-section"><h3>${plural(lines.length, 'part number', 'part numbers')} <span>(${total} on hand)</span></h3>${printTable(
+    [['#', 'num'], ['Part number', 'part'], ['Qty', 'qty'], ['Shelf', 'shelf'], ...(omega ? [['Needed by']] : [])],
+    lines.map(({ item, number }) => [
+      `<td class="num">${number}</td>`,
+      `<td class="part">${esc(item.part_number)}</td>`,
+      `<td class="qty">${item.quantity}</td>`,
+      `<td>${esc(item.shelf)}</td>`,
+      ...(omega ? [`<td>${item.matches.map(match => matchText(item, match)).join('; ')}</td>`] : [])
+    ])
+  )}</section>`;
+}
+
 const pageTitle = document.title;
 function preparePrint() {
   const { supplier, label, title } = TABS[state.tab];
   const search = searchText();
-  const printed = dateTime(new Date().toISOString());
-  const only = search ? ` · only lines matching “${esc(search)}”` : '';
-  $('printTitle').innerHTML = supplier
-    ? `<h2 class="print-vendor ${supplier}">${esc(label)}</h2><p>Receiving · printed ${esc(printed)}${only}</p>`
-    : `<h2>${esc(title)}</h2><p>Printed ${esc(printed)}${only}</p>`;
-  $('printSections').innerHTML = supplier ? receivingSections() : '';
+  const printed = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'America/Phoenix' }).format(new Date());
+  $('printSheet').innerHTML = `
+    <div class="print-head"><h2>${supplier ? `${esc(label)} <span>Receiving</span>` : esc(title)}</h2><p>${esc(printed)}</p></div>
+    ${search ? `<p class="print-filter">Only parts matching “${esc(search)}”</p>` : ''}
+    ${supplier ? receivingPrint(supplier) : inventoryPrint()}`;
   document.title = `${title} ${printed}`;
 }
 window.addEventListener('beforeprint', preparePrint);
@@ -530,7 +565,7 @@ $('searchInput').addEventListener('keydown', event => {
 document.addEventListener('keydown', event => {
   const active = document.activeElement;
   const typing = active?.matches?.('input[type="text"], input[type="search"], input[type="date"], select, textarea');
-  if (!typing && event.key.length === 1 && event.key.trim() && !event.ctrlKey && !event.metaKey && !event.altKey) focusScan();
+  if (!typing && event.key.length === 1 && event.key.trim() && !event.ctrlKey && !event.metaKey && !event.altKey) focusScan({ scroll: true });
 });
 
 $('scanRows').addEventListener('change', event => {

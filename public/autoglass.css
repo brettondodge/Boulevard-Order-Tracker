@@ -383,7 +383,8 @@ main {
   display: none;
 }
 
-/* Print: the open list only, with its title and time, colors kept. */
+/* Print: only the print sheet, black on white so it reads on any printer;
+   no shading, no grey, compact rows. */
 @media print {
   @page {
     margin: 12mm;
@@ -392,6 +393,12 @@ main {
   :root,
   body {
     background: #fff;
+    color: #000;
+  }
+
+  header,
+  main > :not(#printSheet) {
+    display: none !important;
   }
 
   main {
@@ -399,150 +406,116 @@ main {
     padding: 0;
   }
 
-  header,
-  main > .eyebrow,
-  main > h1,
-  .ag-tabs,
-  #tabIntro,
-  .scan-toolbar,
-  .scan-next,
-  .scan-note,
-  #scanMessage,
-  #checkPanel,
-  #schedulePanel > .muted,
-  #schedulePanel .bar,
-  .scan-remove,
-  .edit-hint,
-  .quantity button {
-    display: none !important;
-  }
-
-  .print-only {
+  .print-sheet {
     display: block;
+    font-size: 11pt;
+    color: #000;
   }
 
-  .print-title h2 {
+  .print-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    padding-bottom: 4px;
+    border-bottom: 3px solid #000;
+  }
+
+  .print-head h2 {
     margin: 0;
+    font-size: 26pt;
+    letter-spacing: 1px;
   }
 
-  .print-title p {
-    margin: 2px 0 12px;
-    color: #4b5966;
+  .print-head h2 span {
+    font-size: 14pt;
+    font-weight: 600;
+    letter-spacing: 0;
   }
 
-  /* Receiving prints as the vendor, then Return, Need and Not marked lists. */
-  .scan-sheet.plk,
-  .scan-sheet.pgw {
-    display: none !important;
+  .print-head p,
+  .print-filter {
+    margin: 0;
+    font-size: 11pt;
   }
 
-  .print-vendor {
-    display: inline-block;
-    padding: 2px 18px;
-    border: 2px solid;
-    border-radius: 8px;
-    font-size: 40px;
-    letter-spacing: 2px;
-  }
-
-  .print-vendor.plk {
-    background: #e4f3d3;
-    border-color: #a9d38a;
-    color: #2d5617;
-  }
-
-  .print-vendor.pgw {
-    background: #dcebfa;
-    border-color: #9ec4e8;
-    color: #1b4970;
+  .print-filter {
+    margin-top: 4px;
+    font-style: italic;
   }
 
   .print-section {
-    margin: 0 0 14px;
-    border: 1px solid #dbe2e8;
-    border-radius: 6px;
-    overflow: hidden;
+    margin-top: 16px;
   }
 
   .print-section h3 {
     margin: 0;
-    padding: 6px 12px;
-    font-size: 15px;
-    letter-spacing: .5px;
+    padding-bottom: 2px;
+    border-bottom: 2px solid #000;
+    font-size: 15pt;
     text-transform: uppercase;
     break-after: avoid;
   }
 
-  .print-section.return h3 {
-    background: #fbe4e6;
-    color: #7d1f28;
+  .print-section h3 span {
+    font-weight: 400;
+    text-transform: none;
   }
 
-  .print-section.need h3 {
-    background: #e3f4ea;
-    color: #1b5c48;
+  /* Fixed columns, so the Return, Need and Not marked tables line up. */
+  .print-section table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 11pt;
   }
 
-  .print-section.unmarked h3 {
-    background: #f6f8fa;
-    color: #4b5966;
+  .print-section th,
+  .print-section td {
+    padding: 3px 6px;
+    border-bottom: 1px solid #000;
+    color: #000;
+    background: none;
+    text-align: left;
+    vertical-align: top;
   }
 
-  .print-section ol {
-    margin: 0;
-    padding: 0;
-    list-style: none;
+  .print-section th {
+    font-size: 9pt;
+    letter-spacing: 0;
+    text-transform: uppercase;
   }
 
-  .print-section li {
-    display: grid;
-    grid-template-columns: 2.25rem minmax(0, 1fr);
-    gap: 14px;
-    padding: 6px 12px;
-    border-top: 1px solid #e5eaf0;
+  .print-section tr {
     break-inside: avoid;
   }
 
-  .print-section > p {
-    margin: 0;
-    padding: 6px 12px;
-    border-top: 1px solid #e5eaf0;
-    color: #657687;
+  .print-section .num {
+    width: 2.5em;
+    text-align: right;
   }
 
-  .print-vendor,
-  .print-section h3 {
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
+  .print-section .qty {
+    width: 3em;
+    text-align: right;
   }
 
-  .scan-sheet,
-  .scan-summary,
-  .scan-row {
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
+  .print-section .part {
+    width: 13em;
   }
 
-  .scan-row {
-    grid-template-columns: 2.25rem minmax(0, 1fr) auto auto;
-    padding: 6px 12px;
-    break-inside: avoid;
+  .print-section .shelf {
+    width: 6em;
   }
 
-  .scan-box.on {
+  .print-section td.part {
+    font-size: 12pt;
     font-weight: 700;
+    overflow-wrap: anywhere;
   }
 
-  .shelf input {
-    width: auto;
-    padding: 0;
-    border: 0;
-    background: transparent;
-  }
-
-  .panel {
-    margin: 16px 0 0;
-    padding: 0;
-    border: 0;
+  .print-none {
+    margin: 4px 0 0;
+    padding-left: 6px;
   }
 }
