@@ -128,7 +128,9 @@ back 60 days.
   prints a plain black-and-white sheet of the open list (search included)
   with the date: for PLK or PGW, the vendor at the top, then Return to the
   vendor, Need, and anything not marked; for Stock and Old inventory, one
-  table with quantity, shelf and the Omega jobs that need each part.
+  table with quantity, shelf and the Omega jobs that need each part. Each
+  part number prints on one line: the part column is sized to the longest
+  one on the sheet.
 - **Daily check:** every morning at 7 AM Arizona time (`AUTOGLASS_CHECK_HOUR`),
   or with **Check now**, both lists are matched against Omega quotes and work
   orders written up in the last 60 days. Matches show on each part. New

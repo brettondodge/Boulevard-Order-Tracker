@@ -462,11 +462,12 @@ main {
     text-transform: none;
   }
 
-  /* Fixed columns, so the Return, Need and Not marked tables line up. */
+  /* The same column widths in every table, so the Return, Need and Not marked
+     tables line up. Automatic layout, so a column still grows rather than let
+     a part number run into the next one. */
   .print-section table {
     width: 100%;
     border-collapse: collapse;
-    table-layout: fixed;
     font-size: 11pt;
   }
 
@@ -500,8 +501,10 @@ main {
     text-align: right;
   }
 
+  /* --part-width fits the longest part number on the sheet (autoglass.js). */
   .print-section .part {
-    width: 13em;
+    width: var(--part-width, 13em);
+    white-space: nowrap;
   }
 
   .print-section .shelf {
@@ -511,6 +514,10 @@ main {
   .print-section td.part {
     font-size: 12pt;
     font-weight: 700;
+  }
+
+  .print-sheet.long-parts td.part {
+    white-space: normal;
     overflow-wrap: anywhere;
   }
 

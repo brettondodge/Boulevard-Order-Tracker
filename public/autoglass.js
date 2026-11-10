@@ -523,6 +523,28 @@ function inventoryPrint() {
   )}</section>`;
 }
 
+// Each part number prints on one line (DW02416 GTY never breaks at the space):
+// the part column is as wide as the longest part number on the sheet, the same
+// in every table so they line up. Only a part number too long for half the
+// page may still wrap.
+const PART_COLUMN_MAX = 340; // px
+function fitPartColumn() {
+  const sheet = $('printSheet');
+  const context = document.createElement('canvas').getContext('2d');
+  const family = getComputedStyle(sheet).fontFamily;
+  const textWidth = (text, font) => {
+    context.font = `${font} ${family}`;
+    return context.measureText(text).width;
+  };
+  const widest = Math.max(
+    textWidth('PART NUMBER', '700 9pt'),
+    ...[...sheet.querySelectorAll('td.part')].map(cell => textWidth(cell.textContent, '700 12pt'))
+  );
+  const column = Math.ceil(widest) + 20; // 12px of padding, plus room to spare
+  sheet.style.setProperty('--part-width', `${Math.min(column, PART_COLUMN_MAX)}px`);
+  sheet.classList.toggle('long-parts', column > PART_COLUMN_MAX);
+}
+
 const pageTitle = document.title;
 function preparePrint() {
   const { supplier, label, title } = TABS[state.tab];
@@ -532,6 +554,7 @@ function preparePrint() {
     <div class="print-head"><h2>${supplier ? `${esc(label)} <span>Receiving</span>` : esc(title)}</h2><p>${esc(printed)}</p></div>
     ${search ? `<p class="print-filter">Only parts matching “${esc(search)}”</p>` : ''}
     ${supplier ? receivingPrint(supplier) : inventoryPrint()}`;
+  fitPartColumn();
   document.title = `${title} ${printed}`;
 }
 window.addEventListener('beforeprint', preparePrint);
